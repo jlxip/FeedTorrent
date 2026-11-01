@@ -1,5 +1,5 @@
 use super::*;
-use feedtorrent_core::normalize_magnet_input;
+use feedtorrent_bep::normalize_magnet_input;
 #[test]
 fn magnet_hash_normalization_and_identity() {
     let id = "56f31e2d486209003454e245d11561cd252be30f";

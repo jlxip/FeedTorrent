@@ -2,14 +2,14 @@
 //!
 //! ```
 //! use std::io::Cursor;
-//! use feedtorrent_core::bep49::{FeedBuilder, BuildEntry, Feed};
+//! use feedtorrent_bep::bep49::{FeedBuilder, BuildEntry, Feed};
 //! let mut builder = FeedBuilder::new("catalog");
 //! builder.entries.push(BuildEntry::file(vec!["note.txt".into()], 5));
 //! let built = builder.build(|_| Ok(Cursor::new(b"hello")))?;
 //! let feed = Feed::from_metainfo(&built.metainfo)?;
 //! assert_eq!(feed.items().count(), 1);
 //! assert_eq!(feed.infohash(), built.feed.infohash());
-//! # Ok::<(), feedtorrent_core::bep49::Error>(())
+//! # Ok::<(), feedtorrent_bep::bep49::Error>(())
 //! ```
 mod builder;
 mod codec;

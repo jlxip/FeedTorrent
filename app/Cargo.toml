@@ -3,7 +3,7 @@ name = "feedtorrent"
 version.workspace = true
 edition.workspace = true
 [dependencies]
-feedtorrent-core = { path = "../core" }
+feedtorrent-bep = { path = "../bep" }
 feedtorrent-libtorrent = { path = "../backends/libtorrent" }
 anyhow = "1.0"
 axum = "0.8"

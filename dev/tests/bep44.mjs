@@ -76,6 +76,7 @@ try {
   const conflict=await client.call("sign",{seed:hex(keySeed),value:value(Buffer.from("conflict")),sequence:"2",salt:hex(salt)});
   await assert.rejects(()=>client.perform({kind:"put_mutable",...signed}),/Conflict/);
   await assert.rejects(()=>client.perform({kind:"put_mutable",...conflict}),/Conflict/);
+  const afterConflict=await freshGet(routing,mutableTarget,salt);assert.equal(afterConflict.seq,2);assert.deepEqual(afterConflict.v,update);
   const republished=await client.perform({kind:"put_mutable",...current});assert(republished.acknowledged_nodes>0);
   assert.equal((await client.perform({kind:"get_mutable",key:hex(pk),salt:hex(salt)})).item.sequence,"2");
   pass("stale/equivocating publications report conflicts; existing signed records republish without a private key");

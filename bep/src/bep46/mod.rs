@@ -4,8 +4,8 @@
 //! These helpers never start background work or discard host-owned state.
 //!
 //! ```
-//! use feedtorrent_core::bep44::{Bep44Signer, DhtOutcome};
-//! use feedtorrent_core::bep46::{TorrentPointer, format_magnet, parse_magnet, resolve, Resolution};
+//! use feedtorrent_bep::bep44::{Bep44Signer, DhtOutcome};
+//! use feedtorrent_bep::bep46::{TorrentPointer, format_magnet, parse_magnet, resolve, Resolution};
 //! let signer = Bep44Signer::from_seed(&[7; 32]);
 //! let published = TorrentPointer::sign(&signer, [42; 20], 1, vec![])?;
 //! let identity = parse_magnet(&format_magnet(published.key()))?;
@@ -15,7 +15,7 @@
 //! };
 //! assert_eq!(pointer.infohash(), [42; 20]);
 //! // The host may submit pointer.publication() to DhtBackend to republish it.
-//! # Ok::<(), feedtorrent_core::bep46::Error>(())
+//! # Ok::<(), feedtorrent_bep::bep46::Error>(())
 //! ```
 use crate::bep44::{
     select_mutable, BencodedValue, Bep44Signer, DhtError, DhtOutcome, DhtRequest, MutableKey,

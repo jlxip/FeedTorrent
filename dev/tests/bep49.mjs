@@ -1,3 +1,4 @@
+import { WirePeer,signed as signNodeRecord,jsonRecord } from "../fixtures/bep50-node.mjs";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -14,11 +15,13 @@ export async function runBep49({ client, root, native, pass: outerPass }) {
   const pass = text => { report.checks.push(text); outerPass("BEP49 " + text); };
   try {
     const tr = await tracker(); resources.push(tr);
+    const push=await new WirePeer().listen();resources.push({stop:()=>push.close()});
     const child = await seed(join(root, "catalog-content"), [17001, 12007, 0], { tracker: true, announce: [tr.http] }); resources.push(child);
     const childBytes = Buffer.from(child.bytes);
     const changedOuter = bencode.decode(childBytes); changedOuter.comment = "Independent outer extension";
     const variant = Buffer.from(bencode.encode(changedOuter));
     const identity = await client.call("sign_pointer", { seed: "1f".repeat(32), infohash: "00".repeat(20), sequence: "1", salt: "01" });
+    await client.call("subscribe",identity);
     const embedded = await client.call("sign_pointer", { seed: "20".repeat(32), infohash: "00".repeat(20), sequence: "1" });
     const inputs = [
       { path: ["z-first.torrent"], data: hex(childBytes) },
@@ -81,7 +84,17 @@ export async function runBep49({ client, root, native, pass: outerPass }) {
       assert((await client.perform({ kind: "put_pointer", ...signed })).acknowledged_nodes > 0);
       const item = (await client.perform({ kind: "get_pointer", magnet: identity.magnet })).item;
       const resolved = await client.call("resolve_pointer", { magnet: identity.magnet, item });
-      assert.equal(resolved.pointer.infohash, catalog.id); return resolved.pointer;
+      assert.equal(resolved.pointer.infohash, catalog.id);
+      // Independent Node publishes the same BEP46 record via BEP50. The host
+      // explicitly interprets the push before choosing the following download.
+      const pushed=signNodeRecord(Buffer.alloc(32,31),seq,{ih:Buffer.from(catalog.id,"hex")},Buffer.from([1]));
+      push.subscribe(pushed);
+      await push.publish({host:"127.0.0.1",port:(await client.call("pubsub_info")).port},pushed);
+      const received=await wait(async()=>{const r=await client.call("latest",identity);return r?.sequence===String(seq)&&r},"BEP50 pointer delivery");
+      const fromPush=await client.call("resolve_pointer",{magnet:identity.magnet,item:received});
+      assert.equal(fromPush.pointer.infohash,catalog.id);
+      assert.deepEqual(jsonRecord(pushed),received);
+      return fromPush.pointer;
     };
     const download = async (peer, catalog, name) => {
       const folder = join(root, name); await mkdir(folder);
@@ -146,6 +159,7 @@ export async function runBep49({ client, root, native, pass: outerPass }) {
     await download(history, head, "native-previous");
     assert.deepEqual(await readFile(join(initial.folder, "catalog", "z-first.torrent")), childBytes);
     await history.call("shutdown"); await assert.rejects(() => history.call("metadata", { transfer: head.id }), /Backend closed/);
+    pass("BEP50 Node pushes signed BEP46 revisions; host resolves and explicitly downloads BEP49/content while preserving previous data");
     pass("revisions, prev and chained archives interoperate with an independent Node producer; explicit history retrieval preserves previous content and close errors");
   } catch (error) { report.errors.push(error.stack); throw error; }
   finally {

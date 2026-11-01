@@ -12,7 +12,7 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
-use feedtorrent_core::{
+use feedtorrent_bep::{
     normalize_magnet_input, valid_id, AddTransfer, TorrentBackend, TorrentSource,
 };
 use feedtorrent_libtorrent::LibtorrentBackend;

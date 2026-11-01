@@ -1,11 +1,13 @@
 //! Test-only JSON-lines host. Not part of the FeedTorrent executable.
-use feedtorrent_core::bep46::{self, PointerChange, Resolution, TorrentPointer};
-use feedtorrent_core::{
+use feedtorrent_bep::bep46::{self, PointerChange, Resolution, TorrentPointer};
+use feedtorrent_bep::{
     bep44::*,
     bep49::{self, BuildEntry, Feed, FeedBuilder, FeedFields, ItemContent, TorrentLink},
     AddTransfer, TorrentBackend, TorrentMetadataBackend, TorrentSource,
 };
 use feedtorrent_libtorrent::LibtorrentBackend;
+use feedtorrent_pubsub_udp::{Bind, UdpPubSub};
+mod bep50_support;
 use serde_json::{json, Value};
 use std::{
     io::{self, BufRead},
@@ -63,8 +65,8 @@ fn feed_key(q: &Value) -> Result<MutableKey> {
 fn catalog_json(feed: &Feed) -> Value {
     json!({"infohash":hex(&feed.infohash()),"info":hex(feed.raw_info()),"name":feed.name(),"piece_length":feed.piece_length(),"total":feed.total_length(),"pieces":hex(feed.pieces()),"archive":feed.fields().archive,"source":feed.fields().source.as_ref().map(bep46::format_magnet),"archive_next":feed.fields().archive_next.as_ref().map(|l|l.uri()),"previous":feed.fields().previous.as_ref().map(|l|l.uri()),"entries":feed.entries().iter().map(|e|json!({"index":e.index(),"path":e.path(),"length":e.length(),"attr":hex(e.attributes()),"sha1":e.sha1().map(|h|hex(&h)),"kind":format!("{:?}",e.kind())})).collect::<Vec<_>>()})
 }
-fn bendy_value_bytes(bytes: &[u8]) -> feedtorrent_core::bep49::OuterValue<'static> {
-    feedtorrent_core::bep49::OuterValue::Bytes(std::borrow::Cow::Owned(bytes.to_vec()))
+fn bendy_value_bytes(bytes: &[u8]) -> feedtorrent_bep::bep49::OuterValue<'static> {
+    feedtorrent_bep::bep49::OuterValue::Bytes(std::borrow::Cow::Owned(bytes.to_vec()))
 }
 fn optional_link(q: &Value, field: &str) -> Result<Option<TorrentLink>> {
     q[field]
@@ -315,11 +317,22 @@ fn event_json(event: DhtEvent) -> Value {
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
-    let mut backend = LibtorrentBackend::new(
-        args.get(1).ok_or("Missing state directory")?,
-        0,
-        args.get(2).map(String::as_str).unwrap_or(""),
-        true,
+    let state = args.get(1).ok_or("Missing state directory")?;
+    let port = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(0);
+    let bootstrap = args.get(2).map(String::as_str).unwrap_or("");
+    let mut backend = if args.get(4).is_some_and(|s| s == "ipv6") {
+        LibtorrentBackend::new_isolated_ipv6(state, port, bootstrap)?
+    } else {
+        LibtorrentBackend::new(state, port, bootstrap, true)?
+    };
+    let mut pubsub = UdpPubSub::bind(
+        Bind {
+            ipv4: Some(std::net::Ipv4Addr::LOCALHOST),
+            ipv6: Some(std::net::Ipv6Addr::LOCALHOST),
+            port: 0,
+            advertised_port: None,
+        },
+        feedtorrent_bep::bep50::Config::default(),
     )?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -342,7 +355,25 @@ fn main() -> Result<()> {
                     backend.shutdown()?;
                     break;
                 }
-                let response = match run(&mut backend, &q) {
+                let is_pubsub = matches!(
+                    q["op"].as_str(),
+                    Some(
+                        "pubsub_info"
+                            | "subscribe"
+                            | "unsubscribe"
+                            | "publish"
+                            | "hint"
+                            | "latest"
+                            | "pubsub_events"
+                            | "pubsub_close"
+                    )
+                );
+                let result = if is_pubsub {
+                    bep50_support::run(&mut pubsub, &q)
+                } else {
+                    run(&mut backend, &q)
+                };
+                let response = match result {
                     Ok(result) => json!({"id":q["id"],"result":result}),
                     Err(error) => json!({"id":q["id"],"error":error.to_string()}),
                 };
@@ -354,6 +385,7 @@ fn main() -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
+        pubsub.poll(&mut backend);
         for event in backend.poll_dht() {
             println!("{}", event_json(event));
         }

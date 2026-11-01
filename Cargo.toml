@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "backends/libtorrent", "app"]
+members = ["bep", "backends/libtorrent", "backends/pubsub-udp", "app"]
 resolver = "2"
 
 [workspace.package]

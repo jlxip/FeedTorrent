@@ -2,7 +2,7 @@
 mod bridge;
 mod dht;
 use bridge::ffi;
-use feedtorrent_core::{
+use feedtorrent_bep::{
     AddTransfer, BackendError, BackendFile, BackendSnapshot, BackendTransfer, Result,
     TorrentBackend, TorrentSource,
 };
@@ -13,6 +13,8 @@ use feedtorrent_core::{
 /// complete KRPC packet). Highly nested/token-dense values accepted by the core
 /// may therefore fail to propagate. Publication acknowledgements report only
 /// what this operation observed; they do not promise durable availability.
+/// Without CAS, conflict detection cannot roll back a partial publication on a
+/// different address-family traversal that had not observed the conflicting item.
 pub struct LibtorrentBackend {
     session: cxx::UniquePtr<ffi::Session>,
     dht: dht::DhtState,
@@ -28,8 +30,22 @@ fn inspect(source: TorrentSource<'_>) -> Result<String> {
 }
 impl LibtorrentBackend {
     pub fn new(state_dir: &str, port: u16, bootstrap: &str, isolated: bool) -> Result<Self> {
+        Self::create(state_dir, port, bootstrap, isolated, false)
+    }
+    /// Isolated IPv6 loopback session for hosts testing IPv6 without IPv4 fallback.
+    pub fn new_isolated_ipv6(state_dir: &str, port: u16, bootstrap: &str) -> Result<Self> {
+        Self::create(state_dir, port, bootstrap, true, true)
+    }
+    fn create(
+        state_dir: &str,
+        port: u16,
+        bootstrap: &str,
+        isolated: bool,
+        ipv6_only: bool,
+    ) -> Result<Self> {
         Ok(Self {
-            session: ffi::new_session(state_dir, port, bootstrap, isolated).map_err(error)?,
+            session: ffi::new_session(state_dir, port, bootstrap, isolated, ipv6_only)
+                .map_err(error)?,
             dht: dht::DhtState::default(),
         })
     }
@@ -107,7 +123,7 @@ impl TorrentBackend for LibtorrentBackend {
     }
 }
 
-impl feedtorrent_core::TorrentMetadataBackend for LibtorrentBackend {
+impl feedtorrent_bep::TorrentMetadataBackend for LibtorrentBackend {
     fn info_bytes(&self, id: &str) -> Result<Option<Vec<u8>>> {
         let bytes = self.session.info_bytes(id).map_err(error)?;
         Ok((!bytes.is_empty()).then_some(bytes))
@@ -116,3 +132,5 @@ impl feedtorrent_core::TorrentMetadataBackend for LibtorrentBackend {
 
 #[cfg(test)]
 mod tests;
+
+mod discovery;

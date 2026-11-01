@@ -146,11 +146,24 @@ struct Session::Impl {
   bool dht_alerts = false;
   std::map<std::string, DhtSlot> dht_slots;
   std::map<std::uint64_t, NativeDhtEvent> dht_events;
+  std::map<std::string, std::set<std::string>> peer_events;
   lt::torrent_handle handle(rust::Str id) { return handles.at(str(id)); }
   void alerts() {
     std::vector<lt::alert *> alerts;
     session->pop_alerts(&alerts);
     for (auto *a : alerts) {
+      if (auto *p = lt::alert_cast<lt::dht_get_peers_reply_alert>(a)) {
+        const auto key = dht_key(p->info_hash);
+        if (peer_events.count(key) || peer_events.size() < 1024) {
+          auto &peers = peer_events[key];
+          for (auto const &ep : p->peers()) {
+            if (peers.size() >= 512) break;
+            auto address = ep.address().to_string();
+            if (ep.address().is_v6()) address = "[" + address + "]";
+            peers.insert(address + ":" + std::to_string(ep.port()));
+          }
+        }
+      }
       if (auto *t = lt::alert_cast<lt::dht_immutable_item_alert>(a)) {
         auto slot = dht_slots.find(dht_key(t->target));
         if (slot != dht_slots.end() && slot->second.kind == 0) {
@@ -262,7 +275,7 @@ struct Session::Impl {
   }
 };
 Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
-                 bool isolated)
+                 bool isolated, bool ipv6_only)
     : impl(std::make_unique<Impl>()) {
   impl->dir = str(dir);
   fs::create_directories(impl->dir);
@@ -276,7 +289,7 @@ Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
   }
   auto &s = params.settings;
   s.set_str(lt::settings_pack::listen_interfaces,
-            isolated ? "127.0.0.1:" + std::to_string(port)
+            isolated ? (ipv6_only ? "[::1]:" : "127.0.0.1:") + std::to_string(port)
                      : "0.0.0.0:" + std::to_string(port) +
                            ",[::]:" + std::to_string(port));
   s.set_str(lt::settings_pack::user_agent, "FeedTorrent/1.0.0-dev");
@@ -307,8 +320,8 @@ Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
 }
 Session::~Session() = default;
 std::unique_ptr<Session> new_session(rust::Str d, std::uint16_t p, rust::Str b,
-                                     bool i) {
-  return std::make_unique<Session>(d, p, b, i);
+                                     bool i, bool v6) {
+  return std::make_unique<Session>(d, p, b, i, v6);
 }
 void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
                   bool magnet, rust::Str path, bool active, bool restore) {
@@ -459,6 +472,32 @@ rust::Vec<std::uint8_t> Session::info_bytes(rust::Str id) const {
   for (char byte : info) out.push_back(static_cast<std::uint8_t>(byte));
   return out;
 }
+bool Session::is_closed() const { return impl->stopped; }
+void Session::peer_discover(rust::Slice<const std::uint8_t> target, std::uint16_t port) {
+  if (impl->stopped) throw std::runtime_error("Backend closed");
+  if (!dht_ready()) throw std::runtime_error("DHT not running");
+  if (target.size() != 20) throw std::runtime_error("Invalid target");
+  auto mask = impl->session->get_settings().get_int(lt::settings_pack::alert_mask);
+  lt::settings_pack settings;
+  settings.set_int(lt::settings_pack::alert_mask, mask | int(static_cast<std::uint32_t>(lt::alert_category::dht_operation)));
+  impl->session->apply_settings(settings);
+  lt::sha1_hash hash(reinterpret_cast<char const *>(target.data()));
+  if (port) impl->session->dht_announce(hash, port);
+  else impl->session->dht_get_peers(hash);
+}
+rust::Vec<NativePeerHints> Session::peer_hints() {
+  if (impl->stopped) throw std::runtime_error("Backend closed");
+  impl->alerts();
+  rust::Vec<NativePeerHints> out;
+  for (auto const &entry : impl->peer_events) {
+    NativePeerHints item;
+    item.target = binary(entry.first);
+    for (auto const &peer : entry.second) item.peers.push_back(peer);
+    out.push_back(std::move(item));
+  }
+  impl->peer_events.clear();
+  return out;
+}
 bool Session::dht_ready() const {
   return !impl->stopped && impl->session->is_dht_running();
 }
@@ -530,8 +569,12 @@ void Session::dht_start(NativeDhtRequest const &r) {
                    std::int64_t &seq, std::string const &) {
           if (current.type() != lt::entry::undefined_t &&
               (seq > sequence ||
-               (seq == sequence && encoded(current) != bytes)))
+               (seq == sequence && encoded(current) != bytes))) {
+            // Preserve the existing signed native item. In particular do not
+            // publish an equivocation after reporting this request as failed.
             conflict->store(true);
+            return;
+          }
           current = value;
           signature = sig;
           seq = sequence;

@@ -9,3 +9,5 @@ pub mod bep44;
 pub mod bep46;
 
 pub mod bep49;
+
+pub mod bep50;

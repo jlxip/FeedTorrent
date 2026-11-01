@@ -47,6 +47,10 @@ pub mod ffi {
         acknowledged_nodes: u32,
         conflict: bool,
     }
+    struct NativePeerHints {
+        target: Vec<u8>,
+        peers: Vec<String>,
+    }
     unsafe extern "C++" {
         include!("src/native/engine.h");
         type Session;
@@ -55,6 +59,7 @@ pub mod ffi {
             port: u16,
             bootstrap: &str,
             isolated: bool,
+            ipv6_only: bool,
         ) -> Result<UniquePtr<Session>>;
         fn inspect_magnet(uri: &str) -> Result<String>;
         fn inspect_torrent(data: &[u8]) -> Result<String>;
@@ -74,6 +79,9 @@ pub mod ffi {
         fn checkpoint(self: Pin<&mut Session>) -> Result<()>;
         fn shutdown(self: Pin<&mut Session>) -> Result<()>;
         fn info_bytes(self: &Session, id: &str) -> Result<Vec<u8>>;
+        fn peer_discover(self: Pin<&mut Session>, target: &[u8], port: u16) -> Result<()>;
+        fn peer_hints(self: Pin<&mut Session>) -> Result<Vec<NativePeerHints>>;
+        fn is_closed(self: &Session) -> bool;
         fn dht_ready(self: &Session) -> bool;
         fn dht_start(self: Pin<&mut Session>, request: &NativeDhtRequest) -> Result<()>;
         fn dht_poll(self: Pin<&mut Session>) -> Result<Vec<NativeDhtEvent>>;

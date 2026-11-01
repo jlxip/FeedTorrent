@@ -1,5 +1,5 @@
 use super::{ffi, LibtorrentBackend};
-use feedtorrent_core::bep44::*;
+use feedtorrent_bep::bep44::*;
 use std::{
     collections::{BTreeMap, HashMap},
     time::Instant,
