@@ -1,4 +1,5 @@
 //! Test-only JSON-lines host. Not part of the FeedTorrent executable.
+use feedtorrent_core::bep46::{self, PointerChange, Resolution, TorrentPointer};
 use feedtorrent_core::{bep44::*, AddTransfer, TorrentBackend, TorrentSource};
 use feedtorrent_libtorrent::LibtorrentBackend;
 use serde_json::{json, Value};
@@ -44,6 +45,17 @@ fn record(q: &Value) -> Result<MutableRecord> {
             .map_err(|_| "Invalid signature size")?,
     )?)
 }
+fn pointer_json(p: &TorrentPointer) -> Value {
+    let mut out = record_json(p.record());
+    out["infohash"] = json!(hex(&p.infohash()));
+    out["magnet"] = json!(bep46::format_magnet(p.key()));
+    out
+}
+fn feed_key(q: &Value) -> Result<MutableKey> {
+    Ok(bep46::parse_magnet(
+        q["magnet"].as_str().ok_or("Missing feed magnet")?,
+    )?)
+}
 fn run(b: &mut LibtorrentBackend, q: &Value) -> Result<Value> {
     match q["op"].as_str().unwrap_or("") {
         "info" => {
@@ -64,8 +76,74 @@ fn run(b: &mut LibtorrentBackend, q: &Value) -> Result<Value> {
             )?))
         }
         "verify" => Ok(record_json(&record(q)?)),
+        "parse_feed" => {
+            let key = feed_key(q)?;
+            Ok(
+                json!({"magnet":bep46::format_magnet(&key),"key":hex(&key.public_key()),"salt":hex(key.salt()),"target":hex(&key.target())}),
+            )
+        }
+        "sign_pointer" => {
+            let seed = bytes(q, "seed")?
+                .try_into()
+                .map_err(|_| "Invalid seed size")?;
+            let ih = bytes(q, "infohash")?
+                .try_into()
+                .map_err(|_| "Invalid infohash size")?;
+            Ok(pointer_json(&TorrentPointer::sign(
+                &Bep44Signer::from_seed(&seed),
+                ih,
+                sequence(q)?,
+                bytes(q, "salt")?,
+            )?))
+        }
+        "resolve_pointer" => {
+            let key = feed_key(q)?;
+            let previous = if q["previous"].is_object() {
+                Some(TorrentPointer::from_record(&key, record(&q["previous"])?)?)
+            } else {
+                None
+            };
+            let item = if q["item"].is_null() {
+                None
+            } else {
+                Some(record(&q["item"])?)
+            };
+            match bep46::resolve(&key, previous.as_ref(), Ok(DhtOutcome::Mutable(item)))? {
+                Resolution::NotFound => Ok(json!({"pointer":null,"change":"not_found"})),
+                Resolution::Found { pointer, change } => {
+                    let (kind, changed) = match change {
+                        PointerChange::Initial => ("initial", true),
+                        PointerChange::Unchanged => ("unchanged", false),
+                        PointerChange::Advanced { infohash_changed } => {
+                            ("advanced", infohash_changed)
+                        }
+                    };
+                    Ok(
+                        json!({"pointer":pointer_json(&pointer),"change":kind,"infohash_changed":changed}),
+                    )
+                }
+            }
+        }
+        "pointer_receipt" => {
+            let pointer = TorrentPointer::from_record(&feed_key(q)?, record(q)?)?;
+            let target = bytes(q, "target")?
+                .try_into()
+                .map_err(|_| "Invalid target size")?;
+            let count = u32::try_from(q["acknowledged_nodes"].as_u64().ok_or("Missing count")?)?;
+            Ok(json!(bep46::publication_result(
+                &pointer,
+                Ok(DhtOutcome::Stored {
+                    target,
+                    acknowledged_nodes: count
+                })
+            )?))
+        }
         "start" => {
             let request = match q["kind"].as_str().ok_or("Missing kind")? {
+                "get_pointer" => bep46::lookup(&feed_key(q)?),
+                "put_pointer" => {
+                    TorrentPointer::from_record(&feed_key(q)?, record(q)?)?.publication()
+                }
                 "get_immutable" => DhtRequest::GetImmutable(
                     bytes(q, "target")?
                         .try_into()
@@ -99,9 +177,13 @@ fn run(b: &mut LibtorrentBackend, q: &Value) -> Result<Value> {
             b.shutdown()?;
             Ok(json!(true))
         }
-        "add" => {
+        "add" | "add_magnet" => {
             let data = bytes(q, "torrent")?;
-            let source = TorrentSource::Torrent(&data);
+            let source = if q["op"] == "add_magnet" {
+                TorrentSource::Magnet(q["uri"].as_str().ok_or("Missing magnet")?)
+            } else {
+                TorrentSource::Torrent(&data)
+            };
             let id = b.inspect(source)?;
             b.add(AddTransfer {
                 id: &id,

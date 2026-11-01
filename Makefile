@@ -65,6 +65,7 @@ test: build test-deps
 	cd "$(ROOT)" && cargo test --locked --workspace
 	cd "$(ROOT)" && node dev/tests/core-consumer.mjs
 	cd "$(ROOT)" && cargo build --locked --release -p feedtorrent-libtorrent --example bep44-peer
+	# Shared isolated DHT harness covers BEP 44 and BEP 46.
 	cd "$(ROOT)" && node dev/tests/bep44.mjs
 	cd "$(ROOT)" && node dev/tests/network.mjs
 	cd "$(ROOT)" && node dev/tests/edge-cases.mjs

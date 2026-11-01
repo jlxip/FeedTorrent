@@ -20,19 +20,25 @@ feedtorrent-core = { path = ${JSON.stringify(join(repo, "core"))} }
 `);
   await writeFile(join(root, "src/main.rs"), `use feedtorrent_core::{normalize_magnet_input, BackendSnapshot, TorrentBackend};
 use feedtorrent_core::bep44::{Bep44Signer,BencodedValue,MutableRecord};
+use feedtorrent_core::bep46::{TorrentPointer,parse_magnet,format_magnet,resolve,Resolution};
 fn main() {
   let host_backend: Option<&dyn TorrentBackend> = None;
   assert!(host_backend.is_none());
   let signer=Bep44Signer::from_seed(&[7;32]);
   let record=signer.sign(BencodedValue::bytestring(b"external consumer").unwrap(),1,vec![]).unwrap();
   MutableRecord::verify(record.key().clone(),record.sequence(),record.value().clone(),record.signature()).unwrap();
+  let pointer=TorrentPointer::sign(&signer,[42;20],1,vec![0,255]).unwrap();
+  let key=parse_magnet(&format_magnet(pointer.key())).unwrap();
+  let Resolution::Found { pointer:current,.. }=resolve(&key,None,Ok(feedtorrent_core::bep44::DhtOutcome::Mutable(Some(pointer.record().clone())))).unwrap() else {panic!()};
+  assert_eq!(current.infohash(),[42;20]);
+  assert_eq!(current.publication().target(),key.target());
   assert!(BackendSnapshot::default().transfers.is_empty());
   assert_eq!(normalize_magnet_input(" 56F31E2D486209003454E245D11561CD252BE30F ").unwrap(), "magnet:?xt=urn:btih:56f31e2d486209003454e245d11561cd252be30f");
 }
 `);
   const options = { cwd: root, encoding: "utf8", env: { ...process.env, CARGO_TARGET_DIR: join(root, "target") } };
   execFileSync("cargo", ["run", "--offline", "--quiet"], options);
-  report.checks.push("standalone external Rust consumer executes core validation and imports backend contract");
+  report.checks.push("standalone external Rust consumer signs/verifies BEP44 and publishes/resolves BEP46 through backend contracts");
   const graph = JSON.parse(execFileSync("cargo", ["metadata", "--offline", "--format-version", "1"], options));
   const packages=graph.packages.map((p)=>p.name);
   for(const forbidden of ["feedtorrent","feedtorrent-libtorrent","cxx","cxx-build","axum","tokio"]) assert(!packages.includes(forbidden),forbidden);

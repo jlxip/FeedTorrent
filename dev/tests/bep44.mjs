@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { runBep46 } from "./bep46.mjs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
@@ -113,6 +114,7 @@ try {
   reader=await reference();const t=reader.client.add(Buffer.from(ref.bytes),{path:join(root,"reverse"),announce:[]});await new Promise(r=>t.once("infoHash",r));t.addPeer("127.0.0.1:"+(await client.call("info")).port);await wait(()=>t.done,"independent reverse transfer while DHT used");
   assert.deepEqual(await readFile(join(root,"reverse",ref.torrent.files[0].path)),ref.originals[0]);
   pass("same libtorrent session downloads and serves exact torrent content alongside BEP44 operations");
+  await runBep46({client,routing,root,put,freshGet,pass});
 } catch(error){report.errors.push(error.stack);console.error(error);process.exitCode=1}
 finally {
   for(const peer of peers.reverse())try{await peer.stop()}catch(e){report.errors.push(e.stack);process.exitCode=1}
