@@ -1,0 +1,3 @@
+[submodule "libtorrent"]
+	path = backends/libtorrent/vendor/libtorrent
+	url = https://github.com/arvidn/libtorrent.git

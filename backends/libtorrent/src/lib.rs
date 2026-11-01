@@ -1,13 +1,21 @@
 //! Native libtorrent adapter. CXX types remain private to this crate.
 mod bridge;
+mod dht;
 use bridge::ffi;
 use feedtorrent_core::{
     AddTransfer, BackendError, BackendFile, BackendSnapshot, BackendTransfer, Result,
     TorrentBackend, TorrentSource,
 };
 
+/// Native transfer and DHT backend.
+///
+/// libtorrent retains its wire decoder limits (10 levels and 500 tokens for the
+/// complete KRPC packet). Highly nested/token-dense values accepted by the core
+/// may therefore fail to propagate. Publication acknowledgements report only
+/// what this operation observed; they do not promise durable availability.
 pub struct LibtorrentBackend {
     session: cxx::UniquePtr<ffi::Session>,
+    dht: dht::DhtState,
 }
 fn error(e: impl std::fmt::Display) -> BackendError {
     BackendError::new(e.to_string())
@@ -22,6 +30,7 @@ impl LibtorrentBackend {
     pub fn new(state_dir: &str, port: u16, bootstrap: &str, isolated: bool) -> Result<Self> {
         Ok(Self {
             session: ffi::new_session(state_dir, port, bootstrap, isolated).map_err(error)?,
+            dht: dht::DhtState::default(),
         })
     }
 }
@@ -93,6 +102,7 @@ impl TorrentBackend for LibtorrentBackend {
         self.session.pin_mut().checkpoint().map_err(error)
     }
     fn shutdown(&mut self) -> Result<()> {
+        self.close_dht();
         self.session.pin_mut().shutdown().map_err(error)
     }
 }

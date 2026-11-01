@@ -10,7 +10,7 @@ await mkdir(notices, { recursive: true });
 for (const name of ["BASECOAT-LICENSE.md", "LUCIDE-LICENSE"])
   await copyFile(join(root, "web/vendor", name), join(notices, name));
 await copyFile(
-  join(root, ".tools/libtorrent-src/LICENSE"),
+  join(root, "backends/libtorrent/vendor/libtorrent/LICENSE"),
   join(notices, "LIBTORRENT-LICENSE"),
 );
 await copyFile(

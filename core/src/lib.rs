@@ -3,3 +3,5 @@ mod backend;
 mod magnet;
 pub use backend::*;
 pub use magnet::{normalize_magnet_input, valid_id};
+
+pub mod bep44;

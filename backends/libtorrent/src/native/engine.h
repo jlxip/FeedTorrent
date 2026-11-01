@@ -3,6 +3,8 @@
 #include <memory>
 namespace ft {
 struct NativeSnapshot;
+struct NativeDhtRequest;
+struct NativeDhtEvent;
 class Session {
 public:
   Session(rust::Str state, std::uint16_t port, rust::Str bootstrap,
@@ -16,6 +18,10 @@ public:
   NativeSnapshot snapshot();
   void checkpoint();
   void shutdown();
+  bool dht_ready() const;
+  void dht_start(NativeDhtRequest const &request);
+  rust::Vec<NativeDhtEvent> dht_poll();
+  void dht_release(std::uint64_t id);
 
 private:
   struct Impl;

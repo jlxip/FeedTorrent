@@ -1,11 +1,17 @@
 #include "src/native/engine.h"
 #include "feedtorrent-libtorrent/src/bridge.rs.h"
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <libtorrent/alert_types.hpp>
+#include <libtorrent/bdecode.hpp>
+#include <libtorrent/bencode.hpp>
+#include <libtorrent/entry.hpp>
 #include <libtorrent/extensions/ut_metadata.hpp>
 #include <libtorrent/extensions/ut_pex.hpp>
+#include <libtorrent/hasher.hpp>
 #include <libtorrent/hex.hpp>
 #include <libtorrent/load_torrent.hpp>
 #include <libtorrent/magnet_uri.hpp>
@@ -96,6 +102,37 @@ static void write(fs::path const &p, std::vector<char> const &data) {
   }
   fs::rename(tmp, p);
 }
+// A native lookup has no caller userdata. Keep its key reserved until its
+// terminal alert is consumed, including after a host-side timeout.
+struct DhtSlot {
+  std::uint64_t id;
+  std::uint8_t kind;
+  std::shared_ptr<std::atomic<bool>> conflict;
+};
+static std::string dht_key(lt::sha1_hash const &hash) {
+  return hash.to_string();
+}
+static std::string dht_key(std::array<char, 32> const &pk,
+                           std::string const &salt) {
+  lt::hasher h(pk.data(), 32);
+  h.update(salt.data(), int(salt.size()));
+  return h.final().to_string();
+}
+static std::vector<char> encoded(lt::entry const &value) {
+  std::vector<char> out;
+  lt::bencode(std::back_inserter(out), value);
+  return out;
+}
+template <typename T> static rust::Vec<std::uint8_t> binary(T const &bytes) {
+  rust::Vec<std::uint8_t> out;
+  for (auto byte : bytes)
+    out.push_back(std::uint8_t(byte));
+  return out;
+}
+static void item_event(NativeDhtEvent &event, lt::entry const &value) {
+  event.has_value = true;
+  event.value = binary(encoded(value));
+}
 struct Session::Impl {
   fs::path dir;
   std::unique_ptr<lt::session> session;
@@ -106,11 +143,60 @@ struct Session::Impl {
   int nodes = 0;
   int node_metric = -1;
   bool stopped = false;
+  bool dht_alerts = false;
+  std::map<std::string, DhtSlot> dht_slots;
+  std::map<std::uint64_t, NativeDhtEvent> dht_events;
   lt::torrent_handle handle(rust::Str id) { return handles.at(str(id)); }
   void alerts() {
     std::vector<lt::alert *> alerts;
     session->pop_alerts(&alerts);
     for (auto *a : alerts) {
+      if (auto *t = lt::alert_cast<lt::dht_immutable_item_alert>(a)) {
+        auto slot = dht_slots.find(dht_key(t->target));
+        if (slot != dht_slots.end() && slot->second.kind == 0) {
+          auto &event = dht_events[slot->second.id];
+          event.id = slot->second.id;
+          event.terminal = true;
+          if (t->item.type() != lt::entry::undefined_t)
+            item_event(event, t->item);
+        }
+      }
+      if (auto *t = lt::alert_cast<lt::dht_mutable_item_alert>(a)) {
+        auto slot = dht_slots.find(dht_key(t->key, t->salt));
+        if (slot != dht_slots.end() && slot->second.kind == 1) {
+          auto &event = dht_events[slot->second.id];
+          event.id = slot->second.id;
+          event.terminal = event.terminal || t->authoritative;
+          if (t->item.type() != lt::entry::undefined_t) {
+            if (!event.has_value || t->seq > event.sequence) {
+              item_event(event, t->item);
+              event.key = binary(t->key);
+              event.signature = binary(t->signature);
+              event.salt = binary(t->salt);
+              event.sequence = t->seq;
+            } else if (t->seq == event.sequence &&
+                       encoded(t->item) !=
+                           std::vector<char>(event.value.begin(),
+                                             event.value.end()))
+              event.conflict = true;
+          }
+        }
+      }
+      if (auto *t = lt::alert_cast<lt::dht_put_alert>(a)) {
+        auto key = t->public_key != std::array<char, 32>{}
+                       ? dht_key(t->public_key, t->salt)
+                       : dht_key(t->target);
+        auto slot = dht_slots.find(key);
+        if (slot != dht_slots.end() && slot->second.kind >= 2) {
+          auto &event = dht_events[slot->second.id];
+          event.id = slot->second.id;
+          event.terminal = true;
+          event.acknowledged_nodes = std::uint32_t(std::max(t->num_success, 0));
+          event.conflict =
+              slot->second.conflict && slot->second.conflict->load();
+        }
+      }
+
       if (auto *t = lt::alert_cast<lt::metadata_received_alert>(a)) {
         auto id = hash(t->handle.info_hashes());
         try {
@@ -213,6 +299,8 @@ Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
     s.set_bool(lt::settings_pack::dht_restrict_search_ips, false);
     s.set_bool(lt::settings_pack::dht_enforce_node_id, false);
     s.set_bool(lt::settings_pack::dht_ignore_dark_internet, false);
+    // Many independent test nodes share one loopback IP.
+    s.set_int(lt::settings_pack::dht_block_ratelimit, 1000);
   }
   impl->session = std::make_unique<lt::session>(std::move(params));
   impl->node_metric = lt::find_metric_idx("dht.dht_nodes");
@@ -357,6 +445,103 @@ NativeSnapshot Session::snapshot() {
     out.transfers.push_back(std::move(t));
   }
   return out;
+}
+bool Session::dht_ready() const {
+  return !impl->stopped && impl->session->is_dht_running();
+}
+void Session::dht_start(NativeDhtRequest const &r) {
+  if (!dht_ready())
+    throw std::runtime_error("DHT not running");
+  if (r.target.size() != 20 || r.kind > 3)
+    throw std::runtime_error("Invalid DHT request");
+  std::string key(reinterpret_cast<char const *>(r.target.data()),
+                  r.target.size());
+  if (impl->dht_slots.count(key))
+    throw std::runtime_error("DHT key busy");
+  if (!impl->dht_alerts) {
+    auto mask =
+        impl->session->get_settings().get_int(lt::settings_pack::alert_mask);
+    lt::settings_pack settings;
+    settings.set_int(
+        lt::settings_pack::alert_mask,
+        mask | int(static_cast<std::uint32_t>(lt::alert_category::dht)));
+    impl->session->apply_settings(settings);
+    impl->dht_alerts = true;
+  }
+  lt::sha1_hash target(key.data());
+  std::array<char, 32> pk{};
+  std::string salt(reinterpret_cast<char const *>(r.salt.data()),
+                   r.salt.size());
+  if (r.kind == 1 || r.kind == 3) {
+    if (r.key.size() != 32 || r.salt.size() > 64)
+      throw std::runtime_error("Invalid mutable key");
+    std::copy(r.key.begin(), r.key.end(), pk.begin());
+    if (dht_key(pk, salt) != key)
+      throw std::runtime_error("DHT identity mismatch");
+  }
+  lt::entry value;
+  if (r.kind >= 2) {
+    if (r.value.empty() || r.value.size() > 1000)
+      throw std::runtime_error("Invalid DHT value size");
+    lt::error_code ec;
+    auto node = lt::bdecode({reinterpret_cast<char const *>(r.value.data()),
+                             static_cast<std::ptrdiff_t>(r.value.size())},
+                            ec, nullptr, 65, 2048);
+    if (ec)
+      throw std::runtime_error(ec.message());
+    value = lt::entry(node);
+    if (encoded(value) != std::vector<char>(r.value.begin(), r.value.end()))
+      throw std::runtime_error("Noncanonical DHT value");
+    if (r.kind == 2 && lt::hasher(encoded(value)).final() != target)
+      throw std::runtime_error("DHT hash mismatch");
+  }
+  if (r.kind == 3 && (r.signature.size() != 64 || r.sequence < 0))
+    throw std::runtime_error("Invalid signed DHT record");
+  auto conflict = std::make_shared<std::atomic<bool>>(false);
+  impl->dht_slots.emplace(key, DhtSlot{r.id, r.kind, conflict});
+  if (r.kind == 0)
+    impl->session->dht_get_item(target);
+  else if (r.kind == 1)
+    impl->session->dht_get_item(pk, salt);
+  else if (r.kind == 2)
+    impl->session->dht_put_item(value);
+  else {
+    std::array<char, 64> sig{};
+    std::copy(r.signature.begin(), r.signature.end(), sig.begin());
+    auto sequence = r.sequence;
+    auto bytes = encoded(value);
+    impl->session->dht_put_item(
+        pk,
+        [value, sig, sequence, bytes,
+         conflict](lt::entry &current, std::array<char, 64> &signature,
+                   std::int64_t &seq, std::string const &) {
+          if (current.type() != lt::entry::undefined_t &&
+              (seq > sequence ||
+               (seq == sequence && encoded(current) != bytes)))
+            conflict->store(true);
+          current = value;
+          signature = sig;
+          seq = sequence;
+        },
+        salt);
+  }
+}
+rust::Vec<NativeDhtEvent> Session::dht_poll() {
+  impl->alerts();
+  rust::Vec<NativeDhtEvent> out;
+  for (auto &item : impl->dht_events)
+    out.push_back(std::move(item.second));
+  impl->dht_events.clear();
+  return out;
+}
+void Session::dht_release(std::uint64_t id) {
+  for (auto i = impl->dht_slots.begin(); i != impl->dht_slots.end(); ++i) {
+    if (i->second.id == id) {
+      impl->dht_slots.erase(i);
+      break;
+    }
+  }
+  impl->dht_events.erase(id);
 }
 void Session::checkpoint() {
   for (auto const &[id, h] : impl->handles) {

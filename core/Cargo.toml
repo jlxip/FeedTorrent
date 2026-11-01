@@ -2,3 +2,8 @@
 name = "feedtorrent-core"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+bendy = "=0.6.1"
+sha1 = { version = "=0.11.0", default-features = false }
+ed25519-dalek = "=3.0.0"

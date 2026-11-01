@@ -3,6 +3,7 @@ SHELL := /bin/sh
 .DEFAULT_GOAL := build
 NATIVE_JOBS ?= 6
 ARGS ?=
+LIBTORRENT_SOURCE := $(ROOT)/backends/libtorrent/vendor/libtorrent
 LIBTORRENT_COMMIT := 6da363d2994f17c0b3c0450d124cf73a31a73847
 NPM_READY := $(ROOT)/dev/node_modules/.feedtorrent-ready
 SOURCE_READY := $(ROOT)/.tools/libtorrent-source.ready
@@ -18,21 +19,21 @@ $(NPM_READY): $(ROOT)/dev/package.json $(ROOT)/dev/package-lock.json
 	cd "$(ROOT)/dev" && npm ci --ignore-scripts
 	touch "$@"
 
-$(SOURCE_READY): $(ROOT)/Makefile
+$(SOURCE_READY): $(ROOT)/Makefile $(ROOT)/.gitmodules
 	mkdir -p "$(ROOT)/.tools"
-	@if [ ! -d "$(ROOT)/.tools/libtorrent-src/.git" ]; then git clone --branch v2.1.2 --depth 1 https://github.com/arvidn/libtorrent.git "$(ROOT)/.tools/libtorrent-src"; fi
-	@test "$$(git -C "$(ROOT)/.tools/libtorrent-src" rev-parse HEAD)" = "$(LIBTORRENT_COMMIT)" || { echo 'Unexpected libtorrent revision'; exit 1; }
-	git -C "$(ROOT)/.tools/libtorrent-src" diff --exit-code HEAD
-	git -C "$(ROOT)/.tools/libtorrent-src" submodule update --init deps/try_signal
+	@if [ ! -f "$(LIBTORRENT_SOURCE)/.git" ]; then git -C "$(ROOT)" submodule update --init backends/libtorrent/vendor/libtorrent; fi
+	@test "$$(git -C "$(LIBTORRENT_SOURCE)" rev-parse HEAD)" = "$(LIBTORRENT_COMMIT)" || { echo 'Unexpected libtorrent revision'; exit 1; }
+	git -C "$(LIBTORRENT_SOURCE)" diff --exit-code HEAD
+	git -C "$(LIBTORRENT_SOURCE)" submodule update --init deps/try_signal
 	touch "$@"
 
 verify-source: $(SOURCE_READY)
-	@test "$$(git -C "$(ROOT)/.tools/libtorrent-src" rev-parse HEAD)" = "$(LIBTORRENT_COMMIT)" || { echo 'Unexpected libtorrent revision'; exit 1; }
-	git -C "$(ROOT)/.tools/libtorrent-src" diff --exit-code HEAD
+	@test "$$(git -C "$(LIBTORRENT_SOURCE)" rev-parse HEAD)" = "$(LIBTORRENT_COMMIT)" || { echo 'Unexpected libtorrent revision'; exit 1; }
+	git -C "$(LIBTORRENT_SOURCE)" diff --exit-code HEAD
 
 native-deps: verify-source $(NATIVE_READY)
 $(NATIVE_READY): $(SOURCE_READY) $(ROOT)/Makefile
-	cmake -S "$(ROOT)/.tools/libtorrent-src" -B "$(ROOT)/.tools/libtorrent-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DCMAKE_INSTALL_PREFIX="$(ROOT)/.tools/native" -DBUILD_SHARED_LIBS=OFF -Dwebtorrent=OFF -Di2p=OFF -Dbuild_tests=OFF -Dbuild_examples=OFF -Dbuild_tools=OFF -Dpython-bindings=OFF -DOPENSSL_ROOT_DIR="$$(brew --prefix openssl@3)" -DBoost_ROOT="$$(brew --prefix boost)"
+	cmake -S "$(LIBTORRENT_SOURCE)" -B "$(ROOT)/.tools/libtorrent-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DCMAKE_INSTALL_PREFIX="$(ROOT)/.tools/native" -DBUILD_SHARED_LIBS=OFF -Dwebtorrent=OFF -Di2p=OFF -Dbuild_tests=OFF -Dbuild_examples=OFF -Dbuild_tools=OFF -Dpython-bindings=OFF -DOPENSSL_ROOT_DIR="$$(brew --prefix openssl@3)" -DBoost_ROOT="$$(brew --prefix boost)"
 	cmake --build "$(ROOT)/.tools/libtorrent-build" -j $(NATIVE_JOBS)
 	cmake --install "$(ROOT)/.tools/libtorrent-build"
 	touch "$@"
@@ -63,6 +64,8 @@ test-deps: $(NPM_READY)
 test: build test-deps
 	cd "$(ROOT)" && cargo test --locked --workspace
 	cd "$(ROOT)" && node dev/tests/core-consumer.mjs
+	cd "$(ROOT)" && cargo build --locked --release -p feedtorrent-libtorrent --example bep44-peer
+	cd "$(ROOT)" && node dev/tests/bep44.mjs
 	cd "$(ROOT)" && node dev/tests/network.mjs
 	cd "$(ROOT)" && node dev/tests/edge-cases.mjs
 	cd "$(ROOT)" && node dev/tests/open-cwd.mjs

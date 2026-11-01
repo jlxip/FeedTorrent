@@ -19,9 +19,13 @@ edition = "2021"
 feedtorrent-core = { path = ${JSON.stringify(join(repo, "core"))} }
 `);
   await writeFile(join(root, "src/main.rs"), `use feedtorrent_core::{normalize_magnet_input, BackendSnapshot, TorrentBackend};
+use feedtorrent_core::bep44::{Bep44Signer,BencodedValue,MutableRecord};
 fn main() {
   let host_backend: Option<&dyn TorrentBackend> = None;
   assert!(host_backend.is_none());
+  let signer=Bep44Signer::from_seed(&[7;32]);
+  let record=signer.sign(BencodedValue::bytestring(b"external consumer").unwrap(),1,vec![]).unwrap();
+  MutableRecord::verify(record.key().clone(),record.sequence(),record.value().clone(),record.signature()).unwrap();
   assert!(BackendSnapshot::default().transfers.is_empty());
   assert_eq!(normalize_magnet_input(" 56F31E2D486209003454E245D11561CD252BE30F ").unwrap(), "magnet:?xt=urn:btih:56f31e2d486209003454e245d11561cd252be30f");
 }
@@ -30,8 +34,13 @@ fn main() {
   execFileSync("cargo", ["run", "--offline", "--quiet"], options);
   report.checks.push("standalone external Rust consumer executes core validation and imports backend contract");
   const graph = JSON.parse(execFileSync("cargo", ["metadata", "--offline", "--format-version", "1"], options));
-  assert.deepEqual(graph.packages.map((p) => p.name).sort(), ["feedtorrent-core", "feedtorrent-core-consumer"]);
-  report.checks.push("core has no native, web or third-party dependencies");
+  const packages=graph.packages.map((p)=>p.name);
+  for(const forbidden of ["feedtorrent","feedtorrent-libtorrent","cxx","cxx-build","axum","tokio"]) assert(!packages.includes(forbidden),forbidden);
+  for(const required of ["feedtorrent-core","bendy","sha1","ed25519-dalek"]) assert(packages.includes(required),required);
+  const dalek=graph.resolve.nodes.find(n=>n.id.includes("ed25519-dalek@"));
+  assert(dalek.features.includes("zeroize"));
+  for(const forbidden of ["rand_core","hazmat","legacy_compatibility"]) assert(!dalek.features.includes(forbidden),forbidden);
+  report.checks.push("core permits Rust crypto dependencies without native or application dependencies");
   execFileSync("cargo", ["check", "--locked", "--offline", "-p", "feedtorrent-core", "--target", "wasm32-unknown-unknown"], { ...options, cwd: repo });
   report.checks.push("core builds for wasm32-unknown-unknown independently of CXX and browser assets");
   report.status = "pass";
