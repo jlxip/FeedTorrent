@@ -1,0 +1,4 @@
+[package]
+name = "feedtorrent-core"
+version.workspace = true
+edition.workspace = true

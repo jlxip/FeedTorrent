@@ -1,0 +1,11 @@
+[package]
+name = "feedtorrent-libtorrent"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+[dependencies]
+feedtorrent-core = { path = "../../core" }
+cxx = "1"
+[build-dependencies]
+cxx-build = "1"
+pkg-config = "0.3"

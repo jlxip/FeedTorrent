@@ -1,0 +1,11 @@
+.tools/
+/dev/node_modules
+target/
+dist/
+test-results/
+playwright-report/
+.runtime/
+/downloads/
+
+/web/dist/
+.DS_Store

@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'"
+    />
+    <title>FeedTorrent</title>
+    <link rel="stylesheet" href="./basecoat.css" />
+    <link rel="stylesheet" href="./app.css" />
+    <script src="./theme.js"></script>
+    <script src="./lucide.js" defer></script>
+    <script src="./main.js" type="module"></script>
+  </head>
+  <body>
+    <header>
+      <h1>FeedTorrent</h1>
+      <button id="open-button" class="btn" disabled>Open</button>
+      <button id="settings-open" class="btn" disabled>Settings</button>
+    </header>
+    <main>
+      <p id="notice" role="alert" hidden></p>
+      <p id="network-warning" class="transfer-error" role="status" hidden></p>
+      <div class="list-heading">
+        <h2>Transfers</h2>
+        <span id="count"></span>
+      </div>
+      <div id="empty">No transfers</div>
+      <section id="transfers" aria-label="Transfers"></section>
+      <section id="file-section" hidden>
+        <div class="list-heading">
+          <h2 id="file-heading">Files</h2>
+          <button id="show-folder" class="quiet">Show folder</button>
+        </div>
+        <p id="save-path" class="muted"></p>
+        <div id="files"></div>
+      </section>
+    </main>
+    <footer>
+      <span id="status" role="status" aria-live="polite">Starting…</span
+      ><span id="network">Connecting…</span>
+    </footer>
+    <dialog id="open-dialog" aria-labelledby="open-title">
+      <div class="dialog-title">
+        <h2 id="open-title">Open</h2>
+        <button class="quiet" data-close type="button">Close</button>
+      </div>
+      <div class="tabs">
+        <div
+          role="tablist"
+          aria-label="Torrent source"
+          aria-orientation="horizontal"
+        >
+          <button
+            id="magnet-tab"
+            role="tab"
+            type="button"
+            aria-selected="true"
+            aria-controls="magnet-panel"
+            tabindex="0"
+          >
+            Magnet
+          </button>
+          <button
+            id="torrent-tab"
+            role="tab"
+            type="button"
+            aria-selected="false"
+            aria-controls="torrent-panel"
+            tabindex="-1"
+          >
+            Torrent file
+          </button>
+        </div>
+        <section id="magnet-panel" role="tabpanel" aria-labelledby="magnet-tab">
+          <form id="magnet-form">
+            <label
+              >Magnet or infohash<input
+                id="magnet"
+                placeholder="magnet:?xt=urn:btih:…"
+                required
+                autocomplete="off"
+                spellcheck="false"
+            /></label>
+            <p id="magnet-error" class="transfer-error" role="alert"></p>
+            <div class="form-actions">
+              <button class="btn" type="submit" disabled>Open</button>
+            </div>
+          </form>
+        </section>
+        <section
+          id="torrent-panel"
+          role="tabpanel"
+          aria-labelledby="torrent-tab"
+          hidden
+        >
+          <form id="torrent-form">
+            <div class="file-picker">
+              <input
+                id="torrent-file"
+                type="file"
+                accept=".torrent,application/x-bittorrent"
+                aria-label="Torrent file"
+                hidden
+              />
+              <button id="choose-torrent" class="btn" type="button">
+                Choose file
+              </button>
+              <span id="torrent-name" class="muted" aria-live="polite"
+                >No file selected</span
+              >
+            </div>
+            <p id="torrent-error" class="transfer-error" role="alert"></p>
+            <div class="form-actions">
+              <button class="btn" type="submit" disabled>Open</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </dialog>
+    <dialog id="settings-dialog">
+      <div class="dialog-title">
+        <h2>Settings</h2>
+        <button class="quiet" data-close type="button">Close</button>
+      </div>
+      <form id="settings-form">
+        <div class="field">
+          <div class="field-label">
+            <label for="download-dir">Download folder</label>
+            <button type="button" class="field-help" data-help="download-dir-help" aria-label="About download folder" aria-describedby="download-dir-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
+            <span id="download-dir-help" class="field-tooltip" role="tooltip" hidden>Relative to server's working directory</span>
+          </div>
+          <input id="download-dir" required autocomplete="off" aria-describedby="download-dir-help" />
+        </div>
+        <div class="field">
+          <div class="field-label">
+            <label for="peer-port">Listening port</label>
+            <button type="button" class="field-help" data-help="peer-port-help" aria-label="About listening port" aria-describedby="peer-port-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
+            <span id="peer-port-help" class="field-tooltip" role="tooltip" hidden>Requires a server restart</span>
+          </div>
+          <input id="peer-port" type="number" min="0" max="65535" required aria-describedby="peer-port-help" />
+        </div>
+        <label class="checkbox-label"><input id="seed-by-default" type="checkbox" checked />Seed by default</label>
+        <p id="settings-error" class="transfer-error" role="alert"></p>
+        <div class="form-actions">
+          <button class="btn" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="remove-dialog">
+      <div class="dialog-title">
+        <h2>Remove transfer</h2>
+        <button class="quiet" data-close type="button">Close</button>
+      </div>
+      <form id="remove-form">
+        <p id="remove-name"></p>
+        <label class="check"
+          ><input id="delete-files" type="checkbox" />Delete downloaded
+          files</label
+        >
+        <div class="form-actions">
+          <button class="btn danger" type="submit">Remove</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

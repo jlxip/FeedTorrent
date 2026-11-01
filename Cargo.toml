@@ -1,0 +1,10 @@
+[workspace]
+members = ["core", "backends/libtorrent", "app"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0-dev"
+edition = "2021"
+
+[profile.release]
+lto = true
