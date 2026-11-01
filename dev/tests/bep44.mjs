@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { runBep46 } from "./bep46.mjs";
+import { runBep49 } from "./bep49.mjs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
@@ -49,6 +50,9 @@ try {
   for(const n of routing)n.addNode({host:"127.0.0.1",port});
   await wait(()=>routing.some(n=>n.nodes.toArray().some(p=>p.port===port)),"native storage routing advertisement");
   const client=await native("native-client",bootstrap);await ready(client);await wait(async()=>(await client.call("info")).nodes>0,"client bootstrap");
+  if(process.env.FEEDTORRENT_BEP_ONLY === "49") {
+    await runBep49({client,root,native,pass});
+  } else {
   const payload=Buffer.from([0,255,1,128,4]);const encoded=value(payload),target=digest(bencode.encode(payload));
   const stored=await client.perform({kind:"put_immutable",value:encoded});assert(stored.acknowledged_nodes>0);assert.equal(stored.target,hex(target));
   const independent=await freshGet(routing,target);assert.deepEqual(independent.v,payload);
@@ -115,6 +119,8 @@ try {
   assert.deepEqual(await readFile(join(root,"reverse",ref.torrent.files[0].path)),ref.originals[0]);
   pass("same libtorrent session downloads and serves exact torrent content alongside BEP44 operations");
   await runBep46({client,routing,root,put,freshGet,pass});
+  await runBep49({client,root,native,pass});
+  }
 } catch(error){report.errors.push(error.stack);console.error(error);process.exitCode=1}
 finally {
   for(const peer of peers.reverse())try{await peer.stop()}catch(e){report.errors.push(e.stack);process.exitCode=1}

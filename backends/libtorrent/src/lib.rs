@@ -107,5 +107,12 @@ impl TorrentBackend for LibtorrentBackend {
     }
 }
 
+impl feedtorrent_core::TorrentMetadataBackend for LibtorrentBackend {
+    fn info_bytes(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        let bytes = self.session.info_bytes(id).map_err(error)?;
+        Ok((!bytes.is_empty()).then_some(bytes))
+    }
+}
+
 #[cfg(test)]
 mod tests;

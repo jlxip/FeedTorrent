@@ -86,3 +86,9 @@ pub trait TorrentBackend {
     fn checkpoint(&mut self) -> Result<()>;
     fn shutdown(&mut self) -> Result<()>;
 }
+
+/// Read-only metadata capability. No network waits or reconstruction of info bytes.
+pub trait TorrentMetadataBackend {
+    /// None while metadata is pending; errors for unknown transfers/closed backend.
+    fn info_bytes(&self, id: &str) -> Result<Option<Vec<u8>>>;
+}

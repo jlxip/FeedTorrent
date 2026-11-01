@@ -446,6 +446,19 @@ NativeSnapshot Session::snapshot() {
   }
   return out;
 }
+rust::Vec<std::uint8_t> Session::info_bytes(rust::Str id) const {
+  if (impl->stopped) throw std::runtime_error("Backend closed");
+  auto handle = impl->handles.find(str(id));
+  if (handle == impl->handles.end()) throw std::runtime_error("Unknown transfer");
+  auto file = handle->second.torrent_file();
+  rust::Vec<std::uint8_t> out;
+  if (!file) return out;
+  auto info = file->info_section();
+  if (info.size() > 8 * 1024 * 1024) throw std::runtime_error("Torrent metadata exceeds 8 MiB");
+  out.reserve(info.size());
+  for (char byte : info) out.push_back(static_cast<std::uint8_t>(byte));
+  return out;
+}
 bool Session::dht_ready() const {
   return !impl->stopped && impl->session->is_dht_running();
 }

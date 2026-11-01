@@ -73,6 +73,7 @@ pub mod ffi {
         fn snapshot(self: Pin<&mut Session>) -> Result<NativeSnapshot>;
         fn checkpoint(self: Pin<&mut Session>) -> Result<()>;
         fn shutdown(self: Pin<&mut Session>) -> Result<()>;
+        fn info_bytes(self: &Session, id: &str) -> Result<Vec<u8>>;
         fn dht_ready(self: &Session) -> bool;
         fn dht_start(self: Pin<&mut Session>, request: &NativeDhtRequest) -> Result<()>;
         fn dht_poll(self: Pin<&mut Session>) -> Result<Vec<NativeDhtEvent>>;

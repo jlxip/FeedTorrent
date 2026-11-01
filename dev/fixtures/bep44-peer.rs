@@ -1,6 +1,10 @@
 //! Test-only JSON-lines host. Not part of the FeedTorrent executable.
 use feedtorrent_core::bep46::{self, PointerChange, Resolution, TorrentPointer};
-use feedtorrent_core::{bep44::*, AddTransfer, TorrentBackend, TorrentSource};
+use feedtorrent_core::{
+    bep44::*,
+    bep49::{self, BuildEntry, Feed, FeedBuilder, FeedFields, ItemContent, TorrentLink},
+    AddTransfer, TorrentBackend, TorrentMetadataBackend, TorrentSource,
+};
 use feedtorrent_libtorrent::LibtorrentBackend;
 use serde_json::{json, Value};
 use std::{
@@ -10,7 +14,7 @@ use std::{
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 fn unhex(s: &str) -> Result<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    if !s.is_ascii() || !s.len().is_multiple_of(2) {
         return Err("Odd hex".into());
     }
     (0..s.len())
@@ -56,8 +60,101 @@ fn feed_key(q: &Value) -> Result<MutableKey> {
         q["magnet"].as_str().ok_or("Missing feed magnet")?,
     )?)
 }
+fn catalog_json(feed: &Feed) -> Value {
+    json!({"infohash":hex(&feed.infohash()),"info":hex(feed.raw_info()),"name":feed.name(),"piece_length":feed.piece_length(),"total":feed.total_length(),"pieces":hex(feed.pieces()),"archive":feed.fields().archive,"source":feed.fields().source.as_ref().map(bep46::format_magnet),"archive_next":feed.fields().archive_next.as_ref().map(|l|l.uri()),"previous":feed.fields().previous.as_ref().map(|l|l.uri()),"entries":feed.entries().iter().map(|e|json!({"index":e.index(),"path":e.path(),"length":e.length(),"attr":hex(e.attributes()),"sha1":e.sha1().map(|h|hex(&h)),"kind":format!("{:?}",e.kind())})).collect::<Vec<_>>()})
+}
+fn bendy_value_bytes(bytes: &[u8]) -> feedtorrent_core::bep49::OuterValue<'static> {
+    feedtorrent_core::bep49::OuterValue::Bytes(std::borrow::Cow::Owned(bytes.to_vec()))
+}
+fn optional_link(q: &Value, field: &str) -> Result<Option<TorrentLink>> {
+    q[field]
+        .as_str()
+        .map(TorrentLink::parse)
+        .transpose()
+        .map_err(Into::into)
+}
 fn run(b: &mut LibtorrentBackend, q: &Value) -> Result<Value> {
     match q["op"].as_str().unwrap_or("") {
+        "metadata" => Ok(
+            json!({"info":b.info_bytes(q["transfer"].as_str().ok_or("Missing transfer")?)?.map(|data|hex(&data))}),
+        ),
+        "remove" => {
+            b.remove(q["transfer"].as_str().ok_or("Missing transfer")?)?;
+            Ok(json!(true))
+        }
+        "build_catalog" => {
+            let mut builder = FeedBuilder::new(q["name"].as_str().ok_or("Missing name")?);
+            builder.fields = FeedFields {
+                source: q["source"].as_str().map(bep46::parse_magnet).transpose()?,
+                archive_next: optional_link(q, "archive_next")?,
+                previous: optional_link(q, "previous")?,
+                archive: q["archive"].as_bool().unwrap_or(false),
+            };
+            if let Some(size) = q["piece_length"].as_u64() {
+                builder.piece_length = u32::try_from(size)?;
+            }
+            if let Some(uri) = q["announce"].as_str() {
+                builder.outer.insert(
+                    std::borrow::Cow::Borrowed(b"announce"),
+                    bendy_value_bytes(uri.as_bytes()),
+                );
+            }
+            let entries = q["entries"].as_array().ok_or("Missing entries")?;
+            let data = entries
+                .iter()
+                .map(|e| bytes(e, "data"))
+                .collect::<Result<Vec<_>>>()?;
+            for (i, e) in entries.iter().enumerate() {
+                let path = e["path"]
+                    .as_array()
+                    .ok_or("Missing path")?
+                    .iter()
+                    .map(|s| s.as_str().map(str::to_owned).ok_or("Invalid path"))
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let mut entry =
+                    BuildEntry::file(path, e["length"].as_u64().unwrap_or(data[i].len() as u64));
+                entry.attributes = bytes(e, "attr")?;
+                builder.entries.push(entry);
+            }
+            let built = builder.build(|i| Ok(std::io::Cursor::new(data[i].as_slice())))?;
+            let mut out = catalog_json(&built.feed);
+            out["metainfo"] = json!(hex(&built.metainfo));
+            Ok(out)
+        }
+        "inspect_catalog" => {
+            let info = bytes(q, "info")?;
+            let meta = bytes(q, "metainfo")?;
+            let feed = if q["info"].is_string() {
+                Feed::from_info(&info)?
+            } else {
+                Feed::from_metainfo(&meta)?
+            };
+            if q["expected"].is_string() {
+                feed.verify_infohash(
+                    bytes(q, "expected")?
+                        .try_into()
+                        .map_err(|_| "Invalid hash")?,
+                )?;
+            }
+            let mut out = catalog_json(&feed);
+            if let Some(uri) = q["resolved_source"].as_str() {
+                let key = bep46::parse_magnet(uri)?;
+                out["effective_source"] = json!(feed
+                    .fields()
+                    .effective_source(Some(&key))
+                    .map(bep46::format_magnet));
+            }
+            Ok(out)
+        }
+        "inspect_item" => {
+            let data = bytes(q, "data")?;
+            match bep49::inspect_item(&data) {
+                ItemContent::Opaque(raw) => Ok(json!({"kind":"opaque","bytes":hex(raw)})),
+                ItemContent::Torrent(t) => Ok(
+                    json!({"kind":"torrent","bytes":hex(t.metainfo()),"info":hex(t.info()),"infohash":hex(&t.infohash()),"private":t.is_private(),"feed":t.is_feed()}),
+                ),
+            }
+        }
         "info" => {
             let s = b.snapshot()?;
             Ok(

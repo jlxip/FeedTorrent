@@ -18,6 +18,7 @@ public:
   NativeSnapshot snapshot();
   void checkpoint();
   void shutdown();
+  rust::Vec<std::uint8_t> info_bytes(rust::Str id) const;
   bool dht_ready() const;
   void dht_start(NativeDhtRequest const &request);
   rust::Vec<NativeDhtEvent> dht_poll();

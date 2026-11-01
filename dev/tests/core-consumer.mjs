@@ -21,6 +21,7 @@ feedtorrent-core = { path = ${JSON.stringify(join(repo, "core"))} }
   await writeFile(join(root, "src/main.rs"), `use feedtorrent_core::{normalize_magnet_input, BackendSnapshot, TorrentBackend};
 use feedtorrent_core::bep44::{Bep44Signer,BencodedValue,MutableRecord};
 use feedtorrent_core::bep46::{TorrentPointer,parse_magnet,format_magnet,resolve,Resolution};
+use feedtorrent_core::bep49::{FeedBuilder,BuildEntry,Feed,inspect_item,ItemContent};
 fn main() {
   let host_backend: Option<&dyn TorrentBackend> = None;
   assert!(host_backend.is_none());
@@ -32,13 +33,22 @@ fn main() {
   let Resolution::Found { pointer:current,.. }=resolve(&key,None,Ok(feedtorrent_core::bep44::DhtOutcome::Mutable(Some(pointer.record().clone())))).unwrap() else {panic!()};
   assert_eq!(current.infohash(),[42;20]);
   assert_eq!(current.publication().target(),key.target());
+  let mut builder=FeedBuilder::new("external");
+  builder.entries.push(BuildEntry::file(vec!["note.txt".into()],5));
+  let built=builder.build(|_|Ok(std::io::Cursor::new(b"hello"))).unwrap();
+  let feed=Feed::from_metainfo(&built.metainfo).unwrap();
+  feed.verify_infohash(built.feed.infohash()).unwrap();
+  assert_eq!(feed.items().count(),1);
+  assert!(matches!(inspect_item(&built.metainfo),ItemContent::Torrent(t)if t.is_feed()));
+  let metadata_backend:Option<&dyn feedtorrent_core::TorrentMetadataBackend>=None;
+  assert!(metadata_backend.is_none());
   assert!(BackendSnapshot::default().transfers.is_empty());
   assert_eq!(normalize_magnet_input(" 56F31E2D486209003454E245D11561CD252BE30F ").unwrap(), "magnet:?xt=urn:btih:56f31e2d486209003454e245d11561cd252be30f");
 }
 `);
   const options = { cwd: root, encoding: "utf8", env: { ...process.env, CARGO_TARGET_DIR: join(root, "target") } };
   execFileSync("cargo", ["run", "--offline", "--quiet"], options);
-  report.checks.push("standalone external Rust consumer signs/verifies BEP44 and publishes/resolves BEP46 through backend contracts");
+  report.checks.push("standalone external Rust consumer signs/verifies BEP44, resolves BEP46 and creates/parses BEP49 through portable contracts");
   const graph = JSON.parse(execFileSync("cargo", ["metadata", "--offline", "--format-version", "1"], options));
   const packages=graph.packages.map((p)=>p.name);
   for(const forbidden of ["feedtorrent","feedtorrent-libtorrent","cxx","cxx-build","axum","tokio"]) assert(!packages.includes(forbidden),forbidden);
