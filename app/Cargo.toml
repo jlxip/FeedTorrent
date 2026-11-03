@@ -3,6 +3,8 @@ name = "feedtorrent"
 version.workspace = true
 edition.workspace = true
 [dependencies]
+feedtorrent-feeds = { path = "../feeds" }
+feedtorrent-pubsub-udp = { path = "../backends/pubsub-udp" }
 feedtorrent-bep = { path = "../bep" }
 feedtorrent-libtorrent = { path = "../backends/libtorrent" }
 anyhow = "1.0"

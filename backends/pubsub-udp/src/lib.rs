@@ -118,7 +118,18 @@ impl UdpPubSub {
         }
         match discovery.poll_peer_hints() {
             Ok(hints) => {
-                for hint in hints {
+                for mut hint in hints {
+                    // A Mainline announce can return our own socket. It is not a
+                    // remote participant and must not enter a self-ping loop.
+                    hint.peers.retain(|peer| {
+                        ![&self.v4, &self.v6].into_iter().flatten().any(|s| {
+                            s.local_addr().is_ok_and(|local| {
+                                local.port() == peer.port()
+                                    && (local.ip() == peer.ip()
+                                        || (local.ip().is_unspecified() && peer.ip().is_loopback()))
+                            })
+                        })
+                    });
                     self.protocol.discovered(hint, now);
                 }
             }

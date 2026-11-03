@@ -138,7 +138,7 @@ struct Session::Impl {
   std::unique_ptr<lt::session> session;
   std::map<std::string, lt::torrent_handle> handles;
   std::map<std::string, std::string> errors, warnings;
-  std::set<std::string> metadata_guard, pending;
+  std::set<std::string> metadata_guard, approval_guard, pending;
   std::string warning;
   int nodes = 0;
   int node_metric = -1;
@@ -218,7 +218,7 @@ struct Session::Impl {
             throw std::runtime_error("Missing metadata");
           validate(*ti);
           metadata_guard.erase(id);
-          t->handle.unset_flags(lt::torrent_flags::upload_mode);
+          if (!approval_guard.count(id)) t->handle.unset_flags(lt::torrent_flags::upload_mode);
         } catch (std::exception const &e) {
           errors[id] = e.what();
           t->handle.pause();
@@ -324,7 +324,7 @@ std::unique_ptr<Session> new_session(rust::Str d, std::uint16_t p, rust::Str b,
   return std::make_unique<Session>(d, p, b, i, v6);
 }
 void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
-                  bool magnet, rust::Str path, bool active, bool restore) {
+                  bool magnet, rust::Str path, bool active, bool restore, bool held) {
   std::string uri(reinterpret_cast<char const *>(bytes.data()), bytes.size());
   auto p = magnet ? magnet_params(uri) : torrent_params(bytes);
   auto key = str(id);
@@ -341,11 +341,30 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
           throw std::runtime_error("Saved infohash mismatch");
         if (saved.ti)
           validate(*saved.ti);
-        p = std::move(saved);
+        // Reuse metadata and peer hints, never the fast-resume piece map.
+        // force_recheck() issued during checking_resume_data is ignored by
+        // libtorrent. Fresh add parameters force ordinary disk hashing even
+        // when a corrupted file retains the recorded size and timestamp.
+        if (!p.ti && saved.ti) p.ti = std::move(saved.ti);
+        p.peers = std::move(saved.peers);
       }
     } catch (std::exception const &e) {
       impl->warning = "Rebuilding resume data: " + std::string(e.what());
     }
+  }
+  if (restore && !p.ti) {
+    try {
+      auto cached = read(impl->dir / (key + ".info"));
+      if (!cached.empty()) {
+        if (cached.size() > 8 * 1024 * 1024) throw std::runtime_error("Cached metadata exceeds 8 MiB");
+        std::string data = "d4:info";
+        data.append(cached.data(), cached.size()); data += 'e';
+        auto metadata = lt::load_torrent_buffer(lt::span<char const>(data.data(), static_cast<int>(data.size())));
+        validate(*metadata.ti);
+        if (hash(metadata.ti->info_hashes()) != key) throw std::runtime_error("Cached metadata infohash mismatch");
+        p.ti = std::move(metadata.ti);
+      }
+    } catch (std::exception const &e) { impl->warning = "Rebuilding cached metadata: " + std::string(e.what()); }
   }
   p.save_path = str(path);
   p.flags &= ~lt::torrent_flags::auto_managed;
@@ -353,14 +372,17 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
   p.flags &= ~lt::torrent_flags::stop_when_ready;
   p.flags &= ~lt::torrent_flags::upload_mode;
   p.flags |= lt::torrent_flags::paused;
+  if (!held) impl->approval_guard.erase(key);
+  if (held) {
+    p.flags |= lt::torrent_flags::upload_mode;
+    impl->approval_guard.insert(key);
+  }
   if (!p.ti) {
     p.flags |= lt::torrent_flags::upload_mode;
     impl->metadata_guard.insert(key);
   }
   auto h = impl->session->add_torrent(std::move(p));
   impl->handles[key] = h;
-  if (h.torrent_file() && restore)
-    h.force_recheck();
   if (active)
     h.resume();
 }
@@ -375,7 +397,7 @@ void Session::resume(rust::Str id) {
     h.pause();
   h.clear_error();
   if (recover && h.torrent_file()) {
-    h.unset_flags(lt::torrent_flags::upload_mode);
+    if (!impl->approval_guard.count(str(id))) h.unset_flags(lt::torrent_flags::upload_mode);
     h.force_recheck();
   }
   h.resume();
@@ -392,6 +414,7 @@ void Session::remove(rust::Str id) {
         "Timed out detaching transfer; files were preserved");
   impl->handles.erase(key);
   impl->metadata_guard.erase(key);
+  impl->approval_guard.erase(key);
   impl->errors.erase(key);
   impl->warnings.erase(key);
   fs::remove(impl->dir / (key + ".resume"));
@@ -447,6 +470,7 @@ NativeSnapshot Session::snapshot() {
         if (files.pad_file_at(i))
           continue;
         NativeFile f;
+        f.padding = false;
         f.name = files.file_path(i);
         f.length = files.file_size(i);
         f.verified = std::max<std::int64_t>(progress.at(int(i)), 0);
@@ -626,3 +650,68 @@ void Session::shutdown() {
   }
 }
 } // namespace ft
+
+namespace ft {
+static NativeDescription describe(lt::torrent_info const &ti) {
+  NativeDescription out;
+  out.name = ti.name();
+  auto info = ti.info_section();
+  if (info.size() > 8*1024*1024) throw std::runtime_error("Torrent metadata exceeds 8 MiB");
+  for (char c : info) out.info.push_back(static_cast<std::uint8_t>(c));
+  auto const &files = ti.layout();
+  for (auto i : files.file_range()) {
+    NativeFile file;
+    file.name = files.file_path(i);
+    file.verified = 0;
+    file.length = std::uint64_t(files.file_size(i));
+    file.padding = files.pad_file_at(i);
+    out.total += file.length;
+    out.files.push_back(std::move(file));
+  }
+  try { validate(ti); out.id = hash(ti.info_hashes()); }
+  catch (std::exception const &e) { out.error = e.what(); }
+  return out;
+}
+NativeDescription describe_torrent(rust::Slice<const std::uint8_t> data) {
+  if (data.size()>8*1024*1024) throw std::runtime_error("Torrent metadata exceeds 8 MiB");
+  auto p=lt::load_torrent_buffer(lt::span<char const>(reinterpret_cast<char const *>(data.data()),static_cast<int>(data.size())));
+  if (!p.ti) throw std::runtime_error("Missing torrent metadata");
+  return describe(*p.ti);
+}
+NativeDescription Session::description(rust::Str id) const {
+  if (impl->stopped) throw std::runtime_error("Backend closed");
+  auto it=impl->handles.find(str(id));
+  if(it==impl->handles.end()) throw std::runtime_error("Unknown transfer");
+  auto ti=it->second.torrent_file();
+  if(!ti) throw std::runtime_error("Metadata unavailable");
+  return describe(*ti);
+}
+NativeFile Session::file_at(rust::Str id,std::uint32_t index) const {
+  if (impl->stopped) throw std::runtime_error("Backend closed");
+  auto it=impl->handles.find(str(id));
+  if(it==impl->handles.end()) throw std::runtime_error("Unknown transfer");
+  auto ti=it->second.torrent_file();
+  if(!ti || index>=std::uint32_t(ti->layout().num_files())) throw std::runtime_error("Unknown file index");
+  std::vector<std::int64_t> progress;
+  it->second.file_progress(progress,lt::torrent_handle::piece_granularity);
+  auto i=lt::file_index_t(static_cast<int>(index));
+  NativeFile out;
+  out.padding=ti->layout().pad_file_at(i);
+  out.name=ti->layout().file_path(i);
+  out.length=std::uint64_t(ti->layout().file_size(i));
+  auto status=it->second.status();
+  const bool checking=status.state==lt::torrent_status::checking_files || status.state==lt::torrent_status::checking_resume_data;
+  out.verified=checking?0:std::uint64_t(std::max<std::int64_t>(progress.at(index),0));
+  return out;
+}
+void Session::allow_download(rust::Str id) {
+  if (impl->stopped) throw std::runtime_error("Backend closed");
+  auto h=impl->handle(id);
+  auto ti=h.torrent_file();
+  if(!ti) throw std::runtime_error("Metadata unavailable");
+  validate(*ti);
+  impl->approval_guard.erase(str(id));
+  h.unset_flags(lt::torrent_flags::upload_mode);
+  h.resume();
+}
+}

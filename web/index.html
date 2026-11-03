@@ -17,11 +17,13 @@
   </head>
   <body>
     <header>
-      <h1>FeedTorrent</h1>
+      <button id="sections-button" class="quiet" type="button" aria-controls="sidebar" aria-expanded="false">Sections</button><h1>FeedTorrent</h1>
       <button id="open-button" class="btn" disabled>Open</button>
       <button id="settings-open" class="btn" disabled>Settings</button>
     </header>
+    <div class="workspace"><aside id="sidebar" aria-label="Sections"><nav><a href="#/transfers" id="transfers-nav">Transfers</a><div class="side-heading"><span>FEEDS</span><button class="quiet" id="follow-open" aria-label="Follow a feed">+</button></div><div id="feed-nav"></div><p class="muted" id="no-feeds">No feeds</p></nav></aside>
     <main>
+      <section id="transfer-view">
       <p id="notice" role="alert" hidden></p>
       <p id="network-warning" class="transfer-error" role="status" hidden></p>
       <div class="list-heading">
@@ -38,7 +40,14 @@
         <p id="save-path" class="muted"></p>
         <div id="files"></div>
       </section>
-    </main>
+      </section>
+      <section id="feed-view" hidden>
+        <div class="list-heading feed-heading"><h2 id="feed-title"></h2><div class="feed-heading-actions"><button class="quiet" id="feed-refresh">Refresh</button><button class="quiet" id="feed-settings">Feed settings</button></div></div>
+        <p id="feed-status" class="muted" role="status"></p><p id="feed-error" class="transfer-error" role="alert" hidden></p>
+        <div id="catalog-links" class="catalog-links"></div><p id="catalog-status" role="status"></p>
+        <div class="catalog-layout"><section aria-label="Catalog"><div id="catalog-entries"></div><div id="catalog-pages" class="catalog-pages"></div></section><section id="entry-detail" aria-label="Selected item" hidden></section></div>
+      </section>
+    </main></div>
     <footer>
       <span id="status" role="status" aria-live="polite">Starting…</span
       ><span id="network">Connecting…</span>
@@ -46,7 +55,7 @@
     <dialog id="open-dialog" aria-labelledby="open-title">
       <div class="dialog-title">
         <h2 id="open-title">Open</h2>
-        <button class="quiet" data-close type="button">Close</button>
+        <button class="quiet dialog-close" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
       </div>
       <div class="tabs">
         <div
@@ -124,7 +133,7 @@
     <dialog id="settings-dialog">
       <div class="dialog-title">
         <h2>Settings</h2>
-        <button class="quiet" data-close type="button">Close</button>
+        <button class="quiet dialog-close" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
       </div>
       <form id="settings-form">
         <div class="field">
@@ -145,15 +154,26 @@
         </div>
         <label class="checkbox-label"><input id="seed-by-default" type="checkbox" checked />Seed by default</label>
         <p id="settings-error" class="transfer-error" role="alert"></p>
-        <div class="form-actions">
-          <button class="btn" type="submit">Save</button>
-        </div>
+        <p id="settings-save-status" class="muted" role="status" aria-live="polite" hidden></p>
+      </form>
+    </dialog>
+    <dialog id="feed-dialog" aria-labelledby="feed-dialog-title">
+      <div class="dialog-title"><h2 id="feed-dialog-title">Follow feed</h2><button class="quiet dialog-close" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button></div>
+      <form id="feed-form">
+        <label>Feed magnet<input id="feed-magnet" required autocomplete="off" spellcheck="false" placeholder="magnet:?xs=urn:btpk:…" /></label>
+        <label>Name<input id="feed-name" maxlength="256" autocomplete="off" placeholder="Optional" /></label>
+        <div class="field"><div class="field-label"><label for="feed-mode">Download mode</label><button type="button" class="field-help" data-help="feed-mode-help" aria-label="About download mode" aria-describedby="feed-mode-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="feed-mode-help" class="field-tooltip" role="tooltip" hidden>Current catalog keeps the latest catalog. Mirror catalogs includes its history. Mirror all also downloads the listed torrents. Other feed identities are excluded.</span></div>
+          <select id="feed-mode"><option value="current_catalog">Current catalog</option><option value="mirror_catalogs">Mirror catalogs</option><option value="mirror_all">Mirror all</option></select></div>
+        <div class="field"><div class="field-label"><label for="feed-limit">Automatic download limit · MiB</label><button type="button" class="field-help" data-help="feed-limit-help" aria-label="About automatic download limit" aria-describedby="feed-limit-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="feed-limit-help" class="field-tooltip" role="tooltip" hidden>Maximum size of each automatically downloaded torrent, including catalogs and Mirror all content. This is not a total storage quota. Download once does not change this limit.</span></div><input id="feed-limit" type="number" min="1" step="1" value="8" required /></div>
+        <label class="checkbox-label"><input id="feed-unlimited" type="checkbox" />No limit</label>
+        <p id="follow-error" class="transfer-error" role="alert"></p>
+        <div class="form-actions feed-settings-actions"><button type="button" class="btn danger" id="feed-unfollow" hidden>Unfollow</button><button class="btn" id="feed-submit" type="submit">Follow feed</button></div>
       </form>
     </dialog>
     <dialog id="remove-dialog">
       <div class="dialog-title">
         <h2>Remove transfer</h2>
-        <button class="quiet" data-close type="button">Close</button>
+        <button class="quiet dialog-close" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
       </div>
       <form id="remove-form">
         <p id="remove-name"></p>

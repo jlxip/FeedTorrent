@@ -68,6 +68,7 @@ impl TorrentBackend for LibtorrentBackend {
                 transfer.save_path,
                 transfer.active,
                 transfer.restore,
+                false,
             )
             .map_err(error)
     }
@@ -134,3 +135,5 @@ impl feedtorrent_bep::TorrentMetadataBackend for LibtorrentBackend {
 mod tests;
 
 mod discovery;
+mod metadata;
+pub use metadata::TorrentDescription;

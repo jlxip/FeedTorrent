@@ -80,7 +80,7 @@ try {
   assert.equal((await app.api()).settings.download_dir, "downloads");
   assert.equal(
     (await readJson(join(legacy, "state/transfers.json"))).version,
-    2,
+    3,
   );
   await app.stop();
   app = undefined;

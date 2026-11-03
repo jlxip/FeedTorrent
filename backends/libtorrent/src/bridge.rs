@@ -1,9 +1,19 @@
+#[allow(clippy::too_many_arguments)]
 #[cxx::bridge(namespace = "ft")]
 pub mod ffi {
     struct NativeFile {
         name: String,
         length: u64,
         verified: u64,
+        padding: bool,
+    }
+    struct NativeDescription {
+        id: String,
+        name: String,
+        total: u64,
+        files: Vec<NativeFile>,
+        info: Vec<u8>,
+        error: String,
     }
     struct NativeTransfer {
         id: String,
@@ -63,6 +73,10 @@ pub mod ffi {
         ) -> Result<UniquePtr<Session>>;
         fn inspect_magnet(uri: &str) -> Result<String>;
         fn inspect_torrent(data: &[u8]) -> Result<String>;
+        fn describe_torrent(data: &[u8]) -> Result<NativeDescription>;
+        fn description(self: &Session, id: &str) -> Result<NativeDescription>;
+        fn file_at(self: &Session, id: &str, index: u32) -> Result<NativeFile>;
+        fn allow_download(self: Pin<&mut Session>, id: &str) -> Result<()>;
         fn add(
             self: Pin<&mut Session>,
             id: &str,
@@ -71,6 +85,7 @@ pub mod ffi {
             path: &str,
             active: bool,
             restore: bool,
+            held: bool,
         ) -> Result<()>;
         fn pause(self: Pin<&mut Session>, id: &str) -> Result<()>;
         fn resume(self: Pin<&mut Session>, id: &str) -> Result<()>;

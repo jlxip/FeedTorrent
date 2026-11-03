@@ -1,4 +1,5 @@
-import type { Snapshot, Transfer, Command } from "./types.js";
+import {FeedsUI} from "./feeds.js";
+import type { Snapshot, Transfer, Command, Settings } from "./types.js";
 const $ = <T extends Element = HTMLElement>(s: string) =>
   document.querySelector<T>(s)!;
 let state: Snapshot | null = null,
@@ -55,7 +56,7 @@ function notice(value: string) {
   $("#notice").textContent = value;
   $("#notice").hidden = !value;
 }
-async function command(c: Command) {
+async function send(c: Command) {
   if (!connected)
     throw Error("Server disconnected. Restart FeedTorrent to reconnect.");
   const r = await fetch("./api/commands", {
@@ -65,8 +66,10 @@ async function command(c: Command) {
   });
   const j = await r.json();
   if (!r.ok) throw Error(j.error || `Request failed (${r.status})`);
-  await sync();
+  return j;
 }
+async function command(c:Command){const result=await send(c);await sync();return result;}
+const feedUI=new FeedsUI({call:async(c,refresh=true)=>refresh?command(c):send(c),transfer:(id)=>{selected=id;location.hash="#/transfers";render();},followed:()=>opened()});
 async function action(c: Command) {
   try {
     notice("");
@@ -138,8 +141,10 @@ function render() {
           "btn danger",
         ),
       );
+      const approve=button("Download once",()=>void action({type:"approve_transfer",id:t.id}));approve.classList.add("approve-transfer");actions.append(approve);
       row.append(
         name,
+        text("span","","transfer-source"),
         progress,
         text("span", "", "state"),
         text("span", "", "amount"),
@@ -158,13 +163,16 @@ function render() {
     row.querySelector(".state")!.textContent =
       `${t.state} · ${Math.floor(t.progress * 100)}%`;
     row.querySelector(".amount")!.textContent =
-      `${bytes(t.verified)} / ${t.files.length ? bytes(t.total) : "—"}`;
+      `${bytes(t.verified)} / ${t.files.length ? bytes(t.approval_size??t.total) : "—"}${t.approval_size!==null&&t.approval_size!==t.total?" incl. padding":""}`;
     row.querySelector(".rates")!.textContent =
       `↓ ${bytes(t.down)}/s  ↑ ${bytes(t.up)}/s · ${t.peers} peers`;
     const toggle = row.querySelector<HTMLButtonElement>(".actions button")!;
     toggle.textContent = t.active ? "Pause" : "Resume";
+    const approve=row.querySelector<HTMLButtonElement>(".approve-transfer")!;approve.hidden=!t.held;approve.disabled=!connected||!t.files.length;
+    const source=row.querySelector<HTMLElement>(".transfer-source")!;source.textContent=t.kind?`${t.kind==="catalog"?"Catalog":"Content"} · ${state?.feeds.find(f=>f.id===t.feed)?.name||"Feed"}`:"";source.hidden=!t.kind;
     for (const b of row.querySelectorAll<HTMLButtonElement>(".actions button"))
       b.disabled = !connected;
+    approve.disabled=!connected||!t.files.length;
     const error = row.querySelector<HTMLElement>(".transfer-error")!;
     error.textContent = t.error || t.warning;
     error.hidden = !error.textContent;
@@ -206,6 +214,7 @@ function render() {
   $("#network-warning").textContent = state?.warning || "";
   $("#network-warning").hidden = !state?.warning;
   updateOpenButtons();
+  feedUI.render(state,connected);
 }
 async function sync() {
   const r = await fetch("./api/snapshot");
@@ -261,11 +270,12 @@ $("#magnet-form").onsubmit = async (event) => {
   opening = true;
   updateOpenButtons();
   try {
-    await command({
-      type: "add_magnet",
-      uri: $<HTMLInputElement>("#magnet").value.trim(),
-    });
-    opened();
+    const uri=$<HTMLInputElement>("#magnet").value.trim();
+    const source=await send({type:"inspect_source",uri});
+    if(source.kind==="feed"){
+      $<HTMLDialogElement>("#open-dialog").close();
+      if(state?.feeds.some(f=>f.id===source.id)){opened();location.hash=`#/feeds/${source.id}`;}else{feedUI.follow(source.magnet);}
+    }else{await command({type:"add_magnet",uri});opened();}
   } catch (error) {
     $("#magnet-error").textContent = String(error);
   } finally {
@@ -297,33 +307,81 @@ $("#torrent-form").onsubmit = async (event) => {
     updateOpenButtons();
   }
 };
+let settingsSave: Promise<boolean> = Promise.resolve(true);
+let settingsEditVersion = 0;
+function settingsStatus(value: string) {
+  $("#settings-save-status").textContent = value;
+  $("#settings-save-status").hidden = !value;
+}
+function saveSettings(): Promise<boolean> {
+  const folder = $<HTMLInputElement>("#download-dir");
+  const port = $<HTMLInputElement>("#peer-port");
+  if (!folder.value.trim() || !port.value || !port.validity.valid) {
+    $("#settings-error").textContent = !folder.value.trim()
+      ? "Download folder cannot be empty."
+      : "Enter a listening port between 0 and 65535.";
+    settingsStatus("");
+    return Promise.resolve(false);
+  }
+  const version = settingsEditVersion;
+  const settings: Settings = {
+    download_dir: folder.value,
+    peer_port: Number(port.value),
+    seed_by_default: $<HTMLInputElement>("#seed-by-default").checked,
+  };
+  // Serialize writes so a slower response cannot overwrite a newer edit.
+  settingsSave = settingsSave.then(async () => {
+    if (JSON.stringify(settings) === JSON.stringify(state?.settings)) return true;
+    if (version === settingsEditVersion) {
+      settingsStatus("Saving…");
+      $("#settings-error").textContent = "";
+    }
+    try {
+      const changedPort = settings.peer_port !== state?.settings.peer_port;
+      await command({ type: "configure", settings });
+      if (version === settingsEditVersion) settingsStatus("Saved");
+      if (changedPort) notice("Restart FeedTorrent to apply the listening port.");
+      return true;
+    } catch (error) {
+      if (version === settingsEditVersion) {
+        settingsStatus("");
+        $("#settings-error").textContent = String(error);
+      }
+      return false;
+    }
+  });
+  return settingsSave;
+}
+async function closeSettings() {
+  if (await saveSettings()) $<HTMLDialogElement>("#settings-dialog").close();
+}
 $("#settings-open").onclick = () => {
   if (!state) return;
   $<HTMLInputElement>("#download-dir").value = state.settings.download_dir;
   $<HTMLInputElement>("#peer-port").value = String(state.settings.peer_port);
   $<HTMLInputElement>("#seed-by-default").checked = state.settings.seed_by_default;
   $("#settings-error").textContent = "";
+  settingsStatus("");
   $<HTMLDialogElement>("#settings-dialog").showModal();
 };
-$("#settings-form").onsubmit = async (e) => {
-  e.preventDefault();
-  try {
-    const port = Number($<HTMLInputElement>("#peer-port").value);
-    const changed = port !== state?.settings.peer_port;
-    await command({
-      type: "configure",
-      settings: {
-        download_dir: $<HTMLInputElement>("#download-dir").value,
-        peer_port: port,
-        seed_by_default: $<HTMLInputElement>("#seed-by-default").checked,
-      },
-    });
-    $<HTMLDialogElement>("#settings-dialog").close();
-    notice(changed ? "Restart FeedTorrent to apply the listening port." : "");
-  } catch (error) {
-    $("#settings-error").textContent = String(error);
-  }
+for (const input of document.querySelectorAll<HTMLInputElement>("#settings-form input")) {
+  input.addEventListener("input", () => {
+    settingsEditVersion++;
+    settingsStatus("");
+    $("#settings-error").textContent = "";
+  });
+  input.addEventListener("change", () => { void saveSettings(); });
+}
+$("#settings-form").onsubmit = (event) => {
+  event.preventDefault();
+  void saveSettings();
 };
+$("#settings-form").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+    event.preventDefault();
+    void saveSettings();
+  }
+});
 $("#remove-form").onsubmit = async (e) => {
   e.preventDefault();
   if (!removing) return;
@@ -344,8 +402,36 @@ $("#remove-form").onsubmit = async (e) => {
 $("#show-folder").onclick = () => {
   if (selected) void action({ type: "reveal", id: selected, file: null });
 };
+function dismissDialog(dialog: HTMLDialogElement) {
+  if (dialog.id === "settings-dialog") void closeSettings();
+  else dialog.close();
+}
 for (const b of document.querySelectorAll<HTMLElement>("[data-close]"))
-  b.onclick = () => b.closest("dialog")?.close();
+  b.onclick = () => {
+    const dialog = b.closest("dialog");
+    if (dialog) dismissDialog(dialog);
+  };
+for (const dialog of document.querySelectorAll<HTMLDialogElement>("dialog")) {
+  const outside = (event: MouseEvent) => {
+    const bounds = dialog.getBoundingClientRect();
+    return event.clientX < bounds.left || event.clientX > bounds.right ||
+      event.clientY < bounds.top || event.clientY > bounds.bottom;
+  };
+  let pressedOutside = false;
+  dialog.addEventListener("pointerdown", event => {
+    pressedOutside = event.button === 0 && event.isPrimary && outside(event);
+  });
+  dialog.addEventListener("pointercancel", () => { pressedOutside = false; });
+  dialog.addEventListener("click", event => {
+    const dismiss = pressedOutside && event.target === dialog && outside(event);
+    pressedOutside = false;
+    if (dismiss) dismissDialog(dialog);
+  });
+  dialog.addEventListener("cancel", event => {
+    event.preventDefault();
+    dismissDialog(dialog);
+  });
+}
 async function boot() {
   try {
     await sync();
@@ -387,9 +473,9 @@ for (const trigger of document.querySelectorAll<HTMLButtonElement>("[data-help]"
   });
   tooltip.addEventListener("mouseenter", show);
   tooltip.addEventListener("mouseleave", leave);
-  trigger.addEventListener("keydown", (event) => {
+  document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !tooltip.hidden) {
-      event.preventDefault(); event.stopPropagation(); hide();
+      event.preventDefault(); event.stopImmediatePropagation(); hide();
     }
-  });
+  }, true);
 }

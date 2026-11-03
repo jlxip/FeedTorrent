@@ -1,3 +1,4 @@
+mod feeds;
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
     body::Body,
@@ -62,6 +63,12 @@ struct Record {
     active: bool,
     #[serde(default = "default_seed")]
     seed: bool,
+    #[serde(default)]
+    held: bool,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    feed: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Store {
@@ -92,6 +99,10 @@ struct Transfer {
     peers: u32,
     files: Vec<TorrentFile>,
     save_path: String,
+    held: bool,
+    approval_size: Option<u64>,
+    kind: String,
+    feed: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 struct Snapshot {
@@ -102,10 +113,52 @@ struct Snapshot {
     listen_port: u16,
     warning: String,
     ready: bool,
+    feeds: Vec<feedtorrent_feeds::FeedView>,
+    feed_error: String,
+    feed_time_ms: u64,
 }
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    InspectSource {
+        uri: String,
+    },
+    FollowFeed {
+        uri: String,
+        config: feedtorrent_feeds::Config,
+    },
+    ConfigureFeed {
+        id: String,
+        config: feedtorrent_feeds::Config,
+    },
+    UnfollowFeed {
+        id: String,
+    },
+    RefreshFeed {
+        id: String,
+    },
+    OpenCatalog {
+        feed: String,
+        id: String,
+    },
+    DownloadEntry {
+        feed: String,
+        catalog: String,
+        index: usize,
+    },
+    ApproveTransfer {
+        id: String,
+    },
+    RevealEntry {
+        catalog: String,
+        index: usize,
+    },
+    CatalogPage {
+        feed: String,
+        catalog: String,
+        #[serde(default)]
+        offset: usize,
+    },
     AddMagnet {
         uri: String,
     },
@@ -133,7 +186,7 @@ enum Command {
 }
 struct Job {
     command: Command,
-    reply: oneshot::Sender<std::result::Result<(), String>>,
+    reply: oneshot::Sender<std::result::Result<serde_json::Value, String>>,
 }
 #[derive(Clone)]
 struct App {
@@ -167,7 +220,7 @@ fn default_seed() -> bool {
 }
 fn default_store() -> Store {
     Store {
-        version: 2,
+        version: 3,
         settings: Settings {
             download_dir: "downloads".into(),
             peer_port: 6881,
@@ -184,9 +237,10 @@ fn migrate_store(store: &mut Store, home: &Path) -> Result<()> {
             }
             store.version = 2;
         }
-        2 => {}
+        2 | 3 => {}
         _ => bail!("Unsupported transfer registry version; data preserved"),
     }
+    store.version = 3;
     Ok(())
 }
 fn directory_setting(value: &str) -> Result<String> {
@@ -225,7 +279,8 @@ fn payload_path(base: &str, id: &str) -> Result<PathBuf> {
     Ok(target)
 }
 struct Engine {
-    native: Box<dyn TorrentBackend>,
+    native: LibtorrentBackend,
+    feeds: Option<feeds::FeedHost>,
     store: Store,
     dir: PathBuf,
     failures: BTreeMap<String, String>,
@@ -240,12 +295,12 @@ impl Engine {
         .context("Cannot save transfer registry")
     }
     fn new(args: &Args, dir: PathBuf, store: Store) -> Result<Self> {
-        let native = Box::new(LibtorrentBackend::new(
+        let native = LibtorrentBackend::new(
             dir.to_str().context("Non-UTF-8 state directory")?,
             store.settings.peer_port,
             args.dht_bootstrap.as_deref().unwrap_or(""),
             args.isolated,
-        )?);
+        )?;
         let view = Snapshot {
             engine: "libtorrent-rasterbar 2.1.2",
             transfers: vec![],
@@ -254,9 +309,13 @@ impl Engine {
             listen_port: 0,
             warning: String::new(),
             ready: false,
+            feeds: vec![],
+            feed_error: String::new(),
+            feed_time_ms: 0,
         };
         let mut e = Self {
             native,
+            feeds: Some(feeds::FeedHost::new(&dir, args.isolated)),
             store,
             dir,
             failures: BTreeMap::new(),
@@ -272,13 +331,18 @@ impl Engine {
                 fs::create_dir_all(&record.path)?;
                 reject_symlinks(&record.path)?;
                 let bytes = read_limited(&e.dir.join(format!("{}.source", record.id)))?;
-                e.native.add(AddTransfer {
+                let transfer = AddTransfer {
                     id: &record.id,
                     source: TorrentSource::from_bytes(&bytes, record.magnet)?,
                     save_path: record.path.to_str().context("Non-UTF-8 transfer path")?,
                     active: record.active,
                     restore: true,
-                })?;
+                };
+                if record.held {
+                    e.native.stage(transfer)?;
+                } else {
+                    e.native.add(transfer)?;
+                }
                 Ok(())
             })();
             if let Err(err) = outcome {
@@ -325,6 +389,9 @@ impl Engine {
             path,
             active: true,
             seed: self.store.settings.seed_by_default,
+            held: false,
+            kind: String::new(),
+            feed: None,
         });
         if let Err(error) = self.persist() {
             self.store.records.retain(|r| r.id != id);
@@ -335,11 +402,27 @@ impl Engine {
     }
     fn apply(&mut self, command: Command) -> Result<()> {
         match command {
+            c @ (Command::FollowFeed { .. }
+            | Command::ConfigureFeed { .. }
+            | Command::UnfollowFeed { .. }
+            | Command::RefreshFeed { .. }
+            | Command::OpenCatalog { .. }
+            | Command::DownloadEntry { .. }
+            | Command::ApproveTransfer { .. }
+            | Command::RevealEntry { .. }) => return self.feed_command(c),
+            Command::InspectSource { .. } | Command::CatalogPage { .. } => {
+                bail!("Read-only command dispatched incorrectly")
+            }
             Command::AddMagnet { uri } => {
                 self.add(normalize_magnet_input(&uri)?.into_bytes(), true)?
             }
             Command::AddTorrent { data } => self.add(data, false)?,
             Command::Pause { id } => {
+                self.record(&id)?;
+                if let Some(h) = &mut self.feeds {
+                    h.manager.suppress(&id)?;
+                }
+                self.persist_feeds()?;
                 self.record(&id)?;
                 if !self.failures.contains_key(&id) {
                     self.native.pause(&id)?;
@@ -354,6 +437,41 @@ impl Engine {
             }
             Command::Resume { id } => {
                 let r = self.record(&id)?.clone();
+                if r.held {
+                    if !self.failures.contains_key(&id) {
+                        bail!("Download requires approval; use Download once")
+                    }
+                    // Recover a failed native restore without granting payload
+                    // permission. The held flag remains durable and enforced.
+                    fs::create_dir_all(&r.path)?;
+                    reject_symlinks(&r.path)?;
+                    let bytes = read_limited(&self.dir.join(format!("{id}.source")))?;
+                    self.native.stage(AddTransfer {
+                        id: &id,
+                        source: TorrentSource::from_bytes(&bytes, r.magnet)?,
+                        save_path: r.path.to_str().context("Non-UTF-8 transfer path")?,
+                        active: true,
+                        restore: true,
+                    })?;
+                    self.failures.remove(&id);
+                    self.store
+                        .records
+                        .iter_mut()
+                        .find(|r| r.id == id)
+                        .unwrap()
+                        .active = true;
+                    self.persist()?;
+                    if let (Some(feed), Some(host)) = (&r.feed, &mut self.feeds) {
+                        let now = host.now();
+                        host.manager.refresh(feed, now)?;
+                    }
+                    self.persist_feeds()?;
+                    return Ok(());
+                };
+                if let Some(h) = &mut self.feeds {
+                    h.manager.approve_once(&id)?;
+                }
+                self.persist_feeds()?;
                 if self.failures.contains_key(&id) {
                     reject_symlinks(&r.path)?;
                     let bytes = read_limited(&self.dir.join(format!("{id}.source")))?;
@@ -384,6 +502,12 @@ impl Engine {
                 self.persist()?;
             }
             Command::Remove { id, delete_files } => {
+                self.record(&id)?;
+                if let Some(h) = &mut self.feeds {
+                    h.manager.suppress(&id)?;
+                    h.manager.removed(&id);
+                }
+                self.persist_feeds()?;
                 let record = self.record(&id)?.clone();
                 if !self.failures.contains_key(&id) {
                     self.native.remove(&id)?;
@@ -391,7 +515,7 @@ impl Engine {
                 self.store.records.retain(|r| r.id != id);
                 self.persist()?;
                 self.failures.remove(&id);
-                for suffix in ["source", "resume"] {
+                for suffix in ["source", "resume", "info"] {
                     let path = self.dir.join(format!("{id}.{suffix}"));
                     if path.exists() {
                         fs::remove_file(path)?;
@@ -457,7 +581,12 @@ impl Engine {
                 }
                 // Completed is an enabled transfer with no network activity.
                 // Quiesce libtorrent without changing the application's pause state.
-                if record.active && !record.seed && t.finished && t.state == "Seeding" {
+                if record.active
+                    && !record.held
+                    && !record.seed
+                    && t.finished
+                    && t.state == "Seeding"
+                {
                     self.native.pause(&record.id)?;
                 }
             }
@@ -479,6 +608,14 @@ impl Engine {
                             && n.state != "Error",
                     })
                     .collect();
+                let feed_error = if r.held {
+                    self.feeds
+                        .as_ref()
+                        .and_then(|h| h.manager.validation_error(&r.id))
+                        .unwrap_or("")
+                } else {
+                    ""
+                };
                 transfers.push(Transfer {
                     id: r.id.clone(),
                     name: if n.name.is_empty() {
@@ -486,7 +623,16 @@ impl Engine {
                     } else {
                         n.name.clone()
                     },
-                    state: if !r.active && n.error.is_empty() {
+                    state: if !feed_error.is_empty() {
+                        "Error".into()
+                    } else if r.held
+                        && r.active
+                        && n.error.is_empty()
+                        && !n.files.is_empty()
+                        && n.state != "Checking"
+                    {
+                        "Awaiting approval".into()
+                    } else if !r.active && n.error.is_empty() {
                         "Paused".into()
                     } else if r.active
                         && !r.seed
@@ -498,7 +644,11 @@ impl Engine {
                     } else {
                         n.state.clone()
                     },
-                    error: n.error.clone(),
+                    error: if feed_error.is_empty() {
+                        n.error.clone()
+                    } else {
+                        feed_error.into()
+                    },
                     warning: n.warning.clone(),
                     active: r.active,
                     verified: n.verified,
@@ -515,6 +665,16 @@ impl Engine {
                     peers: n.peers,
                     files,
                     save_path: r.path.display().to_string(),
+                    held: r.held,
+                    approval_size: if r.held {
+                        self.feeds
+                            .as_ref()
+                            .and_then(|h| h.manager.approval_size(&r.id))
+                    } else {
+                        None
+                    },
+                    kind: r.kind.clone(),
+                    feed: r.feed.clone(),
                 });
             } else {
                 transfers.push(Transfer {
@@ -527,6 +687,9 @@ impl Engine {
                         .cloned()
                         .unwrap_or_else(|| "Transfer unavailable".into()),
                     save_path: r.path.display().to_string(),
+                    held: r.held,
+                    kind: r.kind.clone(),
+                    feed: r.feed.clone(),
                     ..Default::default()
                 });
             }
@@ -539,12 +702,25 @@ impl Engine {
             listen_port: native.listen_port,
             warning: native.warning,
             ready: true,
+            feeds: self
+                .feeds
+                .as_ref()
+                .map(|h| h.manager.views())
+                .unwrap_or_default(),
+            feed_time_ms: self.feeds.as_ref().map_or(0, |h| h.now()),
+            feed_error: self
+                .feeds
+                .as_ref()
+                .map(|h| h.error.clone())
+                .unwrap_or_default(),
         };
         Ok(())
     }
     fn checkpoint(&mut self) -> Result<()> {
         self.persist()?;
+        let feeds = self.persist_feeds();
         self.native.checkpoint()?;
+        feeds?;
         Ok(())
     }
 }
@@ -644,6 +820,17 @@ async fn command(
         Ok(Json(c)) => c,
         Err(e) => return api_error(StatusCode::BAD_REQUEST, e.body_text()),
     };
+    if let Command::InspectSource { uri } = &command {
+        if let Ok(key) = feedtorrent_bep::bep46::parse_magnet(uri) {
+            return Json(serde_json::json!({"ok":true,"kind":"feed","magnet":feedtorrent_bep::bep46::format_magnet(&key),"id":feedtorrent_feeds::hex(&key.target())})).into_response();
+        }
+        return match normalize_magnet_input(uri) {
+            Ok(uri) => {
+                Json(serde_json::json!({"ok":true,"kind":"torrent","uri":uri})).into_response()
+            }
+            Err(e) => api_error(StatusCode::BAD_REQUEST, e),
+        };
+    }
     let (tx, rx) = oneshot::channel();
     if app.jobs.try_send(Job { command, reply: tx }).is_err() {
         return api_error(
@@ -652,7 +839,7 @@ async fn command(
         );
     }
     match rx.await {
-        Ok(Ok(())) => Json(serde_json::json!({"ok":true})).into_response(),
+        Ok(Ok(result)) => Json(result).into_response(),
         Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, e),
         Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, "Engine stopped"),
     }
@@ -660,6 +847,7 @@ async fn command(
 async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
     let (content_type, bytes): (&str, &[u8]) = match name.as_str() {
         "main.js" => ("text/javascript", include_bytes!("../../web/dist/main.js")),
+        "feeds.js" => ("text/javascript", include_bytes!("../../web/dist/feeds.js")),
         "types.js" => ("text/javascript", include_bytes!("../../web/dist/types.js")),
         "app.css" => ("text/css", include_bytes!("../../web/dist/app.css")),
         "basecoat.css" => ("text/css", include_bytes!("../../web/dist/basecoat.css")),
@@ -726,6 +914,9 @@ async fn main() -> Result<()> {
         listen_port: 0,
         warning: String::new(),
         ready: false,
+        feeds: vec![],
+        feed_error: String::new(),
+        feed_time_ms: 0,
     };
     let (views, view) = watch::channel(first);
     let (jobs, receiver) = mpsc::sync_channel::<Job>(32);
@@ -749,7 +940,10 @@ async fn main() -> Result<()> {
             }
             match receiver.recv_timeout(Duration::from_millis(200)) {
                 Ok(job) => {
-                    let result = engine.apply(job.command).map_err(|e| format!("{e:#}"));
+                    let result = match job.command {
+                        Command::CatalogPage{feed,catalog,offset}=>engine.feeds.as_ref().context("Feed service unavailable").and_then(|h|h.manager.page(&feed,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total})),
+                        c=>engine.apply(c).map(|()|serde_json::json!({"ok":true})),
+                    }.map_err(|e|format!("{e:#}"));
                     if let Err(e) = engine.refresh() {
                         engine.view.warning = format!("Engine: {e:#}");
                     }
@@ -759,6 +953,7 @@ async fn main() -> Result<()> {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
+            engine.feed_tick();
             if refresh.elapsed() >= Duration::from_secs(1) {
                 if let Err(e) = engine.refresh() {
                     engine.view.warning = format!("Engine: {e:#}");
@@ -775,7 +970,12 @@ async fn main() -> Result<()> {
             }
         }
         engine.persist()?;
+        let feed_result = engine.persist_feeds();
+        if let Some(host) = &mut engine.feeds {
+            host.close();
+        }
         engine.native.shutdown()?;
+        feed_result?;
         Ok(())
     });
     init_rx.await?.map_err(anyhow::Error::msg)?;
@@ -833,7 +1033,7 @@ mod tests {
     fn default_and_one_time_registry_migration() {
         let home = Path::new("/fixture-home");
         let mut store = default_store();
-        assert_eq!(store.version, 2);
+        assert_eq!(store.version, 3);
         assert_eq!(store.settings.download_dir, "downloads");
         assert!(store.settings.seed_by_default);
         let legacy: Settings =
@@ -847,6 +1047,9 @@ mod tests {
             path: PathBuf::from("/existing/payload"),
             active: false,
             seed: true,
+            held: false,
+            kind: String::new(),
+            feed: None,
         });
         migrate_store(&mut store, home).unwrap();
         assert_eq!(store.settings.download_dir, "downloads");

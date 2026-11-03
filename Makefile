@@ -64,6 +64,7 @@ test-deps: $(NPM_READY)
 test: build test-deps
 	cd "$(ROOT)" && cargo test --locked --workspace
 	cd "$(ROOT)" && node dev/tests/bep-consumer.mjs
+	cd "$(ROOT)" && node dev/tests/feeds-consumer.mjs
 	cd "$(ROOT)" && cargo build --locked --release -p feedtorrent-libtorrent --example bep44-peer
 	# Shared isolated DHT harness covers BEP 44, BEP 46 and BEP 49.
 	cd "$(ROOT)" && node dev/tests/bep44.mjs
@@ -72,9 +73,10 @@ test: build test-deps
 	cd "$(ROOT)" && node dev/tests/network.mjs
 	cd "$(ROOT)" && node dev/tests/edge-cases.mjs
 	cd "$(ROOT)" && node dev/tests/open-cwd.mjs
+	cd "$(ROOT)" && node dev/tests/feeds.mjs
 	cd "$(ROOT)" && node dev/node_modules/playwright/cli.js test --config dev/playwright.config.ts
 check: web native-deps
-	cd "$(ROOT)" && cargo check --locked --offline -p feedtorrent-bep --target wasm32-unknown-unknown
+	cd "$(ROOT)" && cargo check --locked --offline -p feedtorrent-bep -p feedtorrent-feeds --target wasm32-unknown-unknown
 	cd "$(ROOT)" && cargo fmt --all -- --check
 	cd "$(ROOT)" && cargo clippy --locked --workspace --all-targets -- -D warnings
 	cd "$(ROOT)" && node dev/node_modules/typescript/bin/tsc -p web/tsconfig.json --noEmit

@@ -182,11 +182,14 @@ test("magnet metadata, unlimited activity, errors, settings and compact layout",
     await expect(page.locator("#peer-port-help")).toHaveText("Requires a server restart");
     await expect(page.locator("#peer-port-help")).toBeVisible();
     await portHelp.press("Escape");
-    await expect(page.locator("#settings-form .muted")).toHaveCount(0);
+    await expect(page.locator("#settings-save-status")).toBeHidden();
     await expect(page.locator("#seed-by-default")).toBeChecked();
     await page.locator("#seed-by-default").uncheck();
     await page.locator("#download-dir").fill(join(root, "changed"));
-    await page.locator("#settings-form button[type=submit]").click();
+    await page.locator("#download-dir").press("Tab");
+    await expect.poll(async () => (await app.api()).settings.download_dir).toBe(join(root, "changed"));
+    await expect(page.locator("#settings-dialog")).toBeVisible();
+    await page.locator("#settings-dialog [data-close]").click();
     await expect(page.locator("#settings-dialog")).not.toBeVisible();
     expect((await app.api()).settings.download_dir).toBe(join(root, "changed"));
     expect((await app.api()).settings.seed_by_default).toBe(false);
@@ -262,8 +265,21 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
         .locator("#torrent-file")
         .evaluate((e: HTMLInputElement) => e.files?.[0]?.name),
     ).toBe("fixture.torrent");
-    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    // Padding is inside the modal; a drag ending outside is not a backdrop click.
+    const bounds = await dialog.boundingBox();
+    await page.mouse.click(bounds!.x + 5, bounds!.y + 5);
+    await expect(dialog).toBeVisible();
+    const title = await page.locator("#open-title").boundingBox();
+    await page.mouse.move(title!.x + 2, title!.y + 2);
+    await page.mouse.down();
+    await page.mouse.move(2, 2);
+    await page.mouse.up();
+    await expect(dialog).toBeVisible();
+    await page.mouse.click(2, 2);
+    await expect(dialog).toBeHidden();
     await page.locator("#open-button").click();
+    await expect(page.locator("#magnet")).toHaveValue("not a hash");
+    expect(await page.locator("#torrent-file").evaluate((e: HTMLInputElement) => e.files?.[0]?.name)).toBe("fixture.torrent");
     await expect(page.locator("#magnet-tab")).toHaveAttribute(
       "aria-selected",
       "true",
@@ -332,7 +348,9 @@ test("no-seed downloads stay enabled as Completed across pause and restart", asy
     await page.locator("#settings-open").click();
     await expect(page.locator("#seed-by-default")).toBeChecked();
     await page.locator("#seed-by-default").uncheck();
-    await page.locator("#settings-form button[type=submit]").click();
+    await expect.poll(async () => (await app.api()).settings.seed_by_default).toBe(false);
+    await page.locator("#settings-dialog [data-close]").click();
+    await expect(page.locator("#settings-dialog")).not.toBeVisible();
     await magnet(page, ref.magnet);
     const row = page.locator(`[data-id="${ref.id}"]`);
     await expect(row.locator(".state")).toHaveText("Completed · 100%");
@@ -350,4 +368,125 @@ test("no-seed downloads stay enabled as Completed across pause and restart", asy
     await page.locator("#settings-open").click();
     await expect(page.locator("#seed-by-default")).not.toBeChecked();
   } finally { await cleanup(root, tr, ref, app); }
+});
+
+
+test("Settings autosave, invalid edits, ordered writes, retry and close", async ({ page }) => {
+  const root = await temporary();
+  let app;
+  try {
+    app = await startApp(root);
+    const original = (await app.api()).settings;
+    const configurations = [];
+    page.on("request", request => {
+      if (request.method() === "POST" && request.url().endsWith("/api/commands")) {
+        const body = request.postDataJSON();
+        if (body.type === "configure") configurations.push(body.settings);
+      }
+    });
+    await page.goto(app.url);
+    await page.locator("#settings-open").click();
+    const dialog = page.locator("#settings-dialog");
+    const folder = page.locator("#download-dir");
+    const port = page.locator("#peer-port");
+    const checkbox = page.locator("#seed-by-default");
+    const close = dialog.getByRole("button", { name: "Close", exact: true });
+    await expect(dialog.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+    await checkbox.uncheck();
+    await expect.poll(async () => (await app.api()).settings.seed_by_default).toBe(false);
+    await expect(dialog).toBeVisible();
+
+    const changed = join(root, "automatic");
+    const count = configurations.length;
+    await folder.fill(changed);
+    expect(configurations.length).toBe(count);
+    await folder.press("Tab");
+    await expect.poll(async () => (await app.api()).settings.download_dir).toBe(changed);
+    await expect(page.locator("#settings-save-status")).toHaveText("Saved");
+
+    await port.fill("65536");
+    await port.press("Tab");
+    await expect(page.locator("#settings-error")).toContainText("between 0 and 65535");
+    expect((await app.api()).settings.peer_port).toBe(original.peer_port);
+    await close.click();
+    await expect(dialog).toBeVisible();
+    await port.fill("51888");
+    await port.press("Enter");
+    await expect.poll(async () => (await app.api()).settings.peer_port).toBe(51888);
+    await expect(page.locator("#notice")).toContainText("Restart FeedTorrent");
+    await port.fill(String(original.peer_port));
+    await port.press("Enter");
+    await expect.poll(async () => (await app.api()).settings.peer_port).toBe(original.peer_port);
+
+    const blocker = join(root, "not-a-folder");
+    await writeFile(blocker, "file");
+    await folder.fill(blocker);
+    await folder.press("Enter");
+    await expect(page.locator("#settings-error")).toContainText("Cannot create");
+    await expect(dialog).toBeVisible();
+    expect((await app.api()).settings.download_dir).toBe(changed);
+    await folder.fill(changed);
+    await folder.press("Enter");
+    await expect(page.locator("#settings-error")).toBeEmpty();
+
+    await page.route("**/api/commands", async route => {
+      if (route.request().postDataJSON()?.type === "configure")
+        await new Promise(resolve => setTimeout(resolve, 150));
+      await route.continue();
+    });
+    const queued = configurations.length;
+    await checkbox.check();
+    await checkbox.uncheck();
+    await checkbox.check();
+    await expect.poll(() => configurations.length).toBe(queued + 3);
+    await expect(page.locator("#settings-save-status")).toHaveText("Saved");
+    expect((await app.api()).settings.seed_by_default).toBe(true);
+    await page.unroute("**/api/commands");
+
+    const closing = join(root, "closed-with-escape");
+    await folder.fill(closing);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    expect((await app.api()).settings.download_dir).toBe(closing);
+    await page.locator("#settings-open").click();
+    await expect(folder).toHaveValue(closing);
+    const outside = join(root, "closed-with-backdrop");
+    await folder.fill(outside);
+    await page.mouse.click(2, 2);
+    await expect(dialog).toBeHidden();
+    expect((await app.api()).settings.download_dir).toBe(outside);
+    await page.locator("#settings-open").click();
+    await expect(folder).toHaveValue(outside);
+
+    await page.route("**/api/commands", async route => {
+      if (route.request().postDataJSON()?.type === "configure") await route.abort();
+      else await route.continue();
+    });
+    const retry = join(root, "retry");
+    await folder.fill(retry);
+    await folder.press("Enter");
+    await expect(page.locator("#settings-error")).not.toBeEmpty();
+    await expect(folder).toHaveValue(retry);
+    await expect(dialog).toBeVisible();
+    expect((await app.api()).settings.download_dir).toBe(outside);
+    await page.mouse.click(2, 2);
+    await expect(page.locator("#settings-save-status")).toBeHidden();
+    await expect(page.locator("#settings-error")).not.toBeEmpty();
+    await expect(dialog).toBeVisible();
+    await page.unroute("**/api/commands");
+    await close.click({ timeout: 5000 });
+    await expect(dialog).toBeHidden();
+    expect((await app.api()).settings.download_dir).toBe(retry);
+    await app.stop();
+    app = await startApp(root, [], { defaultDownloads: true });
+    expect((await app.api()).settings.download_dir).toBe(retry);
+    expect((await app.api()).settings.seed_by_default).toBe(true);
+    await page.goto(app.url);
+    await page.setViewportSize({ width: 320, height: 740 });
+    await page.locator("#settings-open").click();
+    await expect(folder).toHaveValue(retry);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  } finally {
+    await cleanup(root, app);
+  }
 });
