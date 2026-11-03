@@ -47,6 +47,9 @@ $(WEB_READY): $(WEB_SOURCES) $(NPM_READY) $(ROOT)/Makefile
 	cp "$(ROOT)/web/theme.js" "$(ROOT)/web/dist/theme.js"
 	cp "$(ROOT)/web/vendor/basecoat-vega-1.0.2.min.css" "$(ROOT)/web/dist/basecoat.css"
 	cp "$(ROOT)/web/vendor/lucide-0.468.0.min.js" "$(ROOT)/web/dist/lucide.js"
+	cp "$(ROOT)/web/vendor/basecoat-runtime-1.0.2.min.js" "$(ROOT)/web/dist/basecoat-runtime.js"
+	cp "$(ROOT)/web/vendor/basecoat-tabs-1.0.2.min.js" "$(ROOT)/web/dist/basecoat-tabs.js"
+	cp "$(ROOT)/web/vendor/basecoat-sidebar-1.0.2.min.js" "$(ROOT)/web/dist/basecoat-sidebar.js"
 	touch "$@"
 
 native: web native-deps
@@ -74,6 +77,7 @@ test: build test-deps
 	cd "$(ROOT)" && node dev/tests/edge-cases.mjs
 	cd "$(ROOT)" && node dev/tests/open-cwd.mjs
 	cd "$(ROOT)" && node dev/tests/feeds.mjs
+	cd "$(ROOT)" && node dev/tests/publishing.mjs
 	cd "$(ROOT)" && node dev/node_modules/playwright/cli.js test --config dev/playwright.config.ts
 check: web native-deps
 	cd "$(ROOT)" && cargo check --locked --offline -p feedtorrent-bep -p feedtorrent-feeds --target wasm32-unknown-unknown

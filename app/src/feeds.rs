@@ -225,6 +225,12 @@ impl FeedHost {
             }
         }
         for event in e.native.poll_dht() {
+            if e.publication_native
+                .as_mut()
+                .is_some_and(|bridge| bridge.event(&event, self))
+            {
+                continue;
+            }
             if let Some(work) = self.lookups.remove(&event.id.0) {
                 let result = match event.result {
                     Ok(DhtOutcome::Mutable(value)) => Ok(value),
@@ -469,6 +475,18 @@ impl FeedHost {
             }
         }
     }
+    pub fn publish_record(&mut self, record: feedtorrent_bep::bep44::MutableRecord) {
+        if let Some(udp) = &mut self.udp {
+            let now = udp.now();
+            if udp
+                .protocol_mut()
+                .subscribe(record.key().clone(), Some(record.clone()), now)
+                .is_ok()
+            {
+                let _ = udp.protocol_mut().publish(record, now);
+            }
+        }
+    }
     pub fn close(&mut self) {
         if let Some(udp) = &mut self.udp {
             udp.close();
@@ -639,6 +657,47 @@ impl Engine {
         Ok(())
     }
 }
+
+impl Engine {
+    pub(super) fn catalog_body(&self, feed: &str, catalog: &str) -> Result<Option<PathBuf>> {
+        let host = self.feeds.as_ref().context("Feed service unavailable")?;
+        host.manager.page(feed, catalog, 0)?;
+        let info = self
+            .native
+            .info_bytes(catalog)?
+            .context("Waiting for catalog metadata")?;
+        let parsed = feedtorrent_bep::bep49::Feed::from_info(&info)?;
+        let entries: Vec<_> = parsed
+            .entries()
+            .iter()
+            .filter(|f| f.path() == ["metadata", "body.md"])
+            .collect();
+        if entries.len() > 1 {
+            bail!("Catalog contains multiple Markdown bodies")
+        }
+        let Some(entry) = entries.first() else {
+            return Ok(None);
+        };
+        if entry.length() > feedtorrent_feeds::publishing::MAX_BODY as u64 {
+            bail!("Markdown exceeds 1 MiB")
+        }
+        let t = self
+            .view
+            .transfers
+            .iter()
+            .find(|t| t.id == catalog)
+            .context("Catalog unavailable")?;
+        if t.state == "Checking" || !t.error.is_empty() {
+            bail!("Catalog has not been verified")
+        }
+        let file = self.native.file_at(catalog, entry.index())?;
+        if file.verified != file.length || file.length != entry.length() {
+            bail!("Markdown is not downloaded and verified")
+        }
+        Ok(Some(self.verified_path(catalog, &file.name)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

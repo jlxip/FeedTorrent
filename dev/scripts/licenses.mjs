@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const output = (command, args) =>
-  execFileSync(command, args, { cwd: root, encoding: "utf8" }).trim();
+  execFileSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }).trim();
 const notices = join(root, "target/release/licenses");
 await mkdir(notices, { recursive: true });
 for (const name of ["BASECOAT-LICENSE.md", "LUCIDE-LICENSE"])

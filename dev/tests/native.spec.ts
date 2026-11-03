@@ -19,7 +19,7 @@ async function magnet(page, uri) {
   await expect(page.locator("#open-dialog")).not.toBeVisible();
 }
 async function remove(page, id, files = false) {
-  await page.locator(`[data-id="${id}"] .danger`).click();
+  await page.locator(`[data-id="${id}"] button[data-variant="destructive"]`).click();
   await expect(page.locator("#delete-files")).not.toBeChecked();
   if (files) await page.locator("#delete-files").check();
   await page.locator("#remove-form button[type=submit]").click();
@@ -240,7 +240,8 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
       "true",
     );
     await expect(page.locator("#magnet")).toBeFocused();
-    const box = await dialog.boundingBox();
+    const surface = dialog.locator(":scope > .dialog-surface");
+    const box = await surface.boundingBox();
     expect(box!.x).toBeGreaterThan(0);
     expect(box!.y).toBeGreaterThan(0);
     await expect(
@@ -266,7 +267,7 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
         .evaluate((e: HTMLInputElement) => e.files?.[0]?.name),
     ).toBe("fixture.torrent");
     // Padding is inside the modal; a drag ending outside is not a backdrop click.
-    const bounds = await dialog.boundingBox();
+    const bounds = await surface.boundingBox();
     await page.mouse.click(bounds!.x + 5, bounds!.y + 5);
     await expect(dialog).toBeVisible();
     const title = await page.locator("#open-title").boundingBox();
@@ -320,6 +321,7 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
       buffer: Buffer.alloc(8 * 1024 * 1024 + 1),
     });
     await expect(page.locator("#torrent-error")).toContainText("8 MiB");
+    await expect(page.locator("#torrent-file")).toHaveAttribute("aria-invalid", "true");
     await expect(
       page.locator("#torrent-form button[type=submit]"),
     ).toBeDisabled();
@@ -391,9 +393,13 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
     const port = page.locator("#peer-port");
     const checkbox = page.locator("#seed-by-default");
     const close = dialog.getByRole("button", { name: "Close", exact: true });
+    await expect(folder).toBeFocused();
     await expect(dialog.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
     await checkbox.uncheck();
     await expect.poll(async () => (await app.api()).settings.seed_by_default).toBe(false);
+    await expect(dialog).toBeVisible();
+    const surface = await dialog.locator(":scope > .dialog-surface").boundingBox();
+    await page.mouse.click(surface!.x + 5, surface!.y + 5);
     await expect(dialog).toBeVisible();
 
     const changed = join(root, "automatic");
@@ -407,6 +413,8 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
     await port.fill("65536");
     await port.press("Tab");
     await expect(page.locator("#settings-error")).toContainText("between 0 and 65535");
+    await expect(port).toHaveAttribute("aria-invalid", "true");
+    await expect(port).toHaveAttribute("aria-describedby", /settings-error/);
     expect((await app.api()).settings.peer_port).toBe(original.peer_port);
     await close.click();
     await expect(dialog).toBeVisible();

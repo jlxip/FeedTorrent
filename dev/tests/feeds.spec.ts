@@ -48,6 +48,7 @@ test(
         await expect(page.locator('#feed-dialog')).not.toBeVisible();
         await expect(page.locator('#open-dialog')).not.toBeVisible();
         await expect(page.locator('#feed-title')).toHaveText('My reading list');
+        await expect(page.locator('#transfers-nav')).toHaveAttribute('aria-current','false');
         await page.locator('#follow-open').click();
         await expect(page.locator('#feed-magnet')).toHaveValue('');
         await expect(page.locator('#feed-name')).toHaveValue('');
@@ -67,7 +68,7 @@ test(
         await expect(page.locator('#entry-detail')).toBeVisible();
         await expect(page.locator('#entry-detail .file')).toHaveCount(3);
         await page.locator('#feed-settings').click();
-        await expect(page.locator('#feed-unfollow')).toHaveClass(/danger/);
+        await expect(page.locator('#feed-unfollow')).toHaveAttribute('data-variant','destructive');
         await page.locator('#feed-name').fill('Pending settings');
         await page.locator('#feed-mode').selectOption('mirror_catalogs');
         await page.locator('#feed-limit').fill('17');

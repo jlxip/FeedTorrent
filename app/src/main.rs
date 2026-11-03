@@ -1,4 +1,6 @@
 mod feeds;
+mod publishing;
+mod publishing_keys;
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
     body::Body,
@@ -116,10 +118,15 @@ struct Snapshot {
     feeds: Vec<feedtorrent_feeds::FeedView>,
     feed_error: String,
     feed_time_ms: u64,
+    publishing: publishing::View,
 }
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    ReadCatalogBody {
+        feed: String,
+        catalog: String,
+    },
     InspectSource {
         uri: String,
     },
@@ -190,6 +197,7 @@ struct Job {
 }
 #[derive(Clone)]
 struct App {
+    publishing: publishing::Client,
     jobs: mpsc::SyncSender<Job>,
     view: watch::Receiver<Snapshot>,
     origin: String,
@@ -279,7 +287,10 @@ fn payload_path(base: &str, id: &str) -> Result<PathBuf> {
     Ok(target)
 }
 struct Engine {
+    refresh_serial: u64,
     native: LibtorrentBackend,
+    publication_native: Option<publishing::Bridge>,
+    publication_view: Option<watch::Receiver<publishing::View>>,
     feeds: Option<feeds::FeedHost>,
     store: Store,
     dir: PathBuf,
@@ -312,9 +323,13 @@ impl Engine {
             feeds: vec![],
             feed_error: String::new(),
             feed_time_ms: 0,
+            publishing: publishing::View::default(),
         };
         let mut e = Self {
+            refresh_serial: 0,
             native,
+            publication_native: None,
+            publication_view: None,
             feeds: Some(feeds::FeedHost::new(&dir, args.isolated)),
             store,
             dir,
@@ -410,7 +425,9 @@ impl Engine {
             | Command::DownloadEntry { .. }
             | Command::ApproveTransfer { .. }
             | Command::RevealEntry { .. }) => return self.feed_command(c),
-            Command::InspectSource { .. } | Command::CatalogPage { .. } => {
+            Command::InspectSource { .. }
+            | Command::CatalogPage { .. }
+            | Command::ReadCatalogBody { .. } => {
                 bail!("Read-only command dispatched incorrectly")
             }
             Command::AddMagnet { uri } => {
@@ -571,6 +588,7 @@ impl Engine {
     }
     fn refresh(&mut self) -> Result<()> {
         let native = self.native.snapshot()?;
+        self.refresh_serial = self.refresh_serial.wrapping_add(1);
         let mut transfers = Vec::new();
         let mut changed = false;
         for record in &mut self.store.records {
@@ -701,6 +719,11 @@ impl Engine {
             dht_nodes: native.dht_nodes,
             listen_port: native.listen_port,
             warning: native.warning,
+            publishing: self
+                .publication_view
+                .as_ref()
+                .map(|v| v.borrow().clone())
+                .unwrap_or_default(),
             ready: true,
             feeds: self
                 .feeds
@@ -831,6 +854,7 @@ async fn command(
             Err(e) => api_error(StatusCode::BAD_REQUEST, e),
         };
     }
+    let read_body = matches!(&command, Command::ReadCatalogBody { .. });
     let (tx, rx) = oneshot::channel();
     if app.jobs.try_send(Job { command, reply: tx }).is_err() {
         return api_error(
@@ -839,7 +863,18 @@ async fn command(
         );
     }
     match rx.await {
-        Ok(Ok(result)) => Json(result).into_response(),
+        Ok(Ok(result)) => {
+            if read_body {
+                let Some(path) = result.get("path").and_then(|p| p.as_str()) else {
+                    return Json(serde_json::json!({"body":null})).into_response();
+                };
+                return match app.publishing.read_body(PathBuf::from(path)).await {
+                    Ok(v) => Json(v).into_response(),
+                    Err(e) => api_error(StatusCode::BAD_REQUEST, e),
+                };
+            }
+            Json(result).into_response()
+        }
         Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, e),
         Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, "Engine stopped"),
     }
@@ -847,10 +882,30 @@ async fn command(
 async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
     let (content_type, bytes): (&str, &[u8]) = match name.as_str() {
         "main.js" => ("text/javascript", include_bytes!("../../web/dist/main.js")),
+        "publishing.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/publishing.js"),
+        ),
+        "markdown.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/markdown.js"),
+        ),
         "feeds.js" => ("text/javascript", include_bytes!("../../web/dist/feeds.js")),
         "types.js" => ("text/javascript", include_bytes!("../../web/dist/types.js")),
         "app.css" => ("text/css", include_bytes!("../../web/dist/app.css")),
         "basecoat.css" => ("text/css", include_bytes!("../../web/dist/basecoat.css")),
+        "basecoat-runtime.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/basecoat-runtime.js"),
+        ),
+        "basecoat-tabs.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/basecoat-tabs.js"),
+        ),
+        "basecoat-sidebar.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/basecoat-sidebar.js"),
+        ),
         "theme.js" => ("text/javascript", include_bytes!("../../web/dist/theme.js")),
         "lucide.js" => (
             "text/javascript",
@@ -917,7 +972,11 @@ async fn main() -> Result<()> {
         feeds: vec![],
         feed_error: String::new(),
         feed_time_ms: 0,
+        publishing: publishing::View::default(),
     };
+    let (publication_tx, publication_rx) = mpsc::sync_channel(16);
+    let (publishing, publishing_thread) = publishing::start(&dir, publication_tx)?;
+    let publication_view = publishing.view.clone();
     let (views, view) = watch::channel(first);
     let (jobs, receiver) = mpsc::sync_channel::<Job>(32);
     let (init_tx, init_rx) = oneshot::channel();
@@ -930,6 +989,9 @@ async fn main() -> Result<()> {
                 return Err(e);
             }
         };
+        engine.publication_native = Some(publishing::Bridge::new(publication_rx));
+        engine.publication_view = Some(publication_view);
+        engine.refresh()?;
         views.send_replace(engine.view.clone());
         let _ = init_tx.send(Ok(()));
         let mut checkpoint = Instant::now();
@@ -941,6 +1003,7 @@ async fn main() -> Result<()> {
             match receiver.recv_timeout(Duration::from_millis(200)) {
                 Ok(job) => {
                     let result = match job.command {
+                        Command::ReadCatalogBody{feed,catalog}=>engine.catalog_body(&feed,&catalog).map(|p|serde_json::json!({"path":p})),
                         Command::CatalogPage{feed,catalog,offset}=>engine.feeds.as_ref().context("Feed service unavailable").and_then(|h|h.manager.page(&feed,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total})),
                         c=>engine.apply(c).map(|()|serde_json::json!({"ok":true})),
                     }.map_err(|e|format!("{e:#}"));
@@ -952,6 +1015,10 @@ async fn main() -> Result<()> {
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if let Some(mut bridge) = engine.publication_native.take() {
+                bridge.tick(&mut engine);
+                engine.publication_native = Some(bridge);
             }
             engine.feed_tick();
             if refresh.elapsed() >= Duration::from_secs(1) {
@@ -983,6 +1050,7 @@ async fn main() -> Result<()> {
     getrandom::fill(&mut token).map_err(|e| anyhow!("Cannot create session token: {e}"))?;
     let token = token.iter().map(|b| format!("{b:02x}")).collect();
     let app = Arc::new(App {
+        publishing: publishing.clone(),
         jobs,
         view,
         origin: origin.clone(),
@@ -995,6 +1063,12 @@ async fn main() -> Result<()> {
         .route("/api/snapshot", get(snapshot))
         .route("/api/events", get(events))
         .route("/api/commands", post(command))
+        .route("/api/publishing", post(publishing::http::command))
+        .route("/api/publishing/backup", get(publishing::http::export))
+        .route(
+            "/api/publishing/import",
+            post(publishing::http::import).layer(DefaultBodyLimit::max(256 * 1024 * 1024)),
+        )
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app);
@@ -1020,9 +1094,13 @@ async fn main() -> Result<()> {
             let _ = stop.send(());
         })
         .await?;
+    publishing.stop();
     thread
         .join()
         .map_err(|_| anyhow!("Engine thread panicked"))??;
+    publishing_thread
+        .join()
+        .map_err(|_| anyhow!("Publishing worker panicked"))?;
     drop(lock);
     Ok(())
 }

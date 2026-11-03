@@ -1,3 +1,4 @@
+import {markdown} from "./markdown.js";
 import type {CatalogPage, Command, Feed, FeedConfig, FeedEntry, FeedMode, Snapshot} from './types.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
@@ -17,13 +18,28 @@ const size = (n: number) => {
   }
   return `${n.toFixed(i && n < 10 ? 1 : 0)} ${units[i]}`;
 };
-const button = (label: string, action: () => void, cls = 'btn') => {
+const button = (label: string, action: () => void, variant = 'default', cls = '') => {
   const b = document.createElement('button');
   b.type = 'button';
   b.textContent = label;
-  b.className = cls;
+  b.className = ['btn', cls].filter(Boolean).join(' ');
+  b.dataset.variant = variant;
   b.onclick = action;
   return b;
+};
+const alertMessage = (message: string) => {
+  const alert = node('div', '', 'alert');
+  alert.dataset.variant = 'destructive';
+  alert.setAttribute('role', 'alert');
+  alert.append(node('section', message));
+  return alert;
+};
+const emptyMessage = (message: string) => {
+  const empty = node('div', '', 'empty');
+  const header = node('header', '');
+  header.append(node('h3', message));
+  empty.append(header);
+  return empty;
 };
 interface Host {
   call: (command: Command, refresh?: boolean) => Promise<any>;
@@ -57,18 +73,18 @@ export class FeedsUI {
   private editDrafts = new Map<string, FeedDraft>();
   constructor(private host: Host) {
     $('follow-open').onclick = () => this.follow();
-    $('sections-button').onclick = () => {
-      const open = document.body.classList.toggle('nav-open');
-      $('sections-button').setAttribute('aria-expanded', String(open));
-    };
     $('feed-refresh').onclick = () => this.run({type: 'refresh_feed', id: this.feedId});
     $('feed-settings').onclick = () => {
       const f = this.feed();
       if (f) this.settings(f);
     };
     $<HTMLInputElement>('feed-unlimited').onchange = () => {
-      $<HTMLInputElement>('feed-limit').disabled =
-          $<HTMLInputElement>('feed-unlimited').checked;
+      const limit = $<HTMLInputElement>('feed-limit');
+      limit.disabled = $<HTMLInputElement>('feed-unlimited').checked;
+      if (limit.disabled && limit.getAttribute('aria-invalid') === 'true') {
+        limit.removeAttribute('aria-invalid');
+        $('follow-error').textContent = '';
+      }
     };
     $('feed-form').onsubmit = async event => {
       event.preventDefault();
@@ -92,8 +108,6 @@ export class FeedsUI {
       this.offset = 0;
       this.selected = null;
       this.signature = '';
-      document.body.classList.remove('nav-open');
-      $('sections-button').setAttribute('aria-expanded', 'false');
       this.render(this.state, this.connected);
     });
   }
@@ -135,6 +149,7 @@ export class FeedsUI {
     $<HTMLInputElement>('feed-unlimited').checked = c.automatic_limit === null;
     $<HTMLInputElement>('feed-limit').disabled = c.automatic_limit === null;
     $('follow-error').textContent = '';
+    for (const field of $('feed-form').querySelectorAll('[aria-invalid]')) field.removeAttribute('aria-invalid');
   }
   private settings(f: Feed) {
     this.editing = f.id;
@@ -157,7 +172,8 @@ export class FeedsUI {
       const mib = Number($<HTMLInputElement>('feed-limit').value);
       if (!unlimited &&
           (!Number.isSafeInteger(mib) || mib < 1 || !Number.isSafeInteger(mib * 1048576)))
-        throw Error('Enter a positive whole MiB limit');
+        { $<HTMLInputElement>('feed-limit').setAttribute('aria-invalid', 'true');
+          throw Error('Enter a positive whole MiB limit'); }
       const config: FeedConfig = {
         name: $<HTMLInputElement>('feed-name').value.trim(),
         mode: $<HTMLSelectElement>('feed-mode').value as FeedMode,
@@ -170,7 +186,10 @@ export class FeedsUI {
       } else {
         const uri = $<HTMLInputElement>('feed-magnet').value.trim();
         const inspected = await this.host.call({type: 'inspect_source', uri}, false);
-        if (inspected.kind !== 'feed') throw Error('Enter a BEP 46 feed magnet');
+        if (inspected.kind !== 'feed') {
+          $<HTMLInputElement>('feed-magnet').setAttribute('aria-invalid', 'true');
+          throw Error('Enter a BEP 46 feed magnet');
+        }
         id = inspected.id as string;
         if (!this.state?.feeds.some(f => f.id === id)) {
           await this.host.call({type: 'follow_feed', uri, config});
@@ -183,10 +202,16 @@ export class FeedsUI {
       this.signature = '';
       location.hash = `#/feeds/${id}`;
     } catch (e) {
-      $('follow-error').textContent = String(e)
+      $('follow-error').textContent = String(e);
+      if (/BEP 46|InvalidMagnet|InvalidKey|magnet link|infohash/i.test(String(e))) $('feed-magnet').setAttribute('aria-invalid', 'true');
     } finally {
       submit.disabled = !this.connected;
     }
+  }
+  private showError(message: string) {
+    const error = $('feed-error');
+    if (error.firstElementChild!.textContent !== message) error.firstElementChild!.textContent = message;
+    error.hidden = !message;
   }
   private feed() {
     return this.state?.feeds.find(f => f.id === this.feedId);
@@ -197,8 +222,7 @@ export class FeedsUI {
       this.signature = '';
       this.render(this.state, this.connected);
     } catch (e) {
-      $('feed-error').textContent = String(e);
-      $('feed-error').hidden = false;
+      this.showError(String(e));
     }
   }
   render(state: Snapshot|null, connected: boolean) {
@@ -207,9 +231,10 @@ export class FeedsUI {
     const route = location.hash.split('/');
     const isFeed = route[1] === 'feeds';
     this.feedId = isFeed ? route[2] || '' : '';
-    $('transfer-view').hidden = isFeed;
+    const isTransfers = !isFeed && route[1] !== 'own';
+    $('transfer-view').hidden = !isTransfers;
     $('feed-view').hidden = !isFeed;
-    $('transfers-nav').setAttribute('aria-current', isFeed ? 'false' : 'page');
+    $('transfers-nav').setAttribute('aria-current', isTransfers ? 'page' : 'false');
     const feeds = state?.feeds || [];
     const nav = JSON.stringify(feeds.map(f => [f.id, f.name]));
     if (nav !== this.navSignature) {
@@ -218,9 +243,13 @@ export class FeedsUI {
       for (const f of feeds) {
         const a = document.createElement('a');
         a.href = `#/feeds/${f.id}`;
-        a.textContent = f.name;
+        const label = document.createElement('span');
+        label.textContent = f.name;
+        a.append(label);
         a.dataset.feed = f.id;
-        $('feed-nav').append(a);
+        const item = document.createElement('li');
+        item.append(a);
+        $('feed-nav').append(item);
       }
     }
     for (const a of $('feed-nav').querySelectorAll('a'))
@@ -257,8 +286,7 @@ export class FeedsUI {
         `${connected ? f.state : 'Server disconnected'} · ${mode}${
             f.mode !== 'current_catalog' ? ' · ' + f.mirror_status :
                                            ''} · ${f.update_peers} update peers · ${age}`;
-    $('feed-error').textContent = f.error || state?.feed_error || '';
-    $('feed-error').hidden = !$('feed-error').textContent;
+    this.showError(f.error || state?.feed_error || '');
     const target = route[3] || f.available || f.head || '';
     if (target !== this.catalogId) {
       this.catalogId = target;
@@ -271,12 +299,12 @@ export class FeedsUI {
     const links = $('catalog-links');
     links.replaceChildren();
     if (target && target !== f.head && f.head)
-      links.append(button('Current catalog', () => this.go(f.head!), 'quiet'));
+      links.append(button('Current catalog', () => this.go(f.head!), 'ghost'));
     if (c?.previous)
       links.append(
-          button('Previous catalog', () => void this.open(c.previous!), 'quiet'));
+          button('Previous catalog', () => void this.open(c.previous!), 'ghost'));
     if (c?.archive)
-      links.append(button('Archive', () => void this.open(c.archive!), 'quiet'));
+      links.append(button('Archive', () => void this.open(c.archive!), 'ghost'));
     if (f.head && target !== f.head && !f.catalogs.find(c => c.id === f.head)?.ready)
       links.append(node('span', 'Latest catalog is not yet available', 'muted'));
     const status = $('catalog-status');
@@ -285,7 +313,7 @@ export class FeedsUI {
       status.append(
           document.createTextNode(`${c.state}${c.total ? ' · ' + size(c.total) : ''}${
               c.count ? ' · ' + c.indexed + ' / ' + c.count + ' items indexed' : ''}`));
-      if (c.error) status.append(node('p', c.error, 'transfer-error'));
+      if (c.error) status.append(alertMessage(c.error));
       if (c.state === 'Awaiting approval') {
         const b = button(
             'Download once', () => void this.run({type: 'approve_transfer', id: c.id}));
@@ -317,8 +345,7 @@ export class FeedsUI {
       await this.host.call({type: 'open_catalog', feed: this.feedId, id});
       this.go(id);
     } catch (e) {
-      $('feed-error').hidden = false;
-      $('feed-error').textContent = String(e);
+      this.showError(String(e));
     }
   }
   private async load() {
@@ -333,6 +360,8 @@ export class FeedsUI {
         return;
       this.page = page;
       this.drawPage();
+      $("catalog-body").replaceChildren();
+      if(page.catalog.ready) {try {const value=await this.host.call({type:"read_catalog_body",feed,catalog},false);if(request===this.request&&catalog===this.catalogId&&value.body)$("catalog-body").replaceChildren(markdown(value.body,target=>{if(target.startsWith("magnet:"))return()=>{if(target.includes("urn:btpk:"))this.follow(target);else void this.run({type:"add_magnet",uri:target})};let name:string;try{name=decodeURIComponent(target)}catch{return null}const item=page.entries.find(e=>e.name===name);return item?()=>void this.download(item):null}));}catch(e){if(catalog===this.catalogId)$("catalog-body").textContent=String(e)}}
     } catch (e) {
       if (feed === this.feedId) {
         $('catalog-status').textContent = String(e);
@@ -382,8 +411,7 @@ export class FeedsUI {
       else if (e.infohash)
         this.host.transfer(e.infohash);
     } catch (error) {
-      $('feed-error').hidden = false;
-      $('feed-error').textContent = String(error);
+      this.showError(String(error));
     }
   }
   private drawPage() {
@@ -392,9 +420,7 @@ export class FeedsUI {
     const list = $('catalog-entries');
     list.replaceChildren();
     if (!page.entries.length)
-      list.append(node(
-          'p', page.catalog.ready ? 'No items' : 'Catalog files are not available yet.',
-          'muted'));
+      list.append(emptyMessage(page.catalog.ready ? 'No items' : 'Catalog files are not available yet.'));
     for (const entry of page.entries) {
       const row = node('article', '', 'catalog-row');
       row.dataset.index = String(entry.index);
@@ -402,7 +428,7 @@ export class FeedsUI {
       const name = button(entry.name, () => {
         this.selected = entry.index;
         this.drawPage();
-      }, 'entry-name');
+      }, 'link', 'entry-name');
       row.append(
           name, node('span', size(entry.total ?? entry.length), 'entry-size'),
           node(
@@ -418,7 +444,7 @@ export class FeedsUI {
                   }[entry.kind] ||
                   entry.kind} · ${entry.state}`,
               'entry-state'));
-      if (entry.error) row.append(node('p', entry.error, 'transfer-error'));
+      if (entry.error) row.append(alertMessage(entry.error));
       row.append(this.controls(entry));
       list.append(row);
     }
@@ -453,7 +479,7 @@ export class FeedsUI {
           node('h3', e.name),
           node('p', `${e.state} · ${size(e.total ?? e.length)}`, 'muted'),
           this.controls(e));
-      if (e.error) detail.append(node('p', e.error, 'transfer-error'));
+      if (e.error) detail.append(alertMessage(e.error));
       for (const f of e.files) {
         const row = node('div', '', 'file');
         row.append(node('span', f.name), node('span', size(f.length), 'muted'));

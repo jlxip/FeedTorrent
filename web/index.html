@@ -13,52 +13,97 @@
     <link rel="stylesheet" href="./app.css" />
     <script src="./theme.js"></script>
     <script src="./lucide.js" defer></script>
+    <script src="./basecoat-runtime.js"></script>
+    <script src="./basecoat-tabs.js"></script>
+    <script src="./basecoat-sidebar.js"></script>
     <script src="./main.js" type="module"></script>
   </head>
   <body>
     <header>
-      <button id="sections-button" class="quiet" type="button" aria-controls="sidebar" aria-expanded="false">Sections</button><h1>FeedTorrent</h1>
+      <button id="sections-button" class="btn" data-variant="ghost" type="button" aria-controls="sidebar" aria-expanded="false">Sections</button><h1>FeedTorrent</h1>
       <button id="open-button" class="btn" disabled>Open</button>
       <button id="settings-open" class="btn" disabled>Settings</button>
     </header>
-    <div class="workspace"><aside id="sidebar" aria-label="Sections"><nav><a href="#/transfers" id="transfers-nav">Transfers</a><div class="side-heading"><span>FEEDS</span><button class="quiet" id="follow-open" aria-label="Follow a feed">+</button></div><div id="feed-nav"></div><p class="muted" id="no-feeds">No feeds</p></nav></aside>
+    <div class="workspace">
+      <aside id="sidebar" class="sidebar" data-breakpoint="768" aria-label="Sections">
+        <nav aria-label="Sections">
+          <header class="sidebar-close-row"><button type="button" class="btn" data-variant="ghost" data-size="icon-sm" aria-label="Close sections">×</button></header>
+          <section>
+            <div role="group" aria-label="Transfers"><ul><li><a href="#/transfers" id="transfers-nav"><span>Transfers</span></a></li></ul></div>
+            <div role="group" aria-labelledby="feeds-label">
+              <div class="side-heading"><h3 id="feeds-label">FEEDS</h3><button type="button" class="btn" data-variant="ghost" data-size="icon-sm" id="follow-open" data-keep-mobile-sidebar-open aria-label="Follow a feed">+</button></div>
+              <ul id="feed-nav"></ul><p class="muted" id="no-feeds">No feeds</p>
+            </div>
+            <div role="group" aria-labelledby="own-feeds-label">
+              <div class="side-heading"><h3 id="own-feeds-label">YOUR FEEDS</h3><button type="button" class="btn" data-variant="ghost" data-size="icon-sm" id="own-create" data-keep-mobile-sidebar-open aria-label="Create a feed">+</button></div>
+              <ul id="own-nav"></ul>
+            </div>
+          </section>
+        </nav>
+      </aside>
     <main>
       <section id="transfer-view">
-      <p id="notice" role="alert" hidden></p>
-      <p id="network-warning" class="transfer-error" role="status" hidden></p>
+      <div id="notice" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
+      <div id="network-warning" class="alert" data-variant="default" role="status" hidden><section></section></div>
       <div class="list-heading">
         <h2>Transfers</h2>
         <span id="count"></span>
       </div>
-      <div id="empty">No transfers</div>
+      <div id="empty" class="empty" role="status"><header><h3>No transfers</h3></header></div>
       <section id="transfers" aria-label="Transfers"></section>
       <section id="file-section" hidden>
         <div class="list-heading">
           <h2 id="file-heading">Files</h2>
-          <button id="show-folder" class="quiet">Show folder</button>
+          <button id="show-folder" class="btn" data-variant="ghost">Show folder</button>
         </div>
         <p id="save-path" class="muted"></p>
         <div id="files"></div>
       </section>
       </section>
       <section id="feed-view" hidden>
-        <div class="list-heading feed-heading"><h2 id="feed-title"></h2><div class="feed-heading-actions"><button class="quiet" id="feed-refresh">Refresh</button><button class="quiet" id="feed-settings">Feed settings</button></div></div>
-        <p id="feed-status" class="muted" role="status"></p><p id="feed-error" class="transfer-error" role="alert" hidden></p>
-        <div id="catalog-links" class="catalog-links"></div><p id="catalog-status" role="status"></p>
+        <div class="list-heading feed-heading"><h2 id="feed-title"></h2><div class="feed-heading-actions"><button class="btn" data-variant="ghost" id="feed-refresh">Refresh</button><button class="btn" data-variant="ghost" id="feed-settings">Feed settings</button></div></div>
+        <p id="feed-status" class="muted" role="status"></p><div id="feed-error" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
+        <div id="catalog-body"></div><div id="catalog-links" class="catalog-links"></div><div id="catalog-status" role="status"></div>
         <div class="catalog-layout"><section aria-label="Catalog"><div id="catalog-entries"></div><div id="catalog-pages" class="catalog-pages"></div></section><section id="entry-detail" aria-label="Selected item" hidden></section></div>
+      </section>
+      <section id="own-view" hidden>
+        <div class="list-heading"><div class="own-heading-group"><h2 id="own-heading">Own feed</h2><button type="button" class="publication-indicator" id="own-indicator" data-state="draft" data-help="own-publication-help" aria-label="Draft" aria-describedby="own-publication-help"><span aria-hidden="true"></span></button><span class="field-tooltip publication-tooltip" id="own-publication-help" role="tooltip" hidden>Draft</span></div><div class="own-actions"><button class="btn" data-variant="ghost" id="own-copy">Copy feed magnet</button><button class="btn" id="own-toggle" data-variant="outline">Read</button></div></div>
+        <p class="sr-only" id="own-status" role="status" aria-live="polite"></p><div id="own-error" class="alert" data-variant="destructive" role="alert" hidden><section></section></div><nav class="breadcrumb" id="own-breadcrumb" aria-label="Page"></nav>
+        <div id="own-editor" class="own-fields"><div class="field"><label for="own-title" class="label">Title</label><input id="own-title" maxlength="256" autocomplete="off" class="input" type="text" aria-describedby="own-error"></div><div class="field"><div class="field-label"><label class="label" for="own-body">Body</label><span class="muted">Markdown</span></div><textarea id="own-body" rows="9" spellcheck="false" class="textarea" aria-describedby="own-error"></textarea></div></div>
+        <div id="own-preview"></div><div class="list-heading"><h3>Contents</h3><div class="own-actions"><button class="btn" id="own-new-page" data-variant="outline">New page</button><button class="btn" id="own-add-torrent" data-variant="outline">Add .torrent</button><input id="own-torrent" type="file" accept=".torrent" hidden></div></div><div id="own-entries"></div>
+        <div class="form-actions"><span class="muted" id="own-draft-status" role="status">Draft saved</span><div class="own-actions"><button type="button" class="btn" id="own-retry" hidden data-variant="outline">Retry</button><button type="button" class="btn" id="own-cancel" hidden data-variant="outline">Cancel</button><button class="btn" id="own-publish">Publish</button></div></div>
       </section>
     </main></div>
     <footer>
       <span id="status" role="status" aria-live="polite">Starting…</span
       ><span id="network">Connecting…</span>
     </footer>
-    <dialog id="open-dialog" aria-labelledby="open-title">
-      <div class="dialog-title">
-        <h2 id="open-title">Open</h2>
-        <button class="quiet dialog-close" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
+    <dialog id="own-create-dialog" aria-labelledby="own-create-heading" class="dialog">
+      <div class="dialog-surface">
+        <header><h2 id="own-create-heading">Create feed</h2></header>
+<form id="own-create-form"><div class="field"><label for="own-create-title" class="label">Title</label><input id="own-create-title" required maxlength="256" autocomplete="off" class="input" type="text" aria-describedby="own-create-error"></div><div id="own-key-fields"><div class="field"><label for="own-key-password" class="label">Publishing password</label><input type="password" id="own-key-password" autocomplete="new-password" class="input" aria-describedby="own-create-error"></div><div class="field"><label for="own-key-confirm" class="label">Confirm password</label><input type="password" id="own-key-confirm" autocomplete="new-password" class="input" aria-describedby="own-create-error"></div></div><p id="own-create-error" class="transfer-error" role="alert"></p><div class="form-actions"><button class="btn" id="own-create-submit">Create feed</button></div></form>
+        <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
       </div>
-      <div class="tabs">
-        <div
+    </dialog>
+    <dialog id="own-publish-dialog" aria-labelledby="own-publish-heading" class="dialog">
+      <div class="dialog-surface">
+        <header><h2 id="own-publish-heading">Publish feed</h2></header>
+<form id="own-publish-form"><div class="field"><label for="own-publish-password" class="label">Password</label><input type="password" id="own-publish-password" required autocomplete="current-password" class="input" aria-describedby="own-publish-error"></div><p class="transfer-error" id="own-publish-error" role="alert"></p><div class="form-actions"><button class="btn" id="own-publish-submit">Publish feed</button></div></form>
+        <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
+      </div>
+    </dialog>
+    <dialog id="publishing-keys-dialog" aria-labelledby="own-keys-heading" class="dialog">
+      <div class="dialog-surface">
+        <header><h2 id="own-keys-heading">Publishing keys</h2></header>
+<div class="own-actions"><button class="btn" id="own-export-keys" data-variant="outline">Keys and identities</button><button class="btn" id="own-export-full" data-variant="outline">Full publishing backup</button></div><form id="own-import-form"><h3 class="label" id="own-import-heading">Import backup</h3><div class="field"><input type="file" id="own-import-file" accept=".tar" required class="input" aria-describedby="own-import-error" aria-labelledby="own-import-heading"></div><div class="field"><label for="own-import-password" class="label">Backup password</label><input type="password" id="own-import-password" required autocomplete="current-password" class="input" aria-describedby="own-import-error"></div><p class="transfer-error" role="alert" id="own-import-error"></p><div class="form-actions"><button class="btn">Import</button></div></form><form id="own-password-form"><h3 class="label">Change password</h3><div class="field"><label for="own-old-password" class="label">Current password</label><input type="password" id="own-old-password" required autocomplete="current-password" class="input" aria-describedby="own-password-error"></div><div class="field"><label for="own-new-password" class="label">New password</label><input type="password" id="own-new-password" required autocomplete="new-password" class="input" aria-describedby="own-password-error"></div><div class="field"><label for="own-confirm-password" class="label">Confirm password</label><input type="password" id="own-confirm-password" required autocomplete="new-password" class="input" aria-describedby="own-password-error"></div><p class="transfer-error" role="alert" id="own-password-error"></p><div class="form-actions"><button class="btn">Change password</button></div></form><p id="own-keys-status" role="status"></p>
+        <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
+      </div>
+    </dialog>
+    <dialog id="open-dialog" class="dialog" aria-labelledby="open-title">
+      <div class="dialog-surface">
+        <header><h2 id="open-title">Open</h2></header>
+      <div class="tabs" id="open-tabs">
+        <nav
           role="tablist"
           aria-label="Torrent source"
           aria-orientation="horizontal"
@@ -83,17 +128,17 @@
           >
             Torrent file
           </button>
-        </div>
+        </nav>
         <section id="magnet-panel" role="tabpanel" aria-labelledby="magnet-tab">
           <form id="magnet-form">
-            <label
-              >Magnet or infohash<input
+            <div class="field"><label for="magnet" class="label">Magnet or infohash</label><input
+                class="input"
                 id="magnet"
+                aria-describedby="magnet-error"
                 placeholder="magnet:?xt=urn:btih:…"
                 required
                 autocomplete="off"
-                spellcheck="false"
-            /></label>
+                spellcheck="false" type="text" /></div>
             <p id="magnet-error" class="transfer-error" role="alert"></p>
             <div class="form-actions">
               <button class="btn" type="submit" disabled>Open</button>
@@ -110,12 +155,13 @@
             <div class="file-picker">
               <input
                 id="torrent-file"
+                aria-describedby="torrent-error"
                 type="file"
                 accept=".torrent,application/x-bittorrent"
                 aria-label="Torrent file"
                 hidden
               />
-              <button id="choose-torrent" class="btn" type="button">
+              <button id="choose-torrent" class="btn" data-variant="outline" type="button">
                 Choose file
               </button>
               <span id="torrent-name" class="muted" aria-live="polite"
@@ -129,62 +175,64 @@
           </form>
         </section>
       </div>
-    </dialog>
-    <dialog id="settings-dialog">
-      <div class="dialog-title">
-        <h2>Settings</h2>
-        <button class="quiet dialog-close" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
+        <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
       </div>
+    </dialog>
+    <dialog id="settings-dialog" class="dialog" aria-labelledby="settings-title">
+      <div class="dialog-surface">
+        <header><h2 id="settings-title">Settings</h2></header>
       <form id="settings-form">
         <div class="field">
           <div class="field-label">
-            <label for="download-dir">Download folder</label>
-            <button type="button" class="field-help" data-help="download-dir-help" aria-label="About download folder" aria-describedby="download-dir-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
+            <label for="download-dir" class="label">Download folder</label>
+            <button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="download-dir-help" aria-label="About download folder" aria-describedby="download-dir-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
             <span id="download-dir-help" class="field-tooltip" role="tooltip" hidden>Relative to server's working directory</span>
           </div>
-          <input id="download-dir" required autocomplete="off" aria-describedby="download-dir-help" />
+          <input class="input" id="download-dir" autofocus required autocomplete="off" aria-describedby="download-dir-help settings-error" type="text" />
         </div>
         <div class="field">
           <div class="field-label">
-            <label for="peer-port">Listening port</label>
-            <button type="button" class="field-help" data-help="peer-port-help" aria-label="About listening port" aria-describedby="peer-port-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
+            <label for="peer-port" class="label">Listening port</label>
+            <button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="peer-port-help" aria-label="About listening port" aria-describedby="peer-port-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
             <span id="peer-port-help" class="field-tooltip" role="tooltip" hidden>Requires a server restart</span>
           </div>
-          <input id="peer-port" type="number" min="0" max="65535" required aria-describedby="peer-port-help" />
+          <input class="input" id="peer-port" type="number" min="0" max="65535" required aria-describedby="peer-port-help settings-error" />
         </div>
-        <label class="checkbox-label"><input id="seed-by-default" type="checkbox" checked />Seed by default</label>
+        <div class="field" data-orientation="horizontal"><input class="input" id="seed-by-default" type="checkbox" checked /><label for="seed-by-default" class="label">Seed by default</label></div>
         <p id="settings-error" class="transfer-error" role="alert"></p>
-        <p id="settings-save-status" class="muted" role="status" aria-live="polite" hidden></p>
+        <button type="button" class="btn" data-variant="ghost" id="publishing-keys-open">Publishing keys</button><p id="settings-save-status" class="muted" role="status" aria-live="polite" hidden></p>
       </form>
-    </dialog>
-    <dialog id="feed-dialog" aria-labelledby="feed-dialog-title">
-      <div class="dialog-title"><h2 id="feed-dialog-title">Follow feed</h2><button class="quiet dialog-close" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button></div>
-      <form id="feed-form">
-        <label>Feed magnet<input id="feed-magnet" required autocomplete="off" spellcheck="false" placeholder="magnet:?xs=urn:btpk:…" /></label>
-        <label>Name<input id="feed-name" maxlength="256" autocomplete="off" placeholder="Optional" /></label>
-        <div class="field"><div class="field-label"><label for="feed-mode">Download mode</label><button type="button" class="field-help" data-help="feed-mode-help" aria-label="About download mode" aria-describedby="feed-mode-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="feed-mode-help" class="field-tooltip" role="tooltip" hidden>Current catalog keeps the latest catalog. Mirror catalogs includes its history. Mirror all also downloads the listed torrents. Other feed identities are excluded.</span></div>
-          <select id="feed-mode"><option value="current_catalog">Current catalog</option><option value="mirror_catalogs">Mirror catalogs</option><option value="mirror_all">Mirror all</option></select></div>
-        <div class="field"><div class="field-label"><label for="feed-limit">Automatic download limit · MiB</label><button type="button" class="field-help" data-help="feed-limit-help" aria-label="About automatic download limit" aria-describedby="feed-limit-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="feed-limit-help" class="field-tooltip" role="tooltip" hidden>Maximum size of each automatically downloaded torrent, including catalogs and Mirror all content. This is not a total storage quota. Download once does not change this limit.</span></div><input id="feed-limit" type="number" min="1" step="1" value="8" required /></div>
-        <label class="checkbox-label"><input id="feed-unlimited" type="checkbox" />No limit</label>
-        <p id="follow-error" class="transfer-error" role="alert"></p>
-        <div class="form-actions feed-settings-actions"><button type="button" class="btn danger" id="feed-unfollow" hidden>Unfollow</button><button class="btn" id="feed-submit" type="submit">Follow feed</button></div>
-      </form>
-    </dialog>
-    <dialog id="remove-dialog">
-      <div class="dialog-title">
-        <h2>Remove transfer</h2>
-        <button class="quiet dialog-close" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
+        <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
       </div>
-      <form id="remove-form">
-        <p id="remove-name"></p>
-        <label class="check"
-          ><input id="delete-files" type="checkbox" />Delete downloaded
-          files</label
-        >
+    </dialog>
+    <dialog id="feed-dialog" aria-labelledby="feed-dialog-title" class="dialog">
+      <div class="dialog-surface">
+        <header><h2 id="feed-dialog-title">Follow feed</h2></header>
+<form id="feed-form">
+        <div class="field"><label for="feed-magnet" class="label">Feed magnet</label><input id="feed-magnet" required autocomplete="off" spellcheck="false" placeholder="magnet:?xs=urn:btpk:…" class="input" type="text" aria-describedby="follow-error" /></div>
+        <div class="field"><label for="feed-name" class="label">Name</label><input id="feed-name" maxlength="256" autocomplete="off" placeholder="Optional" class="input" type="text" aria-describedby="follow-error" /></div>
+        <div class="field"><div class="field-label"><label for="feed-mode" class="label">Download mode</label><button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="feed-mode-help" aria-label="About download mode" aria-describedby="feed-mode-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="feed-mode-help" class="field-tooltip" role="tooltip" hidden>Current catalog keeps the latest catalog. Mirror catalogs includes its history. Mirror all also downloads the listed torrents. Other feed identities are excluded.</span></div>
+          <select id="feed-mode" class="select" aria-describedby="feed-mode-help follow-error"><option value="current_catalog">Current catalog</option><option value="mirror_catalogs">Mirror catalogs</option><option value="mirror_all">Mirror all</option></select></div>
+        <div class="field"><div class="field-label"><label for="feed-limit" class="label">Automatic download limit · MiB</label><button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="feed-limit-help" aria-label="About automatic download limit" aria-describedby="feed-limit-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="feed-limit-help" class="field-tooltip" role="tooltip" hidden>Maximum size of each automatically downloaded torrent, including catalogs and Mirror all content. This is not a total storage quota. Download once does not change this limit.</span></div><input id="feed-limit" type="number" min="1" step="1" value="8" required class="input" aria-describedby="feed-limit-help follow-error" /></div>
+        <div class="field" data-orientation="horizontal"><input id="feed-unlimited" type="checkbox" class="input" /><label for="feed-unlimited" class="label">No limit</label></div>
+        <p id="follow-error" class="transfer-error" role="alert"></p>
+        <div class="form-actions feed-settings-actions"><button type="button" class="btn" data-variant="destructive" id="feed-unfollow" hidden>Unfollow</button><button class="btn" id="feed-submit" type="submit">Follow feed</button></div>
+      </form>
+        <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
+      </div>
+    </dialog>
+    <dialog id="remove-dialog" aria-labelledby="remove-title" class="dialog">
+      <div class="dialog-surface">
+        <header><h2 id="remove-title">Remove transfer</h2></header>
+<form id="remove-form">
+        <p id="remove-name"></p><p id="remove-error" class="transfer-error" role="alert"></p>
+        <div class="field" data-orientation="horizontal"><input id="delete-files" type="checkbox" class="input" /><label for="delete-files" class="label">Delete downloaded files</label></div>
         <div class="form-actions">
-          <button class="btn danger" type="submit">Remove</button>
+          <button class="btn" data-variant="destructive" type="submit">Remove</button>
         </div>
       </form>
+        <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
+      </div>
     </dialog>
   </body>
 </html>

@@ -1,3 +1,4 @@
+import type {PublishingState} from "./publishing.js";
 export interface Settings {
   download_dir: string;
   peer_port: number;
@@ -30,6 +31,7 @@ export interface Transfer {
   feed: string|null;
 }
 export interface Snapshot {
+  publishing:PublishingState;
   engine: string;
   transfers: Transfer[];
   settings: Settings;
@@ -122,7 +124,7 @@ export interface CatalogPage {
   offset: number;
   total: number
 }
-export type FeedCommand =|{
+export type FeedCommand =|{type:"read_catalog_body";feed:string;catalog:string}|{
   type: 'inspect_source';
   uri: string
 }
