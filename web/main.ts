@@ -1,14 +1,23 @@
+import {LibraryUI} from "./library.js";
+import {NewsUI} from "./news.js";
 import {PublishingUI} from "./publishing.js";
 import {FeedsUI} from "./feeds.js";
-import type { Snapshot, Transfer, Command, Settings } from "./types.js";
+import type { Snapshot, Command, Settings } from "./types.js";
 const $ = <T extends Element = HTMLElement>(s: string) =>
   document.querySelector<T>(s)!;
 let state: Snapshot | null = null,
   connected = false,
-  selected: string | null = null,
-  removing: string | null = null,
-  fileSignature = "";
-const rows = new Map<string, HTMLElement>();
+  removing: string | null = null;
+// Legacy bookmarks share the Library entry rather than adding a redirect to Back.
+function normalizeRoute() {
+  if (!location.hash || location.hash === "#" || location.hash === "#/")
+    history.replaceState(history.state, "", "#/new");
+  else if (location.hash === "#/transfers")
+    history.replaceState(history.state, "", "#/library");
+  history.scrollRestoration = ["new", "library"].includes(location.hash.split("/")[1]) ? "manual" : "auto";
+}
+normalizeRoute();
+window.addEventListener("hashchange", normalizeRoute);
 let opening = false;
 function updateOpenButtons() {
   const ready = connected && !!state?.ready && !opening;
@@ -115,22 +124,6 @@ function opened() {
   $<HTMLDialogElement>("#open-dialog").close();
   notice("");
 }
-function text(tag: string, value: string, cls = "") {
-  const e = document.createElement(tag);
-  e.textContent = value;
-  e.className = cls;
-  return e;
-}
-function bytes(n: number) {
-  if (n < 1024) return `${n} B`;
-  const u = ["KB", "MB", "GB", "TB"];
-  let i = -1;
-  do {
-    n /= 1024;
-    i++;
-  } while (n >= 1024 && i < 3);
-  return `${n.toFixed(n < 10 ? 1 : 0)} ${u[i]}`;
-}
 function notice(value: string) {
   const content = $("#notice > section");
   if (content.textContent !== value) content.textContent = value;
@@ -149,8 +142,26 @@ async function send(c: Command) {
   return j;
 }
 async function command(c:Command){const result=await send(c);await sync();return result;}
-const feedUI=new FeedsUI({call:async(c,refresh=true)=>refresh?command(c):send(c),transfer:(id)=>{selected=id;location.hash="#/transfers";render();},followed:()=>opened()});
-const publishingUI=new PublishingUI(uri=>{if(uri.includes('urn:btpk:'))feedUI.follow(uri);else{$<HTMLInputElement>('#magnet').value=uri;$<HTMLButtonElement>('#open-button').click();updateOpenButtons();}},async data=>{await command({type:'add_torrent',data});location.hash='#/transfers';});
+const libraryUI = new LibraryUI({
+  action: c => void action(c),
+  remove: id => {
+    removing = id;
+    $("#remove-error").textContent = "";
+    $("#remove-name").textContent = state?.transfers.find(t => t.id === id)?.name || id;
+    $<HTMLInputElement>("#delete-files").checked = false;
+    $<HTMLDialogElement>("#remove-dialog").showModal();
+  },
+});
+function showLibrary(id?: string) { libraryUI.open(id); }
+const newsUI = new NewsUI((c,refresh=true)=>refresh?command(c):send(c));
+const feedUI=new FeedsUI({call:async(c,refresh=true)=>refresh?command(c):send(c),transfer:(id)=>showLibrary(id),followed:()=>opened()});
+const publishingUI=new PublishingUI(uri=>{if(uri.includes('urn:btpk:'))feedUI.follow(uri);else{$<HTMLInputElement>('#magnet').value=uri;$<HTMLButtonElement>('#open-button').click();updateOpenButtons();}},async data=>{
+  const before=new Set(state?.transfers.map(t=>t.id));
+  await command({type:'add_torrent',data});
+  const added=state?.transfers.filter(t=>!before.has(t.id))||[];
+  // If background feeds also registered torrents, keep the catalogue rather than guess an ID.
+  showLibrary(added.length===1?added[0].id:undefined);
+});
 async function action(c: Command) {
   try {
     notice("");
@@ -159,147 +170,9 @@ async function action(c: Command) {
     notice(String(e));
   }
 }
-function alertMessage(value: string, cls = "") {
-  const alert = text("div", "", ["alert", cls].filter(Boolean).join(" "));
-  alert.dataset.variant = "destructive";
-  alert.setAttribute("role", "alert");
-  alert.append(text("section", value));
-  alert.hidden = !value;
-  return alert;
-}
-function button(label: string, fn: () => void, variant = "default", cls = "") {
-  const b = document.createElement("button");
-  b.type = "button";
-  b.className = ["btn", cls].filter(Boolean).join(" ");
-  b.dataset.variant = variant;
-  b.textContent = label;
-  b.onclick = fn;
-  return b;
-}
-function select(t: Transfer) {
-  selected = t.id;
-  fileSignature = "";
-  render();
-}
 function render() {
   const transfers = state?.transfers || [];
-  if (!transfers.some((t) => t.id === selected))
-    selected = transfers[0]?.id || null;
-  $("#empty").hidden = !!transfers.length;
-  $("#count").textContent =
-    `${transfers.length} transfer${transfers.length === 1 ? "" : "s"}`;
-  for (const [id, row] of rows)
-    if (!transfers.some((t) => t.id === id)) {
-      row.remove();
-      rows.delete(id);
-    }
-  for (const t of transfers) {
-    let row = rows.get(t.id);
-    if (!row) {
-      row = document.createElement("article");
-      row.className = "transfer";
-      row.dataset.id = t.id;
-      const name = button(
-        t.name,
-        () => {
-          const current = state?.transfers.find((x) => x.id === t.id);
-          if (current) select(current);
-        },
-        "link", "transfer-name",
-      );
-      const progress = text("div", "", "progress");
-      progress.setAttribute("role", "progressbar");
-      progress.setAttribute("aria-valuemin", "0");
-      progress.setAttribute("aria-valuemax", "1");
-      progress.append(text("span", ""));
-      const actions = text("div", "", "actions");
-      actions.append(
-        button("Pause", () => {
-          const current = state?.transfers.find((x) => x.id === t.id);
-          if (current)
-            void action({
-              type: current.active ? "pause" : "resume",
-              id: t.id,
-            });
-        }),
-        button(
-          "Remove",
-          () => {
-            removing = t.id;
-            $("#remove-error").textContent = "";
-            $("#remove-name").textContent =
-              state?.transfers.find((x) => x.id === t.id)?.name || t.id;
-            $<HTMLInputElement>("#delete-files").checked = false;
-            $<HTMLDialogElement>("#remove-dialog").showModal();
-          },
-          "destructive",
-        ),
-      );
-      const approve=button("Download once",()=>void action({type:"approve_transfer",id:t.id}));approve.classList.add("approve-transfer");actions.append(approve);
-      row.append(
-        name,
-        text("span","","transfer-source"),
-        progress,
-        text("span", "", "state"),
-        text("span", "", "amount"),
-        text("span", "", "rates"),
-        actions,
-        alertMessage("", "transfer-error"),
-      );
-      rows.set(t.id, row);
-      $("#transfers").append(row);
-    }
-    row.setAttribute("aria-current", String(selected === t.id));
-    row.querySelector(".transfer-name")!.textContent = t.name;
-    const progress = row.querySelector<HTMLElement>(".progress")!;
-    const fraction = Math.max(0, Math.min(1, t.progress));
-    progress.setAttribute("aria-valuenow", String(fraction));
-    (progress.firstElementChild as HTMLElement).style.width = `${fraction * 100}%`;
-    progress.setAttribute("aria-label", `${t.name} download progress`);
-    row.querySelector(".state")!.textContent =
-      `${t.state} · ${Math.floor(t.progress * 100)}%`;
-    row.querySelector(".amount")!.textContent =
-      `${bytes(t.verified)} / ${t.files.length ? bytes(t.approval_size??t.total) : "—"}${t.approval_size!==null&&t.approval_size!==t.total?" incl. padding":""}`;
-    row.querySelector(".rates")!.textContent =
-      `↓ ${bytes(t.down)}/s  ↑ ${bytes(t.up)}/s · ${t.peers} peers`;
-    const toggle = row.querySelector<HTMLButtonElement>(".actions button")!;
-    toggle.textContent = t.active ? "Pause" : "Resume";
-    const approve=row.querySelector<HTMLButtonElement>(".approve-transfer")!;approve.hidden=!t.held;approve.disabled=!connected||!t.files.length;
-    const source=row.querySelector<HTMLElement>(".transfer-source")!;source.textContent=t.kind?`${t.kind==="catalog"?"Catalog":"Content"} · ${state?.feeds.find(f=>f.id===t.feed)?.name||"Feed"}`:"";source.hidden=!t.kind;
-    for (const b of row.querySelectorAll<HTMLButtonElement>(".actions button"))
-      b.disabled = !connected;
-    approve.disabled=!connected||!t.files.length;
-    const error = row.querySelector<HTMLElement>(".transfer-error")!;
-    const message = t.error || t.warning;
-    if (error.firstElementChild!.textContent !== message) error.firstElementChild!.textContent = message;
-    error.hidden = !message;
-  }
-  const t = transfers.find((t) => t.id === selected);
-  const signature = JSON.stringify([selected, t?.files, connected]);
-  $("#file-section").hidden = !t;
-  if (signature !== fileSignature) {
-    fileSignature = signature;
-    $("#files").replaceChildren();
-    if (t) {
-      $("#save-path").textContent = t.save_path;
-      if (!t.files.length)
-        $("#files").append(text("p", "Waiting for metadata.", "muted"));
-      for (const [index, f] of t.files.entries()) {
-        const row = text("div", "", "file");
-        const reveal = button(
-          "Show in Finder",
-          () => void action({ type: "reveal", id: t.id, file: index }),
-        );
-        reveal.disabled = !f.ready || !connected;
-        row.append(
-          text("span", f.name),
-          text("span", `${bytes(f.verified)} / ${bytes(f.length)}`, "muted"),
-          reveal,
-        );
-        $("#files").append(row);
-      }
-    }
-  }
+  libraryUI.render(state, connected);
   for (const b of document.querySelectorAll<HTMLButtonElement>("body > header button:not(#sections-button)"))
     b.disabled = !connected || !state?.ready;
   $("#status").textContent = connected
@@ -314,6 +187,7 @@ function render() {
   updateOpenButtons();
   feedUI.render(state,connected);
   publishingUI.render(state,connected);
+  newsUI.render(state,connected);
 }
 async function sync() {
   const r = await fetch("./api/snapshot");
@@ -357,7 +231,7 @@ $("#magnet-form").onsubmit = async (event) => {
     if(source.kind==="feed"){
       $<HTMLDialogElement>("#open-dialog").close();
       if(state?.feeds.some(f=>f.id===source.id)){opened();location.hash=`#/feeds/${source.id}`;}else{feedUI.follow(source.magnet);}
-    }else{await command({type:"add_magnet",uri});opened();}
+    }else{await command({type:"add_magnet",uri});opened();showLibrary();}
   } catch (error) {
     $("#magnet-error").textContent = String(error);
     if (/magnet|infohash/i.test(String(error))) $("#magnet").setAttribute("aria-invalid", "true");
@@ -383,6 +257,7 @@ $("#torrent-form").onsubmit = async (event) => {
       data: Array.from(new Uint8Array(await file.arrayBuffer())),
     });
     opened();
+    showLibrary();
   } catch (error) {
     $("#torrent-error").textContent = String(error);
     if (/torrent|metadata|bencode|decode/i.test(String(error))) $("#torrent-file").setAttribute("aria-invalid", "true");
@@ -483,14 +358,12 @@ $("#remove-form").onsubmit = async (e) => {
       delete_files: $<HTMLInputElement>("#delete-files").checked,
     });
     $<HTMLDialogElement>("#remove-dialog").close();
+    libraryUI.removed(removing);
     removing = null;
     notice("");
   } catch (error) {
     $("#remove-error").textContent = String(error);
   }
-};
-$("#show-folder").onclick = () => {
-  if (selected) void action({ type: "reveal", id: selected, file: null });
 };
 document.addEventListener("invalid", event => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement)
@@ -584,4 +457,4 @@ for (const trigger of document.querySelectorAll<HTMLButtonElement>("[data-help]"
   }, true);
 }
 
-window.addEventListener("hashchange",()=>publishingUI.render(state,connected));
+window.addEventListener("hashchange", render);

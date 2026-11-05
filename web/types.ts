@@ -42,6 +42,8 @@ export interface Snapshot {
   feeds: Feed[];
   feed_error: string;
   feed_time_ms: number;
+  news_unread: number;
+  news_revision: string;
 }
 export type Command = FeedCommand|{
   type: 'add_magnet';
@@ -124,7 +126,11 @@ export interface CatalogPage {
   offset: number;
   total: number
 }
-export type FeedCommand =|{type:"read_catalog_body";feed:string;catalog:string}|{
+export type FeedCommand =
+|{type:"news_page";offset:number;anchor:string|null}
+|{type:"set_update_read";feed:string;sequence:string;read:boolean}
+|{type:"mark_catalog_read";feed:string;catalog:string;sequence:string|null}
+|{type:"read_catalog_body";feed:string;catalog:string}|{
   type: 'inspect_source';
   uri: string
 }
@@ -168,3 +174,22 @@ export type FeedCommand =|{type:"read_catalog_body";feed:string;catalog:string}|
   catalog: string;
   offset: number
 };
+
+export interface NewsEntry {
+  feed: string;
+  sequence: string;
+  catalog: string;
+  feed_name: string;
+  name: string;
+  detected_ms: number|null;
+  read: boolean;
+  ready: boolean;
+  state: string;
+  error: string;
+}
+export interface NewsPage {
+  entries: NewsEntry[];
+  offset: number;
+  total: number;
+  anchor: string;
+}

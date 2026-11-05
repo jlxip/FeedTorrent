@@ -37,13 +37,14 @@ test('native removal surface, inline failure, progress accessibility and mobile 
     page.on('pageerror', e => errors.push(e.message));
     page.on('console', m => {if (/content security|refused to/i.test(m.text())) csp.push(m.text());});
     page.on('request', r => {if (!r.url().startsWith(app.url)) external.push(r.url());});
-    await page.goto(app.url);
+    await page.goto(app.url + "/#/transfers");
     const row = page.locator(`[data-id="${id}"]`), progress = row.getByRole('progressbar');
     await expect(progress).toHaveAttribute('aria-valuemin','0');
     await expect(progress).toHaveAttribute('aria-valuemax','1');
     await expect(progress).toHaveAttribute('aria-valuenow','0');
     await expect(progress).toHaveAccessibleName(/download progress/);
-    await row.getByRole('button',{name:'Remove',exact:true}).click();
+    await row.locator('.transfer-name').click();
+    await page.locator('#torrent-remove').click();
     const dialog = page.locator('#remove-dialog'), surface = dialog.locator(':scope > .dialog-surface');
     await page.route('**/api/commands', async route => {
       if (route.request().postDataJSON()?.type === 'remove') await route.fulfill({status:503,json:{error:'Removal refused by test'}});
@@ -56,7 +57,7 @@ test('native removal surface, inline failure, progress accessibility and mobile 
     await expect(page.locator('#delete-files')).toBeChecked();
     await page.unroute('**/api/commands');
     await page.keyboard.press('Escape');
-    await row.getByRole('button',{name:'Remove',exact:true}).click();
+    await page.locator('#torrent-remove').click();
     await expect(page.locator('#delete-files')).not.toBeChecked();
     await expect(page.locator('#remove-error')).toBeEmpty();
     const bounds = (await surface.boundingBox())!;

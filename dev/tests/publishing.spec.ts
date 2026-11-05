@@ -137,6 +137,9 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.locator("#own-preview a").click();
     await expect.poll(async () => (await app.api()).transfers.length).toBe(1);
     await expect(page.locator("#transfer-view")).toBeVisible();
+    const added=(await app.api()).transfers[0];
+    await expect(page).toHaveURL(new RegExp("#/library/"+added.id+"$"));
+    await expect(page.locator("#torrent-heading")).toHaveText("payload.txt");
   } finally {
     await cleanup(root, app);
   }

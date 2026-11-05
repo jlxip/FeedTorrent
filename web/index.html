@@ -29,7 +29,10 @@
         <nav aria-label="Sections">
           <header class="sidebar-close-row"><button type="button" class="btn" data-variant="ghost" data-size="icon-sm" aria-label="Close sections">×</button></header>
           <section>
-            <div role="group" aria-label="Transfers"><ul><li><a href="#/transfers" id="transfers-nav"><span>Transfers</span></a></li></ul></div>
+            <div role="group" aria-label="Main"><ul>
+              <li><a href="#/new" id="new-nav"><span>New posts</span><span id="new-count" class="badge" data-variant="secondary" hidden></span></a></li>
+              <li><a href="#/library" id="transfers-nav"><span>Library</span></a></li>
+            </ul></div>
             <div role="group" aria-labelledby="feeds-label">
               <div class="side-heading"><h3 id="feeds-label">FEEDS</h3><button type="button" class="btn" data-variant="ghost" data-size="icon-sm" id="follow-open" data-keep-mobile-sidebar-open aria-label="Follow a feed">+</button></div>
               <ul id="feed-nav"></ul><p class="muted" id="no-feeds">No feeds</p>
@@ -42,23 +45,45 @@
         </nav>
       </aside>
     <main>
-      <section id="transfer-view">
+      <section id="news-view" hidden aria-labelledby="news-heading">
+        <div class="list-heading"><h2 id="news-heading">New posts</h2><button type="button" class="btn" data-variant="ghost" id="news-refresh">Refresh</button></div>
+        <div id="news-error" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
+        <div id="news-feed-error" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
+        <p id="news-status" class="muted" role="status"></p>
+        <div id="news-empty" class="empty" role="status" hidden><header><h3>No updates</h3></header></div>
+        <div id="news-list" role="list" aria-label="Feed updates"></div>
+        <nav id="news-pages" class="catalog-pages" aria-label="Updates pages"><button type="button" class="btn" data-variant="ghost" id="news-previous">Previous</button><span id="news-range" class="muted"></span><button type="button" class="btn" data-variant="ghost" id="news-next">Next</button></nav>
+      </section>
+      <section id="transfer-view" hidden>
       <div id="notice" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
       <div id="network-warning" class="alert" data-variant="default" role="status" hidden><section></section></div>
-      <div class="list-heading">
-        <h2>Transfers</h2>
-        <span id="count"></span>
-      </div>
-      <div id="empty" class="empty" role="status"><header><h3>No transfers</h3></header></div>
-      <section id="transfers" aria-label="Transfers"></section>
-      <section id="file-section" hidden>
-        <div class="list-heading">
-          <h2 id="file-heading">Files</h2>
-          <button id="show-folder" class="btn" data-variant="ghost">Show folder</button>
-        </div>
-        <p id="save-path" class="muted"></p>
-        <div id="files"></div>
+      <section id="library-catalog" aria-labelledby="library-heading">
+        <div class="list-heading"><h2 id="library-heading" tabindex="-1">Library</h2><span id="count"></span></div>
+        <div id="empty" class="empty" role="status"><header><h3>No torrents</h3></header></div>
+        <section id="transfers" class="library-grid" aria-label="Library"></section>
       </section>
+      <section id="library-detail" aria-labelledby="torrent-heading" hidden>
+        <a href="#/library" id="library-back" class="library-back">← Library</a>
+        <div class="torrent-heading"><h2 id="torrent-heading" tabindex="-1"></h2><div class="actions"><button id="torrent-toggle" class="btn">Pause</button><button id="torrent-remove" class="btn" data-variant="destructive">Remove</button></div></div>
+        <p id="torrent-loading" class="muted" role="status" hidden></p>
+        <div id="torrent-content" hidden>
+          <p id="torrent-source" class="muted" hidden></p>
+          <section class="torrent-summary" aria-label="Torrent progress">
+            <div class="torrent-progress-label"><span class="badge state" data-variant="secondary"></span><span class="amount muted"></span></div>
+            <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="1"><span></span></div>
+            <div class="rates"></div>
+          </section>
+          <div id="torrent-detail-error" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
+          <div id="torrent-warning" class="alert" role="status" hidden><section></section></div>
+          <button id="torrent-approve" class="btn approve-transfer" hidden>Download once</button>
+          <section id="file-section" aria-labelledby="file-heading">
+            <div class="list-heading"><h3 id="file-heading">Files <span id="file-count" class="muted"></span></h3><button id="show-folder" class="btn">Show in Finder</button></div>
+            <p id="save-path" class="muted"></p>
+            <p id="files-waiting" class="muted" hidden>Waiting for metadata.</p><div id="files"></div>
+          </section>
+        </div>
+      </section>
+      <div id="library-tooltip" class="library-tooltip" role="tooltip" hidden><div class="tooltip-line"><span class="tooltip-state"></span><span class="tooltip-percent muted"></span></div><div class="tooltip-amount muted"></div><div class="tooltip-line"><span class="tooltip-down"></span><span class="tooltip-up"></span></div><div class="tooltip-peers muted"></div><div class="tooltip-message" hidden></div><div class="tooltip-offline muted" hidden>Server disconnected</div></div>
       </section>
       <section id="feed-view" hidden>
         <div class="list-heading feed-heading"><h2 id="feed-title"></h2><div class="feed-heading-actions"><button class="btn" data-variant="ghost" id="feed-refresh">Refresh</button><button class="btn" data-variant="ghost" id="feed-settings">Feed settings</button></div></div>

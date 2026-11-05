@@ -118,11 +118,28 @@ struct Snapshot {
     feeds: Vec<feedtorrent_feeds::FeedView>,
     feed_error: String,
     feed_time_ms: u64,
+    news_unread: usize,
+    news_revision: String,
     publishing: publishing::View,
 }
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    NewsPage {
+        #[serde(default)]
+        offset: usize,
+        anchor: Option<String>,
+    },
+    SetUpdateRead {
+        feed: String,
+        sequence: String,
+        read: bool,
+    },
+    MarkCatalogRead {
+        feed: String,
+        catalog: String,
+        sequence: Option<String>,
+    },
     ReadCatalogBody {
         feed: String,
         catalog: String,
@@ -323,6 +340,8 @@ impl Engine {
             feeds: vec![],
             feed_error: String::new(),
             feed_time_ms: 0,
+            news_unread: 0,
+            news_revision: String::new(),
             publishing: publishing::View::default(),
         };
         let mut e = Self {
@@ -369,6 +388,12 @@ impl Engine {
             }
         }
         e.persist()?;
+        // Commit migrations and their detection times before serving the first snapshot.
+        if let Err(error) = e.persist_feeds() {
+            if let Some(host) = &mut e.feeds {
+                host.error = format!("Feed persistence: {error:#}");
+            }
+        }
         e.refresh()?;
         Ok(e)
     }
@@ -417,6 +442,28 @@ impl Engine {
     }
     fn apply(&mut self, command: Command) -> Result<()> {
         match command {
+            Command::SetUpdateRead {
+                feed,
+                sequence,
+                read,
+            } => return self.news_read(&feed, &sequence, read),
+            Command::MarkCatalogRead {
+                feed,
+                catalog,
+                sequence,
+            } => {
+                let host = self.feeds.as_ref().context("Feed service unavailable")?;
+                if !host.manager.page(&feed, &catalog, 0)?.catalog.ready {
+                    bail!("Catalog has not been verified")
+                }
+                if let Some(seq) =
+                    host.manager
+                        .news_for_catalog(&feed, &catalog, sequence.as_deref())
+                {
+                    return self.news_read(&feed, &seq, true);
+                }
+                return Ok(());
+            }
             c @ (Command::FollowFeed { .. }
             | Command::ConfigureFeed { .. }
             | Command::UnfollowFeed { .. }
@@ -426,6 +473,7 @@ impl Engine {
             | Command::ApproveTransfer { .. }
             | Command::RevealEntry { .. }) => return self.feed_command(c),
             Command::InspectSource { .. }
+            | Command::NewsPage { .. }
             | Command::CatalogPage { .. }
             | Command::ReadCatalogBody { .. } => {
                 bail!("Read-only command dispatched incorrectly")
@@ -731,6 +779,11 @@ impl Engine {
                 .map(|h| h.manager.views())
                 .unwrap_or_default(),
             feed_time_ms: self.feeds.as_ref().map_or(0, |h| h.now()),
+            news_unread: self.feeds.as_ref().map_or(0, |h| h.manager.news_unread()),
+            news_revision: self
+                .feeds
+                .as_ref()
+                .map_or_else(String::new, |h| h.manager.news_revision()),
             feed_error: self
                 .feeds
                 .as_ref()
@@ -891,6 +944,11 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
             include_bytes!("../../web/dist/markdown.js"),
         ),
         "feeds.js" => ("text/javascript", include_bytes!("../../web/dist/feeds.js")),
+        "news.js" => ("text/javascript", include_bytes!("../../web/dist/news.js")),
+        "library.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/library.js"),
+        ),
         "types.js" => ("text/javascript", include_bytes!("../../web/dist/types.js")),
         "app.css" => ("text/css", include_bytes!("../../web/dist/app.css")),
         "basecoat.css" => ("text/css", include_bytes!("../../web/dist/basecoat.css")),
@@ -972,6 +1030,8 @@ async fn main() -> Result<()> {
         feeds: vec![],
         feed_error: String::new(),
         feed_time_ms: 0,
+        news_unread: 0,
+        news_revision: String::new(),
         publishing: publishing::View::default(),
     };
     let (publication_tx, publication_rx) = mpsc::sync_channel(16);
@@ -1003,6 +1063,7 @@ async fn main() -> Result<()> {
             match receiver.recv_timeout(Duration::from_millis(200)) {
                 Ok(job) => {
                     let result = match job.command {
+                        Command::NewsPage{offset,anchor}=>engine.feeds.as_ref().context("Feed service unavailable").and_then(|h|h.manager.news_page(offset,anchor.as_deref()).map_err(Into::into)).and_then(|p|serde_json::to_value(p).map_err(Into::into)),
                         Command::ReadCatalogBody{feed,catalog}=>engine.catalog_body(&feed,&catalog).map(|p|serde_json::json!({"path":p})),
                         Command::CatalogPage{feed,catalog,offset}=>engine.feeds.as_ref().context("Feed service unavailable").and_then(|h|h.manager.page(&feed,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total})),
                         c=>engine.apply(c).map(|()|serde_json::json!({"ok":true})),

@@ -18,17 +18,6 @@ svg {width:16px;height:16px;}
 .sr-only {position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
 
 /* The lists remain application composition; Basecoat owns their controls. */
-.transfer {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 20px;padding:18px 16px;border-bottom:1px solid var(--border);}
-.transfer[aria-current="true"] {background:var(--muted);}
-.transfer .transfer-name {grid-column:1;min-width:0;justify-content:flex-start;white-space:normal;text-align:left;padding-inline:0;overflow-wrap:anywhere;}
-.transfer > .progress {grid-column:1;min-width:0;}
-.state, .amount, .rates, .transfer-source {grid-column:1;font-size:12px;}
-.amount, .transfer-source {color:var(--muted-foreground);}
-.transfer-source {overflow-wrap:anywhere;}
-.rates {font-variant-numeric:tabular-nums;}
-.transfer > .actions {grid-column:2;grid-row:1/span 6;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
-.transfer > .transfer-error {grid-column:1/-1;}
-.transfer-error:not(.alert) {color:var(--destructive);font-size:12px;margin:0;overflow-wrap:anywhere;}
 #notice, #network-warning, #feed-error, #own-error {margin:0 0 16px;overflow-wrap:anywhere;}
 .file {display:flex;gap:16px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);}
 .file > span:first-child {flex:1;min-width:0;overflow-wrap:anywhere;}
@@ -160,4 +149,74 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
   .btn[data-size^="icon"], .publication-indicator {min-width:44px;}
   .field[data-orientation="horizontal"] {min-height:44px;}
   .publication-indicator {width:44px;height:44px;}
+}
+
+/* Feed update history: application layout with native Vega controls. */
+#news-error {margin-bottom:16px;overflow-wrap:anywhere;}
+#news-status:empty {display:none;}
+#new-count {margin-left:auto;}
+.news-row {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 16px;padding:16px 12px;border-bottom:1px solid var(--border);}
+.news-title.btn {grid-column:1;justify-content:flex-start;text-align:left;white-space:normal;height:auto;min-height:36px;padding-inline:0;overflow-wrap:anywhere;}
+.news-row[data-read="false"] .news-title {font-weight:600;}
+.news-feed,.news-date,.news-availability {grid-column:1;overflow-wrap:anywhere;}
+.news-availability:empty {display:none;}
+.news-row > .badge {grid-column:2;grid-row:1;align-self:center;justify-self:end;}
+.news-toggle {grid-column:2;grid-row:2/span 3;align-self:center;}
+#news-pages {margin-top:16px;}
+@media(max-width:767px) {
+  .news-row {padding-inline:0;gap:6px 8px;}
+  .news-title.btn,.news-toggle {min-height:44px;}
+  .news-toggle {grid-column:1/-1;grid-row:auto;justify-self:start;}
+}
+
+/* Library uses full Basecoat cards, badges, progress and buttons. */
+.library-grid {display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr));gap:16px;}
+.library-grid .transfer {position:relative;min-width:0;min-height:194px;}
+.library-grid .transfer > header {align-items:start;}
+.library-grid .transfer h3 {min-width:0;font-size:15px;line-height:1.4;font-weight:500;margin:0;overflow-wrap:anywhere;}
+.transfer-name {color:inherit;text-decoration:none;}
+.transfer-name::after {content:"";position:absolute;inset:0;border-radius:var(--radius);z-index:1;}
+.library-grid .transfer:has(.transfer-name:focus-visible) {outline:2px solid var(--ring);outline-offset:3px;}
+.library-grid .transfer:has(.transfer-name:hover) {border-color:var(--muted-foreground);}
+.library-info {position:relative;z-index:2;flex-shrink:0;}
+.library-card-summary {display:flex;align-items:center;gap:12px;}
+.library-card-summary svg {width:40px;height:40px;color:var(--muted-foreground);flex-shrink:0;}
+.library-grid .transfer > footer {display:grid;gap:10px;margin-top:auto;}
+.library-card-status {display:flex;justify-content:space-between;align-items:center;gap:10px;min-width:0;}
+.library-card-status .badge {white-space:normal;overflow-wrap:anywhere;}
+.library-percent {font-variant-numeric:tabular-nums;flex-shrink:0;}
+.library-grid .progress {height:4px;}
+.library-grid .progress.complete {visibility:hidden;}
+.library-back {display:inline-flex;align-items:center;gap:8px;min-height:32px;margin-bottom:16px;color:var(--muted-foreground);text-decoration:none;font-size:13px;}
+.torrent-heading {display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;}
+.torrent-heading h2 {min-width:0;overflow-wrap:anywhere;font-size:24px;letter-spacing:-.5px;font-weight:550;margin:0;}
+.torrent-heading .actions {display:flex;gap:8px;flex-wrap:wrap;}
+.torrent-summary {margin:24px 0 36px;}
+.torrent-progress-label {display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;}
+.torrent-summary .progress {height:5px;}
+.torrent-summary .rates {margin-top:14px;white-space:pre-wrap;font-variant-numeric:tabular-nums;font-size:13px;}
+#torrent-source {overflow-wrap:anywhere;}
+#torrent-detail-error,#torrent-warning {margin-block:16px;overflow-wrap:anywhere;}
+#file-section {margin-top:30px;}
+#file-heading {margin:0;font-size:16px;font-weight:500;}
+#file-count {margin-left:8px;}
+#save-path {margin:8px 0 18px;}
+#files .file {gap:14px;padding:14px 0;}
+#files .file > svg {color:var(--muted-foreground);flex-shrink:0;}
+#files .file-name {flex:1;min-width:0;overflow-wrap:anywhere;}
+#files .file > .muted {white-space:nowrap;flex-shrink:0;font-variant-numeric:tabular-nums;}
+/* The installed CSS tooltip lacks focus/tap and live multi-line positioning. */
+.library-tooltip {position:fixed;z-index:20;width:240px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;display:grid;gap:8px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--popover);color:var(--popover-foreground);box-shadow:0 8px 24px #0004;font-size:12px;line-height:1.5;overflow-wrap:anywhere;}
+.tooltip-line {display:flex;justify-content:space-between;gap:12px;font-variant-numeric:tabular-nums;}
+.tooltip-state {font-weight:500;}
+.tooltip-message {white-space:pre-wrap;}
+@media(max-width:767px) {
+  .library-grid {grid-template-columns:minmax(0,1fr);}
+  .library-info {min-width:44px;min-height:44px;margin:-6px -6px 0 0;}
+  .library-back {min-height:44px;}
+  .torrent-heading {gap:16px;}
+  #file-section .list-heading {flex-wrap:wrap;}
+  #files .file {display:grid;grid-template-columns:16px minmax(0,1fr);gap:8px 12px;}
+  #files .file > .muted {grid-column:2;white-space:normal;}
+  #files .file > .btn {grid-column:2;justify-self:start;}
 }

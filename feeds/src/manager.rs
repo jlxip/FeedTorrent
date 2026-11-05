@@ -6,6 +6,8 @@ use feedtorrent_bep::{
 };
 use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, VecDeque};
+#[path = "news.rs"]
+mod news;
 const MAX_WORK: usize = 32;
 struct Visit {
     origin: Origin,
@@ -101,7 +103,8 @@ impl FeedManager {
             return Err(err("Feed checkpoint exceeds 32 MiB"));
         }
         let state: Checkpoint = serde_json::from_slice(bytes).map_err(err)?;
-        if state.version != 1 {
+        let legacy = state.version == 1;
+        if !matches!(state.version, 1 | 2) {
             return Err(err("Unsupported feed checkpoint version"));
         }
         for (id, s) in &state.feeds {
@@ -157,6 +160,7 @@ impl FeedManager {
             }
         }
         m.state = state;
+        m.initialize_news(legacy)?;
         Ok(m)
     }
     pub fn checkpoint(&self) -> Result<Vec<u8>> {

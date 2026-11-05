@@ -168,6 +168,11 @@ impl FeedHost {
         if !self.manager.dirty() && !self.recovered {
             return Ok(());
         }
+        let wall_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        self.manager.observe_news(wall_ms)?;
         let bytes = self.manager.checkpoint()?;
         let path = dir.join("feeds.json");
         // Both copies must contain the acknowledged decisions. An older backup
@@ -659,6 +664,21 @@ impl Engine {
 }
 
 impl Engine {
+    pub(super) fn news_read(&mut self, feed: &str, sequence: &str, read: bool) -> Result<()> {
+        let host = self.feeds.as_mut().context("Feed service unavailable")?;
+        if host.disabled {
+            bail!("Feed checkpoint is invalid; original files preserved")
+        }
+        let old = host.manager.set_news_read(feed, sequence, read)?;
+        if let Err(error) = host.persist(&self.dir) {
+            host.manager.set_news_read(feed, sequence, old)?;
+            // Never acknowledge an unpersisted reading decision. Retry its rollback
+            // through the ordinary checkpoint barrier if the disk remains unavailable.
+            let _ = host.persist(&self.dir);
+            return Err(error);
+        }
+        Ok(())
+    }
     pub(super) fn catalog_body(&self, feed: &str, catalog: &str) -> Result<Option<PathBuf>> {
         let host = self.feeds.as_ref().context("Feed service unavailable")?;
         host.manager.page(feed, catalog, 0)?;
@@ -770,6 +790,51 @@ mod tests {
             !followed,
             "a successfully saved Unfollow must survive primary-checkpoint corruption"
         );
+    }
+
+    #[test]
+    fn news_write_failure_keeps_memory_and_recovery_unread() {
+        let dir =
+            std::env::temp_dir().join(format!("feedtorrent-news-fault-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let args = Args {
+            data_dir: Some(dir.clone()),
+            download_dir: Some(dir.join("downloads")),
+            http_port: 0,
+            peer_port: Some(0),
+            no_open: true,
+            isolated: true,
+            dht_bootstrap: None,
+        };
+        let mut store = default_store();
+        store.settings.peer_port = 0;
+        store.settings.download_dir = dir.join("downloads").display().to_string();
+        let mut engine = Engine::new(&args, dir.clone(), store).unwrap();
+        let signer = feedtorrent_bep::bep44::Bep44Signer::from_seed(&[29; 32]);
+        let pointer =
+            feedtorrent_bep::bep46::TorrentPointer::sign(&signer, [8; 20], 1, vec![]).unwrap();
+        let uri = feedtorrent_bep::bep46::format_magnet(pointer.record().key());
+        let host = engine.feeds.as_mut().unwrap();
+        let id = host.manager.follow(&uri, Default::default(), 0).unwrap();
+        host.manager
+            .receive_record(&id, pointer.record().clone(), 0)
+            .unwrap();
+        host.persist(&dir).unwrap();
+        // Block the backup's atomic temporary after the primary can be written.
+        fs::create_dir(dir.join("feeds.previous.tmp")).unwrap();
+        assert!(engine.news_read(&id, "1", true).is_err());
+        assert_eq!(engine.feeds.as_ref().unwrap().manager.news_unread(), 1);
+        let primary = FeedManager::restore(&fs::read(dir.join("feeds.json")).unwrap()).unwrap();
+        let backup =
+            FeedManager::restore(&fs::read(dir.join("feeds.previous.json")).unwrap()).unwrap();
+        assert_eq!(primary.news_unread(), 1);
+        assert_eq!(backup.news_unread(), 1);
+        fs::remove_dir(dir.join("feeds.previous.tmp")).unwrap();
+        engine.news_read(&id, "1", true).unwrap();
+        assert_eq!(engine.feeds.as_ref().unwrap().manager.news_unread(), 0);
+        engine.native.shutdown().unwrap();
+        engine.feeds.as_mut().unwrap().close();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

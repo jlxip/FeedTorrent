@@ -127,7 +127,14 @@ test(
                     .transfers.find(t => t.id === fx.content.id && t.progress === 1),
             'real UI item download');
         await page.reload();
-        await expect(page.locator('#count')).toHaveText('2 transfers');
+        await expect(page.locator('#torrent-heading')).toHaveText(/.+/);
+        await expect(page).toHaveURL(new RegExp('#/library/'+fx.content.id+'$'));
+        await page.locator('#sections-button').click();
+        await page.locator(`#feed-nav [data-feed="${fx.feedId}"]`).click();
+        await expect(page.locator('#feed-title')).toHaveText('My reading list');
+        await page.locator('.catalog-row').first().getByRole('button',{name:'Show in Library',exact:true}).click();
+        await expect(page).toHaveURL(new RegExp('#/library/'+fx.content.id+'$'));
+        await expect(page.locator('#library-detail')).toBeVisible();
         await page.locator('#sections-button').click();
         await page.locator(`#feed-nav [data-feed="${fx.feedId}"]`).click();
         await expect(page.locator('#feed-title')).toHaveText('My reading list');
@@ -158,7 +165,7 @@ test(
         await page.locator('#feed-settings').click();
         await page.locator('#feed-unfollow').click();
         await expect(page.locator('#transfer-view')).toBeVisible();
-        await expect(page.locator('#count')).toHaveText('4 transfers');
+        await expect(page.locator('#count')).toHaveText('4 torrents');
         expect(external).toEqual([]);
       } finally {
         if (app) await app.stop();

@@ -67,13 +67,16 @@ export class FeedsUI {
   private request = 0;
   private signature = '';
   private navSignature = '';
+  private viewRoute = '';
+  private readKey = '';
+  private readError = '';
   private editing: string|null = null;
   private loading = false;
   private draft = emptyFeedDraft();
   private editDrafts = new Map<string, FeedDraft>();
   constructor(private host: Host) {
     $('follow-open').onclick = () => this.follow();
-    $('feed-refresh').onclick = () => this.run({type: 'refresh_feed', id: this.feedId});
+    $('feed-refresh').onclick = () => {this.readKey='';this.readError='';void this.run({type: 'refresh_feed', id: this.feedId});};
     $('feed-settings').onclick = () => {
       const f = this.feed();
       if (f) this.settings(f);
@@ -96,7 +99,7 @@ export class FeedsUI {
         await this.host.call({type: 'unfollow_feed', id: this.editing});
         this.editDrafts.delete(this.editing);
         $<HTMLDialogElement>('feed-dialog').close();
-        location.hash = '#/transfers';
+        location.hash = '#/library';
       } catch (e) {
         $('follow-error').textContent = String(e)
       }
@@ -231,10 +234,19 @@ export class FeedsUI {
     const route = location.hash.split('/');
     const isFeed = route[1] === 'feeds';
     this.feedId = isFeed ? route[2] || '' : '';
-    const isTransfers = !isFeed && route[1] !== 'own';
-    $('transfer-view').hidden = !isTransfers;
+    const isLibrary = !isFeed && route[1] !== 'own' && route[1] !== 'new';
+    const viewRoute = isFeed ? location.hash : '';
+    if (viewRoute !== this.viewRoute) {
+      this.viewRoute = viewRoute;
+      this.readKey = '';
+      this.readError = '';
+      this.request++;
+      this.loading = false;
+      this.signature = '';
+    }
+    $('transfer-view').hidden = !isLibrary;
     $('feed-view').hidden = !isFeed;
-    $('transfers-nav').setAttribute('aria-current', isTransfers ? 'page' : 'false');
+    $('transfers-nav').setAttribute('aria-current', isLibrary ? 'page' : 'false');
     const feeds = state?.feeds || [];
     const nav = JSON.stringify(feeds.map(f => [f.id, f.name]));
     if (nav !== this.navSignature) {
@@ -286,10 +298,13 @@ export class FeedsUI {
         `${connected ? f.state : 'Server disconnected'} · ${mode}${
             f.mode !== 'current_catalog' ? ' · ' + f.mirror_status :
                                            ''} · ${f.update_peers} update peers · ${age}`;
-    this.showError(f.error || state?.feed_error || '');
+    this.showError(f.error || state?.feed_error || this.readError);
     const target = route[3] || f.available || f.head || '';
     if (target !== this.catalogId) {
       this.catalogId = target;
+      this.readKey = '';
+      this.readError = '';
+      if (route[3] && target !== f.head) void this.host.call({type:'open_catalog',feed:this.feedId,id:target}).catch(e=>this.showError(String(e)));
       this.selected = null;
       this.offset = 0;
       this.page = null;
@@ -361,13 +376,37 @@ export class FeedsUI {
       this.page = page;
       this.drawPage();
       $("catalog-body").replaceChildren();
-      if(page.catalog.ready) {try {const value=await this.host.call({type:"read_catalog_body",feed,catalog},false);if(request===this.request&&catalog===this.catalogId&&value.body)$("catalog-body").replaceChildren(markdown(value.body,target=>{if(target.startsWith("magnet:"))return()=>{if(target.includes("urn:btpk:"))this.follow(target);else void this.run({type:"add_magnet",uri:target})};let name:string;try{name=decodeURIComponent(target)}catch{return null}const item=page.entries.find(e=>e.name===name);return item?()=>void this.download(item):null}));}catch(e){if(catalog===this.catalogId)$("catalog-body").textContent=String(e)}}
+      if (page.catalog.ready) {
+        const value = await this.host.call({type:"read_catalog_body",feed,catalog}, false);
+        if (request !== this.request || feed !== this.feedId || catalog !== this.catalogId) return;
+        if (value.body) $("catalog-body").replaceChildren(markdown(value.body, target => {
+          if (target.startsWith("magnet:")) return () => {
+            if (target.includes("urn:btpk:")) this.follow(target);
+            else void this.run({type:"add_magnet",uri:target});
+          };
+          let name: string;
+          try { name = decodeURIComponent(target); } catch { return null; }
+          const item = page.entries.find(e => e.name === name);
+          return item ? () => void this.download(item) : null;
+        }));
+        const sequence = location.hash.split('/')[4] || null;
+        const readKey = `${feed}/${catalog}/${sequence || ''}`;
+        if (this.readKey !== readKey) {
+          // Set before awaiting: snapshots triggered by the write cannot repeat it.
+          this.readKey = readKey;
+          try {
+            await this.host.call({type:"mark_catalog_read",feed,catalog,sequence});
+          } catch (error) {
+            if (request === this.request) {this.readError=`Could not save reading state: ${error}`;this.showError(this.readError);}
+          }
+        }
+      }
     } catch (e) {
-      if (feed === this.feedId) {
+      if (request === this.request && feed === this.feedId) {
         $('catalog-status').textContent = String(e);
       }
     } finally {
-      this.loading = false;
+      if (request === this.request) this.loading = false;
     }
   }
   private controls(e: FeedEntry) {
@@ -381,7 +420,7 @@ export class FeedsUI {
     if (e.infohash && ['torrent', 'catalog'].includes(e.kind)) {
       const existing = this.state?.transfers.find(t => t.id === e.infohash);
       if (existing)
-        add('Show transfer', () => this.host.transfer(e.infohash!));
+        add('Show in Library', () => this.host.transfer(e.infohash!));
       else {
         const b =
             add(e.kind === 'catalog' ? 'Open catalog' : 'Download',

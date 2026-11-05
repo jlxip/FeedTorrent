@@ -33,8 +33,8 @@ test('Sidebar navigation, mobile overlay, focus, Escape and breakpoint resize', 
       const r = e.getBoundingClientRect();
       return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
     })).toBe(true);
-    await expect(sidebar.locator('ul > li > a')).toHaveCount(3);
-    for (const link of ['#feed-nav a','#own-nav a','#transfers-nav']) {
+    await expect(sidebar.locator('ul > li > a')).toHaveCount(4);
+    for (const link of ['#new-nav','#feed-nav a','#own-nav a','#transfers-nav']) {
       await page.locator(link).click();
       await expect(selected).toHaveCount(1);
       await expect(page.locator(link)).toHaveAttribute('aria-current','page');
@@ -56,7 +56,7 @@ test('Sidebar navigation, mobile overlay, focus, Escape and breakpoint resize', 
         await expect(sidebar).toHaveAttribute('aria-hidden','false');
         await expect(toggle).toHaveAttribute('aria-expanded','true');
         await expect(page.locator('.workspace > main')).toHaveAttribute('inert','');
-        await expect(page.locator('#transfers-nav')).toBeFocused();
+        await expect(page.locator('#new-nav')).toBeFocused();
         // Tab stays in the overlay and its Sections toggle.
         await page.keyboard.press('Shift+Tab');
         await page.keyboard.press('Shift+Tab');
@@ -76,7 +76,7 @@ test('Sidebar navigation, mobile overlay, focus, Escape and breakpoint resize', 
         await expect(page.locator('.workspace > main')).not.toHaveAttribute('inert','');
       }
       // Native navigation closes for both followed and owned feeds.
-      for (const link of ['#feed-nav a','#own-nav a','#transfers-nav']) {
+      for (const link of ['#new-nav','#feed-nav a','#own-nav a','#transfers-nav']) {
         await toggle.click();
         await page.locator(link).click();
         await expect(sidebar).toHaveAttribute('aria-hidden','true');

@@ -139,15 +139,18 @@ pub(crate) struct Checkpoint {
     pub approvals: BTreeSet<String>,
     #[serde(default)]
     pub references: BTreeMap<String, BTreeMap<String, Reference>>,
+    #[serde(default)]
+    pub news: NewsState,
 }
 impl Default for Checkpoint {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             feeds: BTreeMap::new(),
             suppressed: BTreeSet::new(),
             approvals: BTreeSet::new(),
             references: BTreeMap::new(),
+            news: NewsState::default(),
         }
     }
 }
@@ -292,4 +295,44 @@ pub(crate) fn identity(uri: &str) -> Result<MutableKey> {
 }
 pub(crate) fn target_uri(id: &str) -> String {
     format!("magnet:?xt=urn:btih:{id}")
+}
+
+/// Local reading state; never encoded into a torrent or a signed record.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NewsState {
+    pub entries: Vec<NewsRecord>,
+    pub observed: BTreeMap<String, i64>,
+    pub next_order: u64,
+    pub revision: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NewsRecord {
+    pub feed: String,
+    pub sequence: i64,
+    pub catalog: String,
+    pub detected_ms: Option<u64>,
+    pub order: u64,
+    pub read: bool,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct NewsEntry {
+    pub feed: String,
+    pub sequence: String,
+    pub catalog: String,
+    pub feed_name: String,
+    pub name: String,
+    pub detected_ms: Option<u64>,
+    pub read: bool,
+    pub ready: bool,
+    pub state: String,
+    pub error: String,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct NewsPage {
+    pub entries: Vec<NewsEntry>,
+    pub offset: usize,
+    pub total: usize,
+    pub anchor: String,
 }

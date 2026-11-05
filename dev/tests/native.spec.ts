@@ -19,7 +19,8 @@ async function magnet(page, uri) {
   await expect(page.locator("#open-dialog")).not.toBeVisible();
 }
 async function remove(page, id, files = false) {
-  await page.locator(`[data-id="${id}"] button[data-variant="destructive"]`).click();
+  if (!page.url().endsWith("/" + id)) await page.locator(`[data-id="${id}"] .transfer-name`).click();
+  await page.locator("#torrent-remove").click();
   await expect(page.locator("#delete-files")).not.toBeChecked();
   if (files) await page.locator("#delete-files").check();
   await page.locator("#remove-form button[type=submit]").click();
@@ -48,7 +49,8 @@ test("native torrent, exact files, reverse seeding, reload and multi-tab control
     page.on("request", (r) => {
       if (!r.url().startsWith(app.url)) external.push(r.url());
     });
-    await page.goto(app.url);
+    await page.goto(app.url + "/#/new");
+    await expect(page.locator("#news-view")).toBeVisible();
     await expect(page.locator("#settings-open")).toBeEnabled();
     await page.locator("#open-button").click();
     await page.getByRole("tab", { name: "Torrent file", exact: true }).click();
@@ -64,21 +66,23 @@ test("native torrent, exact files, reverse seeding, reload and multi-tab control
     });
     await expect(page.locator("#torrent-name")).toHaveText("fixture.torrent");
     await page.locator("#torrent-form button[type=submit]").click();
-    await expect(page.locator(".state")).toHaveText("Seeding · 100%");
+    await expect(page).toHaveURL(/#\/library$/);
+    await expect(page.locator(".state:visible")).toHaveText("Seeding");
     const t = await exact(app, ref);
     expect(t.files).toHaveLength(3);
     await page.locator(".transfer-name").click();
     await expect(page.locator(".file button").first()).toBeEnabled();
     await page.reload();
-    await expect(page.locator(".state")).toHaveText("Seeding · 100%");
+    await expect(page.locator(".state:visible")).toHaveText("Seeding");
     const second = await context.newPage();
-    await second.goto(app.url);
-    await expect(second.locator(".state")).toHaveText("Seeding · 100%");
+    await second.goto(app.url + "/#/library");
+    await expect(second.locator(".state:visible")).toHaveText("Seeding");
+    await second.locator(".transfer-name").click();
     await second.locator(".actions button").first().click();
-    await expect(page.locator(".state")).toHaveText("Paused · 100%");
+    await expect(page.locator(".state:visible")).toHaveText("Paused");
     await second.close();
     await page.locator(".actions button").first().click();
-    await expect(page.locator(".state")).toHaveText("Seeding · 100%");
+    await expect(page.locator(".state:visible")).toHaveText("Seeding");
     await ref.stop();
     ref.stop = async () => {};
     await reverse(app, ref, root);
@@ -88,8 +92,8 @@ test("native torrent, exact files, reverse seeding, reload and multi-tab control
     await page.close();
     expect((await app.api()).transfers[0].state).toBe("Seeding");
     const last = await context.newPage();
-    await last.goto(app.url);
-    await expect(last.locator(".state")).toHaveText("Seeding · 100%");
+    await last.goto(app.url + "/#/library");
+    await expect(last.locator(".state:visible")).toHaveText("Seeding");
     await remove(last, ref.id);
     expect(await readFile(join(t.save_path, t.files[0].name))).toHaveLength(
       ref.originals[0].length,
@@ -125,10 +129,10 @@ test("magnet metadata, unlimited activity, errors, settings and compact layout",
       announce: [tr.udp],
     });
     app = await startApp(root);
-    await page.goto(app.url);
+    await page.goto(app.url + "/#/library");
     await expect(page.locator("#settings-open")).toBeEnabled();
     await magnet(page, ref.magnet);
-    await expect(page.locator(".state")).toHaveText("Seeding · 100%");
+    await expect(page.locator(".state:visible")).toHaveText("Seeding");
     await exact(app, ref);
     await page.locator("#open-button").click();
     await page.locator("#magnet").fill(ref.magnet);
@@ -143,9 +147,10 @@ test("magnet metadata, unlimited activity, errors, settings and compact layout",
     await expect(page.locator(".transfer")).toHaveCount(6);
     expect((await app.api()).transfers.filter((t) => t.active)).toHaveLength(6);
     await expect(page.locator("#status")).toHaveText("6 active");
-    const last = page.locator(".transfer").last();
+    await page.locator(".transfer").last().locator(".transfer-name").click();
+    const last = page.locator("#library-detail");
     await last.getByRole("button", { name: "Pause", exact: true }).click();
-    await expect(last.locator(".state")).toContainText("Paused");
+    await expect(last.locator(".state:visible")).toContainText("Paused");
     await last.getByRole("button", { name: "Resume", exact: true }).click();
     await expect(last.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
     expect((await app.api()).transfers.filter((t) => t.active)).toHaveLength(6);
@@ -203,7 +208,7 @@ test("magnet metadata, unlimited activity, errors, settings and compact layout",
       (await app.api()).transfers.find((t) => t.id === ref.id).active,
     ).toBe(false);
     expect((await app.api()).settings.seed_by_default).toBe(false);
-    await page.goto(app.url);
+    await page.goto(app.url + "/#/library");
     await expect(page.locator(`[data-id="${ref.id}"] .state`)).toContainText(
       "Paused",
     );
@@ -229,7 +234,7 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
       announce: [tr.http],
     });
     app = await startApp(root);
-    await page.goto(app.url);
+    await page.goto(app.url + "/#/library");
     await expect(
       page.getByRole("button", { name: "Open", exact: true }),
     ).toHaveCount(1);
@@ -345,7 +350,7 @@ test("no-seed downloads stay enabled as Completed across pause and restart", asy
   try {
     ref = await seed(join(root, "no-seed"), [37001], { tracker: true, announce: [tr.http] });
     app = await startApp(root);
-    await page.goto(app.url);
+    await page.goto(app.url + "/#/library");
     await expect(page.locator("#settings-open")).toBeEnabled();
     await page.locator("#settings-open").click();
     await expect(page.locator("#seed-by-default")).toBeChecked();
@@ -354,18 +359,19 @@ test("no-seed downloads stay enabled as Completed across pause and restart", asy
     await page.locator("#settings-dialog [data-close]").click();
     await expect(page.locator("#settings-dialog")).not.toBeVisible();
     await magnet(page, ref.magnet);
-    const row = page.locator(`[data-id="${ref.id}"]`);
-    await expect(row.locator(".state")).toHaveText("Completed · 100%");
+    await page.locator(`[data-id="${ref.id}"] .transfer-name`).click();
+    const row = page.locator("#library-detail");
+    await expect(row.locator(".state")).toHaveText("Completed");
     await expect(row.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
     expect((await app.api()).transfers[0].active).toBe(true);
     await row.getByRole("button", { name: "Pause", exact: true }).click();
-    await expect(row.locator(".state")).toHaveText("Paused · 100%");
+    await expect(row.locator(".state")).toHaveText("Paused");
     await row.getByRole("button", { name: "Resume", exact: true }).click();
-    await expect(row.locator(".state")).toHaveText("Completed · 100%");
+    await expect(row.locator(".state")).toHaveText("Completed");
     await app.stop();
     app = await startApp(root);
-    await page.goto(app.url);
-    await expect(row.locator(".state")).toHaveText("Completed · 100%");
+    await page.goto(app.url + "/#/library/" + ref.id);
+    await expect(row.locator(".state")).toHaveText("Completed");
     expect((await app.api()).transfers[0].active).toBe(true);
     await page.locator("#settings-open").click();
     await expect(page.locator("#seed-by-default")).not.toBeChecked();
@@ -386,7 +392,7 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
         if (body.type === "configure") configurations.push(body.settings);
       }
     });
-    await page.goto(app.url);
+    await page.goto(app.url + "/#/library");
     await page.locator("#settings-open").click();
     const dialog = page.locator("#settings-dialog");
     const folder = page.locator("#download-dir");
@@ -489,7 +495,7 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
     app = await startApp(root, [], { defaultDownloads: true });
     expect((await app.api()).settings.download_dir).toBe(retry);
     expect((await app.api()).settings.seed_by_default).toBe(true);
-    await page.goto(app.url);
+    await page.goto(app.url + "/#/library");
     await page.setViewportSize({ width: 320, height: 740 });
     await page.locator("#settings-open").click();
     await expect(folder).toHaveValue(retry);

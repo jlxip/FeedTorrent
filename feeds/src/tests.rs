@@ -764,3 +764,92 @@ fn incompatible_backend_metadata_is_never_approved() {
         .iter()
         .any(|a| matches!(a, Action::Approve { .. })));
 }
+
+#[test]
+fn news_tracks_observed_roots_not_signatures_and_survives_restart() {
+    let (mut m, id) = setup(Mode::CurrentCatalog, Some(DEFAULT_LIMIT));
+    m.receive_record(&id, record([1; 20], 1), 1).unwrap();
+    m.observe_news(1000).unwrap();
+    let first = m.news_page(0, None).unwrap();
+    assert_eq!(first.entries.len(), 1);
+    assert_eq!(first.entries[0].sequence, "1");
+    assert!(!first.entries[0].read);
+    m.set_news_read(&id, "1", true).unwrap();
+    m.receive_record(&id, record([1; 20], 9007199254740993), 2)
+        .unwrap();
+    m.observe_news(900).unwrap();
+    assert_eq!(m.news_page(0, None).unwrap().total, 1);
+    assert_eq!(m.news_unread(), 0);
+    m.receive_record(&id, record([2; 20], 9007199254740994), 3)
+        .unwrap();
+    m.observe_news(800).unwrap();
+    let page = m.news_page(0, None).unwrap();
+    assert_eq!(page.entries[0].sequence, "9007199254740994");
+    assert_eq!(page.entries[0].detected_ms, Some(800));
+    assert_eq!(page.entries[1].detected_ms, Some(1000));
+    assert!(page.entries[1].read);
+    let mut restored = FeedManager::restore(&m.checkpoint().unwrap()).unwrap();
+    restored.start(0);
+    restored.observe_news(2000).unwrap();
+    assert_eq!(restored.news_page(0, None).unwrap().total, 2);
+    assert_eq!(restored.news_unread(), 1);
+    restored.unfollow(&id).unwrap();
+    assert_eq!(restored.news_page(0, None).unwrap().total, 0);
+    assert!(restored.set_news_read(&id, "1", false).is_err());
+    restored
+        .follow(&format_magnet(&key()), Config::default(), 1)
+        .unwrap();
+    restored.observe_news(3000).unwrap();
+    assert_eq!(restored.news_page(0, None).unwrap().total, 2);
+    assert!(restored.news_page(0, None).unwrap().entries[1].read);
+}
+
+#[test]
+fn news_migration_imports_only_current_and_validates_local_references() {
+    let (mut m, id) = setup(Mode::CurrentCatalog, Some(DEFAULT_LIMIT));
+    for seq in 1..=3 {
+        m.receive_record(&id, record([seq as u8; 20], seq), seq as u64)
+            .unwrap();
+    }
+    let mut legacy: serde_json::Value = serde_json::from_slice(&m.checkpoint().unwrap()).unwrap();
+    legacy["version"] = 1.into();
+    legacy.as_object_mut().unwrap().remove("news");
+    let mut upgraded = FeedManager::restore(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert!(upgraded.dirty());
+    upgraded.observe_news(456).unwrap();
+    let page = upgraded.news_page(0, None).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.entries[0].sequence, "3");
+    assert_eq!(page.entries[0].detected_ms, Some(456));
+    let checkpoint = upgraded.checkpoint().unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&checkpoint).unwrap();
+    state["news"]["entries"][0]["catalog"] = hex(&[99; 20]).into();
+    assert!(FeedManager::restore(&serde_json::to_vec(&state).unwrap()).is_err());
+    assert!(FeedManager::restore(&checkpoint).is_ok());
+}
+
+#[test]
+fn news_paging_is_anchored_and_does_not_depend_on_the_event_queue() {
+    let (mut m, id) = setup(Mode::CurrentCatalog, Some(DEFAULT_LIMIT));
+    for seq in 1..=145 {
+        let mut h = [0; 20];
+        h[..8].copy_from_slice(&(seq as u64).to_le_bytes());
+        m.receive_record(&id, record(h, seq), seq as u64).unwrap();
+    }
+    m.observe_news(1000).unwrap();
+    let first = m.news_page(0, None).unwrap();
+    assert_eq!(first.total, 145);
+    assert_eq!(first.entries.len(), 100);
+    assert_eq!(first.entries[0].sequence, "145");
+    m.receive_record(&id, record([255; 20], 146), 147).unwrap();
+    m.observe_news(1).unwrap();
+    let next = m.news_page(100, Some(&first.anchor)).unwrap();
+    assert_eq!(next.total, 145);
+    assert_eq!(next.entries.len(), 45);
+    assert_eq!(next.entries[0].sequence, "45");
+    assert_eq!(next.entries[44].sequence, "1");
+    assert_eq!(m.news_page(0, None).unwrap().entries[0].sequence, "146");
+    assert!(m.news_page(0, Some("bad")).is_err());
+    assert!(m.set_news_read(&id, "9007199254740993", true).is_err());
+    assert!(m.news_page(usize::MAX, None).unwrap().entries.is_empty());
+}
