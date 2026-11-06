@@ -4,7 +4,7 @@ use feedtorrent_bep::{
     bep44::{DhtBackend, DhtOptions, DhtOutcome, DhtRequest},
     bep50, TorrentMetadataBackend,
 };
-use feedtorrent_feeds::{Action, Description, FeedManager, FileDescription, Role, Source, WorkId};
+use feedtorrent_posts::{Action, Description, FileDescription, PostManager, Role, Source, WorkId};
 use feedtorrent_pubsub_udp::{Bind, UdpPubSub};
 use std::collections::BTreeMap;
 
@@ -18,8 +18,8 @@ enum Pending {
         length: u64,
     },
 }
-pub(super) struct FeedHost {
-    pub manager: FeedManager,
+pub(super) struct PostHost {
+    pub manager: PostManager,
     pub error: String,
     udp: Option<UdpPubSub>,
     pending: BTreeMap<WorkId, Pending>,
@@ -62,26 +62,26 @@ fn inspect_description(data: &[u8]) -> Option<Description> {
         Err(_) => None,
     }
 }
-impl FeedHost {
+impl PostHost {
     pub fn new(dir: &Path, isolated: bool) -> Self {
         let path = dir.join("feeds.json");
         let mut error = String::new();
         let mut disabled = false;
         let mut recovered = false;
         let mut manager = if path.exists() {
-            match read_limited(&path).and_then(|b| FeedManager::restore(&b).map_err(Into::into)) {
+            match read_limited(&path).and_then(|b| PostManager::restore(&b).map_err(Into::into)) {
                 Ok(m) => m,
                 Err(e) => {
-                    error = format!("Feed state: {e:#}");
+                    error = format!("Post state: {e:#}");
                     match read_limited(&dir.join("feeds.previous.json"))
-                        .and_then(|b| FeedManager::restore(&b).map_err(Into::into))
+                        .and_then(|b| PostManager::restore(&b).map_err(Into::into))
                     {
                         Ok(m) => {
                             let stamp = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_nanos();
-                            match fs::copy(&path, dir.join(format!("feeds.rejected-{stamp}.json")))
+                            match fs::copy(&path, dir.join(format!("posts.rejected-{stamp}.json")))
                             {
                                 Ok(_) => {
                                     recovered = true;
@@ -100,13 +100,13 @@ impl FeedHost {
                         }
                         Err(_) => {
                             disabled = true;
-                            FeedManager::new()
+                            PostManager::new()
                         }
                     }
                 }
             }
         } else {
-            FeedManager::new()
+            PostManager::new()
         };
         manager.start(0);
         let mut bind = Bind {
@@ -140,7 +140,7 @@ impl FeedHost {
                     Ok(u) => Some(u),
                     Err(_) => {
                         error =
-                            format!("Live feed updates: {e}; periodic DHT checks remain active");
+                            format!("Live post updates: {e}; periodic DHT checks remain active");
                         None
                     }
                 }
@@ -157,6 +157,9 @@ impl FeedHost {
             recovered,
             scan_after: WorkId(0),
         }
+    }
+    pub fn available(&self) -> bool {
+        !self.disabled
     }
     pub fn now(&self) -> u64 {
         self.start.elapsed().as_millis().min(u64::MAX as u128) as u64
@@ -190,10 +193,10 @@ impl FeedHost {
         // Apply backpressure before consuming more records or file data when
         // the previous checkpoint could not be stored.
         if let Err(error) = self.persist(&e.dir) {
-            self.error = format!("Feed persistence: {error:#}");
+            self.error = format!("Post persistence: {error:#}");
             return;
         }
-        if self.error.starts_with("Feed persistence:") {
+        if self.error.starts_with("Post persistence:") {
             self.error.clear();
         }
         let now = self.now();
@@ -202,7 +205,7 @@ impl FeedHost {
             for event in udp.protocol_mut().drain_events() {
                 match event {
                     bep50::Event::Updated { topic, record } => {
-                        let id = feedtorrent_feeds::hex(&topic);
+                        let id = feedtorrent_posts::hex(&topic);
                         if self.manager.followed(&id) {
                             if let Err(error) = self.manager.receive_record(&id, record, now) {
                                 self.manager.notice(&id, error.to_string())
@@ -214,7 +217,7 @@ impl FeedHost {
                         ..
                     } => {}
                     bep50::Event::Failure { topic, error, .. } => {
-                        let id = feedtorrent_feeds::hex(&topic);
+                        let id = feedtorrent_posts::hex(&topic);
                         if self.manager.followed(&id) {
                             self.manager.notice(&id, format!("Live updates: {error}"));
                         }
@@ -223,7 +226,7 @@ impl FeedHost {
                 }
             }
             for f in self.manager.views() {
-                if let Ok(target) = feedtorrent_feeds::hash(&f.id) {
+                if let Ok(target) = feedtorrent_posts::hash(&f.id) {
                     self.manager
                         .update_peers(&f.id, udp.protocol().contacts(target).len());
                 }
@@ -239,8 +242,8 @@ impl FeedHost {
             if let Some(work) = self.lookups.remove(&event.id.0) {
                 let result = match event.result {
                     Ok(DhtOutcome::Mutable(value)) => Ok(value),
-                    Ok(_) => Err(feedtorrent_feeds::Error("Unexpected DHT response".into())),
-                    Err(error) => Err(feedtorrent_feeds::Error(error.to_string())),
+                    Ok(_) => Err(feedtorrent_posts::Error("Unexpected DHT response".into())),
+                    Err(error) => Err(feedtorrent_posts::Error(error.to_string())),
                 };
                 self.manager.lookup_result(work, result, now);
             }
@@ -344,21 +347,21 @@ impl FeedHost {
         }
         self.manager.tick(now);
         if let Err(error) = self.persist(&e.dir) {
-            self.error = format!("Feed persistence: {error:#}");
+            self.error = format!("Post persistence: {error:#}");
             return;
         }
         for action in self.manager.drain_actions() {
             let result: Result<()> = match action {
-                Action::Relay { feed, record } => {
+                Action::Relay { post, record } => {
                     if let Some(udp) = &mut self.udp {
                         let now = udp.now();
                         if let Err(error) = udp.protocol_mut().publish(record, now) {
-                            self.manager.notice(&feed, format!("Live updates: {error}"));
+                            self.manager.notice(&post, format!("Live updates: {error}"));
                         }
                     }
                     Ok(())
                 }
-                Action::Watch { feed, key, known } => {
+                Action::Watch { post, key, known } => {
                     if let Some(udp) = &mut self.udp {
                         let now = udp.now();
                         udp.protocol_mut()
@@ -367,7 +370,7 @@ impl FeedHost {
                             .map(|_| ())
                     } else {
                         self.manager
-                            .notice(&feed, "Live updates unavailable; using DHT checks".into());
+                            .notice(&post, "Live updates unavailable; using DHT checks".into());
                         Ok(())
                     }
                 }
@@ -377,7 +380,7 @@ impl FeedHost {
                     }
                     Ok(())
                 }
-                Action::Lookup { work, feed: _, key } => {
+                Action::Lookup { work, post: _, key } => {
                     match e
                         .native
                         .start_dht(DhtRequest::GetMutable(key), DhtOptions::default())
@@ -394,16 +397,16 @@ impl FeedHost {
                 }
                 Action::Stage {
                     work,
-                    feed,
+                    post,
                     id,
                     source,
                     role,
                 } => {
-                    if !self.manager.should_stage(&feed, &id, role) {
+                    if !self.manager.should_stage(&post, &id, role) {
                         self.manager.cancel(work);
                         continue;
                     }
-                    match e.stage_feed(&feed, &id, source, role) {
+                    match e.stage_post(&post, &id, source, role) {
                         Ok(()) => {
                             self.pending.insert(work, Pending::Metadata { target: id });
                         }
@@ -413,7 +416,7 @@ impl FeedHost {
                 }
                 Action::Read {
                     work,
-                    feed: _,
+                    post: _,
                     catalog,
                     index,
                     length,
@@ -428,8 +431,8 @@ impl FeedHost {
                     );
                     Ok(())
                 }
-                Action::Approve { work, feed, id } => {
-                    if !self.manager.can_approve(&feed, &id) {
+                Action::Approve { work, post, id } => {
+                    if !self.manager.can_approve(&post, &id) {
                         self.manager.cancel(work);
                         Ok(())
                     } else {
@@ -499,7 +502,7 @@ impl FeedHost {
     }
 }
 impl Engine {
-    fn verified_path(&self, id: &str, name: &str) -> Result<PathBuf> {
+    pub(super) fn verified_path(&self, id: &str, name: &str) -> Result<PathBuf> {
         let root = &self.record(id)?.path;
         let path = root.join(name);
         if path.strip_prefix(root).is_err() {
@@ -514,62 +517,39 @@ impl Engine {
         };
         Ok(canonical)
     }
-    fn stage_feed(&mut self, feed: &str, id: &str, source: Source, role: Role) -> Result<()> {
-        if self.store.records.iter().any(|r| r.id == id) {
-            return Ok(());
-        }
+    fn stage_post(&mut self, post: &str, id: &str, source: Source, role: Role) -> Result<()> {
         let (bytes, magnet) = match source {
             Source::Magnet(uri) => (uri.into_bytes(), true),
-            Source::Torrent(bytes) => (bytes, false),
+            Source::Torrent(data) => (data, false),
         };
-        if bytes.len() > 8 * 1024 * 1024 {
-            bail!("Torrent metadata exceeds 8 MiB")
-        }
         let actual = self
             .native
             .inspect(TorrentSource::from_bytes(&bytes, magnet)?)?;
         if actual != id {
-            bail!("Feed item infohash mismatch")
+            bail!("Post item infohash mismatch")
         }
-        let path = payload_path(&self.store.settings.download_dir, id)?;
-        atomic(&self.dir.join(format!("{id}.source")), &bytes)?;
-        self.store.records.push(Record {
-            id: id.into(),
+        self.reserve_source(
+            bytes,
             magnet,
-            path: path.clone(),
-            active: true,
-            seed: self.store.settings.seed_by_default,
-            held: true,
-            kind: if role == Role::Catalog {
+            Some(lifecycle::SourceOrigin::Followed { id: post.into() }),
+            if role == Role::Catalog {
                 "catalog"
             } else {
                 "content"
-            }
-            .into(),
-            feed: Some(feed.into()),
-        });
-        self.persist()?;
-        if let Err(error) = self.native.stage(AddTransfer {
-            id,
-            source: TorrentSource::from_bytes(&bytes, magnet)?,
-            save_path: path.to_str().context("Non-UTF-8 path")?,
-            active: true,
-            restore: false,
-        }) {
-            self.store.records.retain(|r| r.id != id);
-            self.persist()?;
-            return Err(anyhow!(error.to_string()));
-        }
+            },
+            true,
+            false,
+        )?;
         Ok(())
     }
-    pub(super) fn feed_tick(&mut self) {
-        if let Some(mut host) = self.feeds.take() {
+    pub(super) fn post_tick(&mut self) {
+        if let Some(mut host) = self.posts.take() {
             host.tick(self);
-            self.feeds = Some(host);
+            self.posts = Some(host);
         }
     }
-    pub(super) fn persist_feeds(&mut self) -> Result<()> {
-        if let Some(host) = &mut self.feeds {
+    pub(super) fn persist_posts(&mut self) -> Result<()> {
+        if let Some(host) = &mut self.posts {
             host.persist(&self.dir)?
         }
         Ok(())
@@ -581,14 +561,14 @@ impl Engine {
         }
         if self.record(id)?.kind == "catalog" {
             let f = feedtorrent_bep::bep49::Feed::from_info(&d.info)?;
-            f.verify_infohash(feedtorrent_feeds::hash(id)?)?;
+            f.verify_infohash(feedtorrent_posts::hash(id)?)?;
         }
-        self.feeds
+        self.posts
             .as_mut()
-            .context("Feed service unavailable")?
+            .context("Post service unavailable")?
             .manager
             .approve_once(id)?;
-        self.persist_feeds()?;
+        self.persist_posts()?;
         let r = self
             .store
             .records
@@ -613,27 +593,26 @@ impl Engine {
         }
         Ok(())
     }
-    pub(super) fn feed_command(&mut self, command: Command) -> Result<()> {
-        let host = self.feeds.as_mut().context("Feed service unavailable")?;
+    pub(super) fn post_command(&mut self, command: Command) -> Result<()> {
+        let host = self.posts.as_mut().context("Post service unavailable")?;
         if host.disabled {
-            bail!("Feed checkpoint is invalid; original files preserved")
+            bail!("Post checkpoint is invalid; original files preserved")
         }
         let now = host.now();
         match command {
-            Command::FollowFeed { uri, config } => {
+            Command::FollowPost { uri, config } => {
                 host.manager.follow(&uri, config, now)?;
             }
-            Command::ConfigureFeed { id, config } => host.manager.configure(&id, config)?,
-            Command::UnfollowFeed { id } => host.manager.unfollow(&id)?,
-            Command::RefreshFeed { id } => host.manager.refresh(&id, now)?,
-            Command::OpenCatalog { feed, id } => host.manager.open_catalog(&feed, &id)?,
+            Command::ConfigurePost { id, config } => host.manager.configure(&id, config)?,
+            Command::RefreshPost { id } => host.manager.refresh(&id, now)?,
+            Command::OpenCatalog { post, id } => host.manager.open_catalog(&post, &id)?,
             Command::DownloadEntry {
-                feed,
+                post,
                 catalog,
                 index,
             } => {
-                let id = host.manager.download_item(&feed, &catalog, index)?;
-                self.persist_feeds()?;
+                let id = host.manager.download_item(&post, &catalog, index)?;
+                self.persist_posts()?;
                 if self.store.records.iter().any(|r| r.id == id) {
                     self.approve_transfer(&id)?;
                 }
@@ -647,31 +626,25 @@ impl Engine {
                     bail!("File not verified")
                 };
                 let path = self.verified_path(&catalog, &f.name)?;
-                let status = std::process::Command::new("/usr/bin/open")
-                    .arg("-R")
-                    .arg(path)
-                    .status()?;
-                if !status.success() {
-                    bail!("Finder could not reveal file")
-                }
+                crate::desktop::reveal(&path)?;
             }
-            _ => bail!("Invalid feed command"),
+            _ => bail!("Invalid post command"),
         }
-        self.persist_feeds()?;
-        self.feed_tick();
+        self.persist_posts()?;
+        self.post_tick();
         Ok(())
     }
 }
 
 impl Engine {
-    pub(super) fn news_read(&mut self, feed: &str, sequence: &str, read: bool) -> Result<()> {
-        let host = self.feeds.as_mut().context("Feed service unavailable")?;
+    pub(super) fn news_read(&mut self, post: &str, sequence: &str, read: bool) -> Result<()> {
+        let host = self.posts.as_mut().context("Post service unavailable")?;
         if host.disabled {
-            bail!("Feed checkpoint is invalid; original files preserved")
+            bail!("Post checkpoint is invalid; original files preserved")
         }
-        let old = host.manager.set_news_read(feed, sequence, read)?;
+        let old = host.manager.set_news_read(post, sequence, read)?;
         if let Err(error) = host.persist(&self.dir) {
-            host.manager.set_news_read(feed, sequence, old)?;
+            host.manager.set_news_read(post, sequence, old)?;
             // Never acknowledge an unpersisted reading decision. Retry its rollback
             // through the ordinary checkpoint barrier if the disk remains unavailable.
             let _ = host.persist(&self.dir);
@@ -679,9 +652,9 @@ impl Engine {
         }
         Ok(())
     }
-    pub(super) fn catalog_body(&self, feed: &str, catalog: &str) -> Result<Option<PathBuf>> {
-        let host = self.feeds.as_ref().context("Feed service unavailable")?;
-        host.manager.page(feed, catalog, 0)?;
+    pub(super) fn catalog_body(&self, post: &str, catalog: &str) -> Result<Option<PathBuf>> {
+        let host = self.posts.as_ref().context("Post service unavailable")?;
+        host.manager.page(post, catalog, 0)?;
         let info = self
             .native
             .info_bytes(catalog)?
@@ -698,7 +671,7 @@ impl Engine {
         let Some(entry) = entries.first() else {
             return Ok(None);
         };
-        if entry.length() > feedtorrent_feeds::publishing::MAX_BODY as u64 {
+        if entry.length() > feedtorrent_posts::publishing::MAX_BODY as u64 {
             bail!("Markdown exceeds 1 MiB")
         }
         let t = self
@@ -743,10 +716,10 @@ mod tests {
         let mut b = FeedBuilder::new("catalog");
         b.entries.push(BuildEntry::file(vec!["note".into()], 3));
         let built = b.build(|_| Ok(std::io::Cursor::new(b"abc"))).unwrap();
-        let id = feedtorrent_feeds::hex(&built.feed.infohash());
+        let id = feedtorrent_posts::hex(&built.feed.infohash());
         engine
-            .stage_feed(
-                "test-host",
+            .stage_post(
+                "1111111111111111111111111111111111111111",
                 &id,
                 Source::Torrent(built.metainfo),
                 Role::Catalog,
@@ -760,7 +733,7 @@ mod tests {
         fs::remove_dir(&registry).unwrap();
         engine.persist().unwrap();
         engine.native.shutdown().unwrap();
-        if let Some(h) = &mut engine.feeds {
+        if let Some(h) = &mut engine.posts {
             h.close();
         }
         fs::remove_dir_all(dir).unwrap();
@@ -776,13 +749,13 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("feedtorrent-checkpoint-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let mut host = FeedHost::new(&dir, true);
+        let mut host = PostHost::new(&dir, true);
         let id=host.manager.follow("magnet:?xs=urn:btpk:d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",Default::default(),0).unwrap();
         host.persist(&dir).unwrap();
         host.manager.unfollow(&id).unwrap();
         host.persist(&dir).unwrap();
         let backup =
-            FeedManager::restore(&fs::read(dir.join("feeds.previous.json")).unwrap()).unwrap();
+            PostManager::restore(&fs::read(dir.join("feeds.previous.json")).unwrap()).unwrap();
         let followed = backup.followed(&id);
         host.close();
         fs::remove_dir_all(dir).unwrap();
@@ -814,7 +787,7 @@ mod tests {
         let pointer =
             feedtorrent_bep::bep46::TorrentPointer::sign(&signer, [8; 20], 1, vec![]).unwrap();
         let uri = feedtorrent_bep::bep46::format_magnet(pointer.record().key());
-        let host = engine.feeds.as_mut().unwrap();
+        let host = engine.posts.as_mut().unwrap();
         let id = host.manager.follow(&uri, Default::default(), 0).unwrap();
         host.manager
             .receive_record(&id, pointer.record().clone(), 0)
@@ -823,17 +796,17 @@ mod tests {
         // Block the backup's atomic temporary after the primary can be written.
         fs::create_dir(dir.join("feeds.previous.tmp")).unwrap();
         assert!(engine.news_read(&id, "1", true).is_err());
-        assert_eq!(engine.feeds.as_ref().unwrap().manager.news_unread(), 1);
-        let primary = FeedManager::restore(&fs::read(dir.join("feeds.json")).unwrap()).unwrap();
+        assert_eq!(engine.posts.as_ref().unwrap().manager.news_unread(), 1);
+        let primary = PostManager::restore(&fs::read(dir.join("feeds.json")).unwrap()).unwrap();
         let backup =
-            FeedManager::restore(&fs::read(dir.join("feeds.previous.json")).unwrap()).unwrap();
+            PostManager::restore(&fs::read(dir.join("feeds.previous.json")).unwrap()).unwrap();
         assert_eq!(primary.news_unread(), 1);
         assert_eq!(backup.news_unread(), 1);
         fs::remove_dir(dir.join("feeds.previous.tmp")).unwrap();
         engine.news_read(&id, "1", true).unwrap();
-        assert_eq!(engine.feeds.as_ref().unwrap().manager.news_unread(), 0);
+        assert_eq!(engine.posts.as_ref().unwrap().manager.news_unread(), 0);
         engine.native.shutdown().unwrap();
-        engine.feeds.as_mut().unwrap().close();
+        engine.posts.as_mut().unwrap().close();
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -855,7 +828,7 @@ mod tests {
     #[test]
     fn udp_unavailable_keeps_native_dht_and_transfers_usable() {
         // Exercise a real bind failure, then the same optional-transport path
-        // used by FeedHost when both native socket attempts are unavailable.
+        // used by PostHost when both native socket attempts are unavailable.
         assert!(UdpPubSub::bind(
             Bind {
                 ipv4: Some("192.0.2.1".parse().unwrap()),
@@ -881,21 +854,21 @@ mod tests {
         store.settings.peer_port = 0;
         store.settings.download_dir = path.join("downloads").display().to_string();
         let mut engine = Engine::new(&args, path.clone(), store).unwrap();
-        let host = engine.feeds.as_mut().unwrap();
+        let host = engine.posts.as_mut().unwrap();
         if let Some(mut udp) = host.udp.take() {
             udp.close();
         }
         host.manager.follow("magnet:?xs=urn:btpk:d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",Default::default(),0).unwrap();
         // Give the native listener time to initialize; no network answers needed.
         for _ in 0..100 {
-            engine.feeds.as_mut().unwrap().start = Instant::now() - Duration::from_secs(40);
-            engine.feed_tick();
-            if !engine.feeds.as_ref().unwrap().lookups.is_empty() {
+            engine.posts.as_mut().unwrap().start = Instant::now() - Duration::from_secs(40);
+            engine.post_tick();
+            if !engine.posts.as_ref().unwrap().lookups.is_empty() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let host = engine.feeds.as_ref().unwrap();
+        let host = engine.posts.as_ref().unwrap();
         assert!(host.udp.is_none());
         assert!(
             !host.lookups.is_empty(),

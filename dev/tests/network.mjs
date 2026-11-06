@@ -74,10 +74,9 @@ async function scenarios() {
     await app.command({ type: "add_torrent", data: ref.bytes });
     let t = await exact(app, ref);
     check("HTTP tracker + TCP download, cross-file and zero-byte files");
-    await rejects(
-      () => app.command({ type: "add_magnet", uri: ref.magnet }),
-      /already exists/,
-    );
+    await app.command({type:'add_magnet',uri:ref.magnet});
+    assert.equal((await app.api()).transfers.length,1);
+    assert.equal((await app.api()).transfers[0].pinned,true);
     for (const uri of ["magnet:?xt=urn:btpk:abcd", "magnet:?xt=urn:btih:bad"])
       await rejects(
         () => app.command({ type: "add_magnet", uri }),
@@ -105,7 +104,7 @@ async function scenarios() {
       () => app.command({ type: "add_torrent", data: Array.from(v2) }),
       /v1|v2/,
     );
-    check("duplicates, private/v2/feed/invalid formats rejected");
+    check("Open duplicates preserve one pinned transfer; private/v2/post/invalid formats rejected");
     const other = spawn(app.child.spawnfile, app.child.spawnargs.slice(1), {
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -279,47 +278,60 @@ async function quota() {
     mount = join(root, "volume");
   await mkdir(mount);
   try {
-    await exec("hdiutil", [
-      "create",
-      "-size",
-      "20m",
-      "-fs",
-      "HFS+",
-      "-volname",
-      "FeedTorrentQuota",
-      "-quiet",
-      image,
-    ]);
-    await exec("hdiutil", [
-      "attach",
-      "-nobrowse",
-      "-mountpoint",
-      mount,
-      "-quiet",
-      image,
-    ]);
-    mounted = true;
-    const filler = join(mount, "filler");
-    const handle = await open(filler, "w");
-    try {
-      const chunk = Buffer.alloc(1024 * 1024);
-      while (true) await handle.write(chunk);
-    } catch (e) {
-      if (e.code !== "ENOSPC") throw e;
-    } finally {
-      await handle.close();
+    const injected = process.platform === "openbsd";
+    const flag = join(root, "enospc-active"), shim = join(root, "enospc.so");
+    if (injected) {
+      await exec("cc", ["-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror", "dev/fixtures/enospc.c", "-o", shim]);
+      await writeFile(flag, "active");
+    } else {
+      await exec("hdiutil", [
+        "create",
+        "-size",
+        "20m",
+        "-fs",
+        "HFS+",
+        "-volname",
+        "FeedTorrentQuota",
+        "-quiet",
+        image,
+      ]);
+      await exec("hdiutil", [
+        "attach",
+        "-nobrowse",
+        "-mountpoint",
+        mount,
+        "-quiet",
+        image,
+      ]);
+      mounted = true;
+      const filler = join(mount, "filler");
+      const handle = await open(filler, "w");
+      try {
+        const chunk = Buffer.alloc(1024 * 1024);
+        while (true) await handle.write(chunk);
+      } catch (e) {
+        if (e.code !== "ENOSPC") throw e;
+      } finally {
+        await handle.close();
+      }
+      // Release two MiB so metadata and a subset of pieces can be written.
+      const size = (await stat(filler)).size;
+      const fillerHandle = await open(filler, "r+");
+      await fillerHandle.truncate(Math.max(0, size - 2 * 1024 * 1024));
+      await fillerHandle.close();
     }
-    // Release two MiB so metadata and a subset of pieces can be written.
-    const size = (await stat(filler)).size;
-    const fillerHandle = await open(filler, "r+");
-    await fillerHandle.truncate(Math.max(0, size - 2 * 1024 * 1024));
-    await fillerHandle.close();
     tr = await tracker();
     ref = await seed(join(root, "quota-source"), [5 * 1024 * 1024], {
       tracker: true,
       announce: [tr.http],
     });
-    app = await startApp(root, ["--download-dir", join(mount, "downloads")]);
+    const downloads = join(mount, "downloads");
+    const options = injected ? { env: { ...process.env,
+      LD_PRELOAD: [shim, process.env.LD_PRELOAD].filter(Boolean).join(":"),
+      FEEDTORRENT_TEST_ENOSPC_ACTIVE: flag,
+      FEEDTORRENT_TEST_ENOSPC_FILE: join(downloads, ref.id, "source/file-0.bin"),
+    } } : {};
+    app = await startApp(root, ["--download-dir", downloads], options);
     await app.command({ type: "add_torrent", data: ref.bytes });
     const failure = await wait(
       async () => {
@@ -330,14 +342,14 @@ async function quota() {
       30000,
     );
     assert.match(failure.error, /space|disk|quota/i);
-    check("real filesystem full error", {
+    check(injected ? "isolated native ENOSPC write injection" : "real filesystem full error", {
       error: failure.error,
       verified: failure.verified,
     });
-    await rm(filler);
+    await rm(injected ? flag : join(mount, "filler"));
     await app.command({ type: "resume", id: ref.id });
     await exact(app, ref);
-    check("space recovered, valid pieces retained and download resumed");
+    check(injected ? "ENOSPC injection cleared; exact download resumes" : "space recovered, valid pieces retained and download resumed");
   } finally {
     if (app) await app.stop();
     if (ref) await ref.stop();

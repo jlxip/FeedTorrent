@@ -1,4 +1,5 @@
 import type {PublishingState} from "./publishing.js";
+export interface OrganizationNode {key:string;parent:string|null;archived:boolean;}
 export interface Settings {
   download_dir: string;
   peer_port: number;
@@ -28,10 +29,19 @@ export interface Transfer {
   held: boolean;
   approval_size: number|null;
   kind: string;
-  feed: string|null;
+  post: string|null;
+  pinned:boolean;
+  protected_by:string[];
+  used_by:string[];
 }
+export type SourceOrigin={kind:'own';id:string}|{kind:'catalog';parent:string};
+export type RemovalTarget={kind:'post';post_kind:'own'|'followed';id:string}|{kind:'unpin';id:string}|{kind:'torrent';id:string;delete_files:boolean};
+export interface RemovalPreview {revision:string;target:RemovalTarget;deleting:string[];shared:string[];protected:string[];bytes:number;names:string[];shared_names:string[];protected_names:string[];used_by?:string[];}
+export interface Cleanup {id:number;target:RemovalTarget;detached:boolean;remaining:string[];error:string;}
 export interface Snapshot {
+  cleanup:Cleanup[];
   publishing:PublishingState;
+  organization: {revision:string; nodes:OrganizationNode[]; error:string};
   engine: string;
   transfers: Transfer[];
   settings: Settings;
@@ -39,19 +49,31 @@ export interface Snapshot {
   listen_port: number;
   warning: string;
   ready: boolean;
-  feeds: Feed[];
-  feed_error: string;
-  feed_time_ms: number;
+  posts: Post[];
+  post_error: string;
+  post_time_ms: number;
   news_unread: number;
   news_revision: string;
 }
-export type Command = FeedCommand|{
+export interface ContentFile extends TorrentFile {index:number;}
+export interface ContentData {
+  id:string;name?:string;total:number|null;kind:string;files:ContentFile[];entries:PostEntry[];
+  count:number;offset:number;body:import('./markdown.js').MarkdownNode|null;
+  body_state:'metadata'|'absent'|'pending'|'ready'|'error';body_error:string;error:string;
+  source?:number[];source_uri?:string;source_index?:number;previous?:string|null;archive?:string|null;
+}
+export type Command = {type:'preview_removal';target:RemovalTarget}|{type:'delete_post';post_kind:'own'|'followed';id:string;revision:string}|{type:'set_pin';id:string;pinned:boolean;revision?:string}|{type:'retry_cleanup';id:number}|PostCommand|{type:'read_content';id:string;parent?:string;offset:number}|{
   type: 'add_magnet';
-  uri: string
+  uri: string;
+  origin?:SourceOrigin
 }
 |{
   type: 'add_torrent';
-  data: number[]
+  data: number[];
+  origin?:SourceOrigin
+}
+|{
+  type:'organize_post'; revision:string; key:string; action:'move'|'archive'|'restore'; parent:string|null; before:string|null;
 }
 |{
   type: 'pause'|'resume';
@@ -60,7 +82,8 @@ export type Command = FeedCommand|{
 |{
   type: 'remove';
   id: string;
-  delete_files: boolean
+  delete_files: boolean;
+  revision?:string
 }
 |{
   type: 'reveal';
@@ -72,10 +95,10 @@ export type Command = FeedCommand|{
   settings: Settings
 };
 
-export type FeedMode = 'current_catalog'|'mirror_catalogs'|'mirror_all';
-export interface FeedConfig {
+export type PostMode = 'current_catalog'|'mirror_catalogs'|'mirror_all';
+export interface PostConfig {
   name: string;
-  mode: FeedMode;
+  mode: PostMode;
   automatic_limit: number|null
 }
 export interface Catalog {
@@ -87,16 +110,16 @@ export interface Catalog {
   ready: boolean;
   previous: string|null;
   archive: string|null;
-  foreign_feed: string|null;
+  foreign_post: string|null;
   count: number;
   indexed: number
 }
-export interface Feed {
+export interface Post {
   local_name: string;
   id: string;
   name: string;
   magnet: string;
-  mode: FeedMode;
+  mode: PostMode;
   automatic_limit: number|null;
   sequence: string|null;
   head: string|null;
@@ -108,8 +131,9 @@ export interface Feed {
   catalogs: Catalog[];
   mirror_status: string
 }
-export interface FeedEntry {
+export interface PostEntry {
   index: number;
+  source_name: string;
   name: string;
   length: number;
   kind: string;
@@ -117,45 +141,45 @@ export interface FeedEntry {
   total: number|null;
   state: string;
   error: string;
-  feed_magnet: string|null;
+  post_magnet: string|null;
   files: {name: string; length: number}[]
 }
 export interface CatalogPage {
   catalog: Catalog;
-  entries: FeedEntry[];
+  entries: PostEntry[];
   offset: number;
   total: number
 }
-export type FeedCommand =
+export type PostCommand =
 |{type:"news_page";offset:number;anchor:string|null}
-|{type:"set_update_read";feed:string;sequence:string;read:boolean}
-|{type:"mark_catalog_read";feed:string;catalog:string;sequence:string|null}
-|{type:"read_catalog_body";feed:string;catalog:string}|{
+|{type:"set_update_read";post:string;sequence:string;read:boolean}
+|{type:"mark_catalog_read";post:string;catalog:string;sequence:string|null}
+|{type:"read_catalog_body";post:string;catalog:string}|{
   type: 'inspect_source';
   uri: string
 }
 |{
-  type: 'follow_feed';
+  type: 'follow_post';
   uri: string;
-  config: FeedConfig
+  config: PostConfig
 }
 |{
-  type: 'configure_feed';
+  type: 'configure_post';
   id: string;
-  config: FeedConfig
+  config: PostConfig
 }
 |{
-  type: 'unfollow_feed'|'refresh_feed';
+  type: 'unfollow_post'|'refresh_post';
   id: string
 }
 |{
   type: 'open_catalog';
-  feed: string;
+  post: string;
   id: string
 }
 |{
   type: 'download_entry';
-  feed: string;
+  post: string;
   catalog: string;
   index: number
 }
@@ -170,16 +194,16 @@ export type FeedCommand =
 }
 |{
   type: 'catalog_page';
-  feed: string;
+  post: string;
   catalog: string;
   offset: number
 };
 
 export interface NewsEntry {
-  feed: string;
+  post: string;
   sequence: string;
   catalog: string;
-  feed_name: string;
+  post_name: string;
   name: string;
   detected_ms: number|null;
   read: boolean;

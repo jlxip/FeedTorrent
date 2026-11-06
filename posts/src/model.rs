@@ -60,7 +60,7 @@ impl Default for Config {
 impl Config {
     pub fn validate(&self) -> Result<()> {
         if self.name.chars().count() > 256 || self.automatic_limit == Some(0) {
-            Err(err("Invalid feed name or automatic download limit"))
+            Err(err("Invalid post name or automatic download limit"))
         } else {
             Ok(())
         }
@@ -134,7 +134,8 @@ pub(crate) struct Reference {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Checkpoint {
     pub version: u32,
-    pub feeds: BTreeMap<String, Subscription>,
+    #[serde(alias = "feeds")]
+    pub posts: BTreeMap<String, Subscription>,
     pub suppressed: BTreeSet<String>,
     pub approvals: BTreeSet<String>,
     #[serde(default)]
@@ -146,7 +147,7 @@ impl Default for Checkpoint {
     fn default() -> Self {
         Self {
             version: 2,
-            feeds: BTreeMap::new(),
+            posts: BTreeMap::new(),
             suppressed: BTreeSet::new(),
             approvals: BTreeSet::new(),
             references: BTreeMap::new(),
@@ -170,40 +171,40 @@ pub struct WorkId(pub u64);
 pub enum Action {
     /// Already validated update, released only after the checkpoint barrier.
     Relay {
-        feed: String,
+        post: String,
         record: MutableRecord,
     },
     Watch {
-        feed: String,
+        post: String,
         key: MutableKey,
         known: Option<MutableRecord>,
     },
     Unwatch {
-        feed: String,
+        post: String,
         key: MutableKey,
     },
     Lookup {
         work: WorkId,
-        feed: String,
+        post: String,
         key: MutableKey,
     },
     Stage {
         work: WorkId,
-        feed: String,
+        post: String,
         id: String,
         source: Source,
         role: Role,
     },
     Read {
         work: WorkId,
-        feed: String,
+        post: String,
         catalog: String,
         index: usize,
         length: u64,
     },
     Approve {
         work: WorkId,
-        feed: String,
+        post: String,
         id: String,
     },
 }
@@ -212,12 +213,12 @@ pub enum Action {
 #[derive(Clone, Debug)]
 pub enum Event {
     RecordAccepted {
-        feed: String,
+        post: String,
         sequence: i64,
         infohash: Option<[u8; 20]>,
     },
     Attention {
-        feed: String,
+        post: String,
         message: String,
     },
     WorkFailed {
@@ -241,6 +242,7 @@ pub struct Description {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct EntryView {
     pub index: usize,
+    pub source_name: String,
     pub name: String,
     pub length: u64,
     pub kind: String,
@@ -248,7 +250,7 @@ pub struct EntryView {
     pub total: Option<u64>,
     pub state: String,
     pub error: String,
-    pub feed_magnet: Option<String>,
+    pub post_magnet: Option<String>,
     pub files: Vec<FileDescription>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -261,12 +263,12 @@ pub struct CatalogView {
     pub ready: bool,
     pub previous: Option<String>,
     pub archive: Option<String>,
-    pub foreign_feed: Option<String>,
+    pub foreign_post: Option<String>,
     pub count: usize,
     pub indexed: usize,
 }
 #[derive(Clone, Debug, Serialize)]
-pub struct FeedView {
+pub struct PostView {
     pub local_name: String,
     pub id: String,
     pub name: String,
@@ -309,7 +311,8 @@ pub(crate) struct NewsState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NewsRecord {
-    pub feed: String,
+    #[serde(alias = "feed")]
+    pub post: String,
     pub sequence: i64,
     pub catalog: String,
     pub detected_ms: Option<u64>,
@@ -318,10 +321,10 @@ pub(crate) struct NewsRecord {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct NewsEntry {
-    pub feed: String,
+    pub post: String,
     pub sequence: String,
     pub catalog: String,
-    pub feed_name: String,
+    pub post_name: String,
     pub name: String,
     pub detected_ms: Option<u64>,
     pub read: bool,

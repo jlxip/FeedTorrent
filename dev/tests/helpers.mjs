@@ -8,8 +8,12 @@ import Tracker from "bittorrent-tracker/server";
 import DHT from "bittorrent-dht";
 const fixtureTrackers = new Map();
 export const hash = (b) => createHash("sha256").update(b).digest("hex");
-export const payload = (n, s = 0) =>
-  Buffer.from(Array.from({ length: n }, (_, i) => (i * 31 + s) % 251));
+export function payload(n, s = 0) {
+  // Large fixtures must not allocate an additional JS number array per byte.
+  const bytes = Buffer.allocUnsafe(n);
+  for (let i = 0; i < n; i++) bytes[i] = (i * 31 + s) % 251;
+  return bytes;
+}
 export async function wait(fn, label = "condition", timeout = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
@@ -35,6 +39,7 @@ export async function startApp(root, extra = [], options = {}) {
     "--peer-port",
     "0",
   ];
+  if (options.openBrowser) defaults.splice(defaults.indexOf("--no-open"), 1);
   for (const flag of ["--download-dir", "--peer-port", "--data-dir"]) {
     if (extra.includes(flag)) {
       const index = defaults.indexOf(flag);
@@ -46,7 +51,7 @@ export async function startApp(root, extra = [], options = {}) {
   const child = spawn(
     resolve("target/release/feedtorrent"),
     [...defaults, ...extra],
-    { stdio: ["ignore", "pipe", "pipe"], cwd: options.cwd },
+    { stdio: ["ignore", "pipe", "pipe"], cwd: options.cwd, env: options.env },
   );
   let logs = "";
   child.stdout.on("data", (b) => {
@@ -89,6 +94,10 @@ export async function startApp(root, extra = [], options = {}) {
       return logs;
     },
     command: (c) => api("/api/commands", c),
+    deletePost: async (post_kind,id) => {
+      const p=await api('/api/commands',{type:'preview_removal',target:{kind:'post',post_kind,id}});
+      return api('/api/commands',{type:'delete_post',post_kind,id,revision:p.revision});
+    },
     stop: async () => {
       if (child.exitCode !== null) return;
       const end = once(child, "exit");
@@ -286,4 +295,16 @@ export async function reverse(app, ref, root, { utp = false } = {}) {
 export async function cleanup(root, ...resources) {
   for (const r of resources.reverse()) if (r) await r.stop();
   await rm(root, { recursive: true, force: true });
+}
+
+export async function retainForRemoval(app,id,bytes){
+  const password='removal fixture password';
+  if(!(await app.api()).publishing.has_key)await app.api('/api/publishing',{action:'create_key',password,confirmation:password});
+  const post=await app.api('/api/publishing',{action:'create_post',title:'Removal fixture'});
+  const p=await app.api('/api/publishing',{action:'get_post',id:post.id});
+  p.draft.pages[0].entries.push({kind:'torrent',name:'fixture.torrent',data:Array.from(bytes)});
+  await app.api('/api/publishing',{action:'save_draft',id:post.id,revision:p.revision,draft:p.draft});
+  const v=await app.command({type:'preview_removal',target:{kind:'unpin',id}});
+  if(v.deleting.length)throw Error('Removal fixture did not retain torrent');
+  await app.command({type:'set_pin',id,pinned:false,revision:v.revision});
 }

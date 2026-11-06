@@ -7,7 +7,7 @@ use feedtorrent_bep::{
     bep46::{self, TorrentPointer},
     bep49::Feed,
 };
-use feedtorrent_feeds::{
+use feedtorrent_posts::{
     hex,
     publishing::{BuiltCatalog, Draft, Previous},
     unhex, SignedRecord,
@@ -28,8 +28,14 @@ const MAX_LIBRARY: usize = 256 * 1024 * 1024;
 pub struct View {
     pub has_key: bool,
     pub public_key: String,
-    pub feeds: Vec<OwnView>,
+    pub posts: Vec<OwnView>,
     pub error: String,
+    #[serde(skip)]
+    pub(crate) retention: BTreeMap<String, BTreeSet<String>>,
+    #[serde(skip)]
+    pub(crate) entries: BTreeMap<String, BTreeSet<String>>,
+    #[serde(skip)]
+    pub(crate) busy: BTreeSet<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct OwnView {
@@ -38,6 +44,7 @@ pub struct OwnView {
     pub magnet: String,
     pub revision: u64,
     pub published_revision: u64,
+    pub changed_at_us: u64,
     pub sequence: Option<String>,
     pub state: String,
     pub error: String,
@@ -47,6 +54,23 @@ pub struct OwnView {
     pub phase: String,
     pub next_retry_at: Option<u64>,
 }
+// Derived response data only; never part of the saved draft or signed catalogs.
+fn reader_torrent_ids(draft: &Draft) -> Vec<serde_json::Value> {
+    let mut ids = Vec::new();
+    for page in &draft.pages {
+        for (index, entry) in page.entries.iter().enumerate() {
+            if let feedtorrent_posts::publishing::Entry::Torrent { data, .. } = entry {
+                if let feedtorrent_bep::bep49::ItemContent::Torrent(t) =
+                    feedtorrent_bep::bep49::inspect_item(data)
+                {
+                    ids.push(serde_json::json!({"page":page.id,"index":index,"infohash":hex(&t.infohash())}));
+                }
+            }
+        }
+    }
+    ids
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Owned {
@@ -56,6 +80,8 @@ struct Owned {
     draft: Draft,
     revision: u64,
     published_revision: u64,
+    #[serde(default)]
+    changed_at_us: u64,
     #[serde(default)]
     signed_revision: u64,
     pages: BTreeMap<u64, PageRef>,
@@ -78,7 +104,8 @@ struct PageRef {
 struct Library {
     version: u32,
     vault: Option<Vault>,
-    feeds: BTreeMap<String, Owned>,
+    #[serde(alias = "feeds")]
+    posts: BTreeMap<String, Owned>,
     #[serde(default = "queue::first_operation")]
     next_operation: u64,
 }
@@ -87,7 +114,7 @@ impl Default for Library {
         Self {
             version: 2,
             vault: None,
-            feeds: BTreeMap::new(),
+            posts: BTreeMap::new(),
             next_operation: 1,
         }
     }
@@ -108,11 +135,19 @@ pub enum Command {
         password: Password,
         confirmation: Password,
     },
-    CreateFeed {
+    CreatePost {
         title: String,
     },
-    GetFeed {
+    GetPost {
         id: String,
+    },
+    RemovePost {
+        id: String,
+    },
+    InspectEntry {
+        id: String,
+        page: u64,
+        infohash: String,
     },
     SaveDraft {
         id: String,
@@ -291,16 +326,14 @@ fn load(dir: &Path) -> Result<Library> {
     Ok(l)
 }
 fn validate(lib: &Library) -> Result<()> {
-    if !matches!(lib.version, 1 | 2) || lib.feeds.len() > 256 || lib.next_operation == 0 {
-        bail!("Unsupported publishing library or too many feeds")
+    if !matches!(lib.version, 1 | 2) || lib.posts.len() > 256 || lib.next_operation == 0 {
+        bail!("Unsupported publishing library or too many posts")
     }
     if let Some(vault) = &lib.vault {
-        if unhex(&vault.public_key)?.len() != 32 || vault.ciphertext.len() > 4096 {
-            bail!("Invalid publishing key")
-        }
+        vault.validate()?;
     }
     let mut operations = BTreeSet::new();
-    for (id, f) in &lib.feeds {
+    for (id, f) in &lib.posts {
         let key = bep46::parse_magnet(&f.magnet)?;
         if id != &hex(&key.target())
             || id != &f.id
@@ -327,7 +360,39 @@ fn validate(lib: &Library) -> Result<()> {
     Ok(())
 }
 fn view(lib: &Library, error: String) -> View {
+    let retention = lib
+        .posts
+        .iter()
+        .map(|(id, p)| {
+            let mut hashes: BTreeSet<_> = p
+                .history
+                .iter()
+                .cloned()
+                .chain(p.pages.values().map(|p| p.hash.clone()))
+                .collect();
+            if let Some(p) = &p.pending {
+                hashes.extend(p.pages.values().map(|p| p.hash.clone()));
+            }
+            (id.clone(), hashes)
+        })
+        .collect();
+    let entries = lib
+        .posts
+        .iter()
+        .map(|(id, p)| {
+            (
+                id.clone(),
+                reader_torrent_ids(&p.draft)
+                    .iter()
+                    .filter_map(|e| e["infohash"].as_str().map(str::to_owned))
+                    .collect(),
+            )
+        })
+        .collect();
     View {
+        retention,
+        entries,
+        busy: BTreeSet::new(),
         has_key: lib.vault.is_some(),
         public_key: lib
             .vault
@@ -335,8 +400,8 @@ fn view(lib: &Library, error: String) -> View {
             .map(|v| v.public_key.clone())
             .unwrap_or_default(),
         error,
-        feeds: lib
-            .feeds
+        posts: lib
+            .posts
             .values()
             .map(|f| OwnView {
                 id: f.id.clone(),
@@ -344,6 +409,7 @@ fn view(lib: &Library, error: String) -> View {
                 magnet: f.magnet.clone(),
                 revision: f.revision,
                 published_revision: f.published_revision,
+                changed_at_us: f.changed_at_us,
                 sequence: f.record.as_ref().map(|r| r.sequence.to_string()),
                 state: f.state.clone(),
                 error: f.error.clone(),
@@ -388,7 +454,7 @@ fn package_path(dir: &Path, hash: &str) -> Result<PathBuf> {
 }
 fn package(dir: &Path, hash: &str) -> Result<Package> {
     let p: Package = serde_json::from_slice(&read(&package_path(dir, hash)?)?)?;
-    feedtorrent_feeds::publishing::verify_payload(&p.metainfo, &p.files)?;
+    feedtorrent_posts::publishing::verify_payload(&p.metainfo, &p.files)?;
     if hex(&Feed::from_metainfo(&p.metainfo)?.infohash()) != hash {
         bail!("Saved catalog identity mismatch")
     };
@@ -433,7 +499,7 @@ fn publish(
                 bail!("External revision differs; publication blocked")
             }
         } else {
-            bail!("Feed identity already has a published revision")
+            bail!("Post identity already has a published revision")
         }
     }
     let (record, pages) = if let Some(record) = &pending.signed {
@@ -473,6 +539,35 @@ fn publish(
         work.check()?;
         for c in &built.catalogs {
             work.check()?;
+            let (post, operation) = work.identity();
+            work.call(
+                native,
+                Native::Reserve {
+                    post: post.into(),
+                    operation,
+                    metainfo: c.metainfo.clone(),
+                },
+            )?;
+            let children = c
+                .files
+                .iter()
+                .filter_map(
+                    |file| match feedtorrent_bep::bep49::inspect_item(&file.data) {
+                        feedtorrent_bep::bep49::ItemContent::Torrent(t) => Some(hex(&t.infohash())),
+                        _ => None,
+                    },
+                )
+                .collect();
+            let parent = hex(&Feed::from_metainfo(&c.metainfo)?.infohash());
+            work.call(
+                native,
+                Native::Link {
+                    post: post.into(),
+                    operation,
+                    parent,
+                    children,
+                },
+            )?;
             store_package(dir, c)?;
         }
         let pages = built
@@ -523,21 +618,30 @@ fn seed_pages(
     for p in pages.values() {
         work.check()?;
         let pack = package(dir, &p.hash)?;
+        let (post, operation) = work.identity();
+        work.call(
+            native,
+            Native::Reserve {
+                post: post.into(),
+                operation,
+                metainfo: pack.metainfo.clone(),
+            },
+        )?;
         let NativeReply::Location(path) = work.call(native, Native::Location(p.hash.clone()))?
         else {
             bail!("Invalid transfer path response")
         };
-        let feed = Feed::from_metainfo(&pack.metainfo)?;
+        let post = Feed::from_metainfo(&pack.metainfo)?;
         for (parts, bytes) in &pack.files {
             work.check()?;
-            if !feed
+            if !post
                 .entries()
                 .iter()
                 .any(|f| f.path() == *parts && f.length() == bytes.len() as u64)
             {
                 bail!("Saved payload disagrees with metadata")
             }
-            let target = parts.iter().fold(path.join(feed.name()), |p, n| p.join(n));
+            let target = parts.iter().fold(path.join(post.name()), |p, n| p.join(n));
             fs::create_dir_all(target.parent().context("Missing catalog directory")?)?;
             reject_symlinks(&path)?;
             if target.exists() {
@@ -594,10 +698,13 @@ mod tests {
                         fs::create_dir_all(&p).unwrap();
                         Ok(NativeReply::Location(p))
                     }
-                    Native::Seed(_) | Native::Ready(_) => Ok(NativeReply::Ready),
+                    Native::Link { .. }
+                    | Native::Reserve { .. }
+                    | Native::Seed(_)
+                    | Native::Ready(_) => Ok(NativeReply::Ready),
                     Native::Put(record) => {
                         let lib = load(&folder.join("publishing")).unwrap();
-                        assert!(lib.feeds.values().any(|f| f
+                        assert!(lib.posts.values().any(|f| f
                             .record
                             .as_ref()
                             .is_some_and(|r| r.signature == record.signature())));
@@ -624,7 +731,7 @@ mod tests {
             .await
             .unwrap();
         let id = client
-            .call(Command::CreateFeed {
+            .call(Command::CreatePost {
                 title: "worker".into(),
             })
             .await
@@ -651,7 +758,7 @@ mod tests {
             .await
             .unwrap();
         until(&client, |v| {
-            v.feeds.iter().any(|f| {
+            v.posts.iter().any(|f| {
                 f.state == "Publication pending" && !f.error.is_empty() && f.operation.is_some()
             })
         })
@@ -661,7 +768,7 @@ mod tests {
         drop(client);
         let (client, worker) = start(&dir, tx.clone()).unwrap();
         until(&client, |v| {
-            v.feeds
+            v.posts
                 .iter()
                 .any(|f| f.state == "Published" && f.published_revision == 2)
         })
@@ -690,7 +797,7 @@ mod tests {
             .await
             .unwrap();
         let id = client
-            .call(Command::CreateFeed {
+            .call(Command::CreatePost {
                 title: "safe".into(),
             })
             .await
@@ -710,7 +817,7 @@ mod tests {
             })
             .await;
         assert!(result.is_err());
-        let draft = client.call(Command::GetFeed { id }).await.unwrap();
+        let draft = client.call(Command::GetPost { id }).await.unwrap();
         assert_eq!(draft["revision"], 1);
         assert_eq!(draft["draft"]["pages"][0]["title"], "safe");
         assert_eq!(
@@ -736,14 +843,15 @@ mod tests {
             .error
             .contains("original data preserved"));
         assert!(client
-            .call(Command::CreateFeed {
+            .call(Command::CreatePost {
                 title: "blocked".into()
             })
             .await
             .is_err());
-        assert_eq!(fs::read(path).unwrap(), b"invalid original");
+        assert_eq!(fs::read(&path).unwrap(), b"invalid original");
         client.stop();
         worker.join().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"invalid original");
         fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]
@@ -760,7 +868,7 @@ mod tests {
             .await
             .unwrap();
         let id = client
-            .call(Command::CreateFeed {
+            .call(Command::CreatePost {
                 title: "durable draft".into(),
             })
             .await
@@ -773,14 +881,14 @@ mod tests {
         drop(client);
         let folder = dir.join("publishing");
         let mut lib = load(&folder).unwrap();
-        lib.feeds.get_mut(&id).unwrap().state = "Preparing".into();
+        lib.posts.get_mut(&id).unwrap().state = "Preparing".into();
         persist(&folder, &lib).unwrap();
         let (client, worker) = start(&dir, tx).unwrap();
-        assert!(client.view.borrow().feeds[0].error.contains("interrupted"));
-        assert_eq!(client.view.borrow().feeds[0].operation, None);
+        assert!(client.view.borrow().posts[0].error.contains("interrupted"));
+        assert_eq!(client.view.borrow().posts[0].operation, None);
         assert!(rx.try_recv().is_err());
         assert_eq!(
-            client.call(Command::GetFeed { id }).await.unwrap()["draft"]["pages"][0]["title"],
+            client.call(Command::GetPost { id }).await.unwrap()["draft"]["pages"][0]["title"],
             "durable draft"
         );
         client.stop();
@@ -814,7 +922,10 @@ mod tests {
                         fs::create_dir_all(&p).unwrap();
                         Ok(NativeReply::Location(p))
                     }
-                    Native::Seed(_) | Native::Ready(_) => Ok(NativeReply::Ready),
+                    Native::Link { .. }
+                    | Native::Reserve { .. }
+                    | Native::Seed(_)
+                    | Native::Ready(_) => Ok(NativeReply::Ready),
                     Native::Put(record) => {
                         puts += 1;
                         observed.lock().unwrap().push(record);
@@ -840,7 +951,7 @@ mod tests {
             .await
             .unwrap();
         let id = client
-            .call(Command::CreateFeed {
+            .call(Command::CreatePost {
                 title: "saved publication".into(),
             })
             .await
@@ -867,7 +978,7 @@ mod tests {
             .await
             .unwrap();
         until(&client, |v| {
-            v.feeds
+            v.posts
                 .iter()
                 .any(|f| f.state == "Published" && f.published_revision == 2)
         })
@@ -910,5 +1021,28 @@ mod tests {
             Ok(_) => panic!("Closed transport accepted a command"),
         };
         assert!(PublicationFailure::from(error).transient);
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+    #[test]
+    fn reader_ids_are_derived_without_mutating_draft() {
+        let mut draft = Draft::new("page".into());
+        draft.pages[0]
+            .entries
+            .push(feedtorrent_posts::publishing::Entry::Torrent {
+                name: "x.torrent".into(),
+                data: b"d4:infod6:lengthi0e4:name1:x12:piece lengthi16384e6:pieces0:ee".to_vec(),
+            });
+        let before = serde_json::to_vec(&draft).unwrap();
+        assert_eq!(
+            reader_torrent_ids(&draft),
+            vec![
+                serde_json::json!({"page":1,"index":0,"infohash":"2ff89194550e83efb975086f9b976f1bc5252e70"})
+            ]
+        );
+        assert_eq!(before, serde_json::to_vec(&draft).unwrap());
     }
 }

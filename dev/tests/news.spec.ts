@@ -1,17 +1,17 @@
 import {expect,test} from '@playwright/test';
 import {join} from 'node:path';
 import {readFile,writeFile} from 'node:fs/promises';
-import {feedFixture} from './feed-fixtures.mjs';
+import {postFixture} from './post-fixtures.mjs';
 import {cleanup,startApp,temporary,wait} from './helpers.mjs';
 
 test('New posts follows signed roots, reads only displayed content and restores reading decisions',async({page})=>{
   const root=await temporary();let app,fx;
   try {
-    fx=await feedFixture(root);
+    fx=await postFixture(root);
     const appDir=join(root,'app'),args=['--dht-bootstrap',fx.bootstrap];
     app=await startApp(appDir,args);
     const config={name:'News source',mode:'current_catalog',automatic_limit:1};
-    await app.command({type:'follow_feed',uri:fx.feedMagnet,config});
+    await app.command({type:'follow_post',uri:fx.postMagnet,config});
     await wait(async()=> (await app.api()).news_unread===1,'first unread root');
     await page.goto(app.url);
     const news=page.locator('#news-list');
@@ -22,7 +22,7 @@ test('New posts follows signed roots, reads only displayed content and restores 
     await expect(news.locator('.badge')).toHaveText('Unread');
     const initial=(await app.command({type:'news_page',offset:0,anchor:null})).entries[0];
     await news.locator('.news-title').click();
-    await expect(page.locator('#feed-view')).toBeVisible();
+    await expect(page.locator('#post-view')).toBeVisible();
     await expect(page.locator('#catalog-status')).toContainText('Awaiting approval');
     expect((await app.api()).news_unread).toBe(1);
     expect(fx.head.requests).toBe(0);
@@ -36,8 +36,8 @@ test('New posts follows signed roots, reads only displayed content and restores 
     await page.reload();
     await expect(news.locator('.badge')).toHaveText('Unread');
     const latest=await fx.catalog('Latest page',[{path:['metadata','body.md'],data:Buffer.from('# Latest body\n\nSafe content.')}]);
-    await app.command({type:'configure_feed',id:fx.feedId,config:{...config,automatic_limit:8388608}});
-    await fx.publish(latest);await app.command({type:'refresh_feed',id:fx.feedId});
+    await app.command({type:'configure_post',id:fx.postId,config:{...config,automatic_limit:8388608}});
+    await fx.publish(latest);await app.command({type:'refresh_post',id:fx.postId});
     await wait(async()=> (await app.api()).news_unread===2,'new root leaves previous unread');
     // The current page is anchored: no row insertion or forced scroll.
     await expect(news.locator('.news-row')).toHaveCount(1);
@@ -50,24 +50,24 @@ test('New posts follows signed roots, reads only displayed content and restores 
       else await route.continue();
     });
     await news.locator('.news-title').first().click();
-    await expect(page.locator('#catalog-status')).toContainText('Body read failed by test');
+    await expect(page.locator('#post-error')).toContainText('Body read failed by test');
     expect((await app.api()).news_unread).toBe(2);
     fail=false;await page.goBack();
     await news.locator('.news-title').first().click();
-    await expect(page.locator('#catalog-body')).toContainText('Latest body');
+    await expect(page.locator('#post-reader .reader-body')).toContainText('Latest body');
     await wait(async()=> (await app.api()).news_unread===1,'displayed Markdown read');
     await page.goBack();
     await expect(news.locator('.badge').first()).toHaveText('Read');
     await news.locator('.news-title').last().click();
     await expect(page).toHaveURL(new RegExp(fx.head.id));
-    await expect(page.locator('#catalog-entries')).toContainText('note.txt');
+    await expect(page.locator('#post-reader .reader-entries')).toContainText('note.txt');
     await wait(async()=> (await app.api()).news_unread===0,'old revision selected explicitly');
-    await fx.publish(latest,33);await app.command({type:'refresh_feed',id:fx.feedId});
-    await wait(async()=> (await app.api()).feeds[0].sequence==='33','unchanged pointer accepted');
+    await fx.publish(latest,33);await app.command({type:'refresh_post',id:fx.postId});
+    await wait(async()=> (await app.api()).posts[0].sequence==='33','unchanged pointer accepted');
     expect((await app.command({type:'news_page',offset:0,anchor:null})).total).toBe(2);
-    await app.command({type:'unfollow_feed',id:fx.feedId});
+    await app.deletePost('followed',fx.postId);
     expect((await app.command({type:'news_page',offset:0,anchor:null})).total).toBe(0);
-    await app.command({type:'follow_feed',uri:fx.feedMagnet,config:{...config,automatic_limit:8388608}});
+    await app.command({type:'follow_post',uri:fx.postMagnet,config:{...config,automatic_limit:8388608}});
     await wait(async()=> (await app.command({type:'news_page',offset:0,anchor:null})).total===2,'follow preserves history');
     expect((await app.api()).news_unread).toBe(0);
     await app.stop();app=await startApp(appDir,args);
@@ -81,7 +81,7 @@ test('New posts follows signed roots, reads only displayed content and restores 
     // A recovered durable checkpoint must preserve acknowledged reading states.
     await app.stop();await writeFile(join(appDir,'state','feeds.json'),'damaged primary');
     app=await startApp(appDir,args);
-    expect((await app.api()).feed_error).toContain('recovered previous checkpoint');
+    expect((await app.api()).post_error).toContain('recovered previous checkpoint');
     expect((await app.api()).news_unread).toBe(0);
     expect((await app.command({type:'news_page',offset:0,anchor:null})).total).toBe(2);
     // Exercise the native v1 migration with real signed history and local files.
@@ -95,7 +95,7 @@ test('New posts follows signed roots, reads only displayed content and restores 
     expect(migrated.entries[0].read).toBe(false);
     const durable=JSON.parse(await readFile(path,'utf8'));
     expect(durable.version).toBe(2);
-    expect(durable.feeds).toEqual(legacy.feeds);
+    expect(durable.posts).toEqual(legacy.posts);
     expect(durable.approvals).toEqual(legacy.approvals);
     expect(durable.suppressed).toEqual(legacy.suppressed);
   } finally {if(app)await app.stop();if(fx)await fx.stop();await cleanup(root);}
@@ -106,7 +106,7 @@ test('New posts anchored pagination, history position, keyboard and responsive V
   try {
     app=await startApp(join(root,'app'));
     let total=105;
-    const feed='a'.repeat(40);
+    const post='a'.repeat(40);
     const errors:string[]=[],external:string[]=[];
     page.on('pageerror',e=>errors.push(e.message));
     page.on('request',r=>{if(!r.url().startsWith(app.url))external.push(r.url());});
@@ -114,7 +114,7 @@ test('New posts anchored pagination, history position, keyboard and responsive V
       const c=route.request().postDataJSON();
       if(c.type==='news_page'){
         const bound=c.anchor===null?total:Number(c.anchor),all=Array.from({length:bound},(_,i)=>{
-          const n=bound-i;return {feed,sequence:String(BigInt('9007199254740993')+BigInt(n)),catalog:n.toString(16).padStart(40,'0'),feed_name:'Followed source',name:`Catalog ${n}`,detected_ms:1793740000000-n,read:n%2===0,ready:false,state:'Waiting for metadata',error:''};
+          const n=bound-i;return {post,sequence:String(BigInt('9007199254740993')+BigInt(n)),catalog:n.toString(16).padStart(40,'0'),post_name:'Followed source',name:`Catalog ${n}`,detected_ms:1793740000000-n,read:n%2===0,ready:false,state:'Waiting for metadata',error:''};
         });
         await route.fulfill({json:{entries:all.slice(c.offset,c.offset+100),offset:c.offset,total:bound,anchor:String(bound)}});
       }else await route.continue();
@@ -128,7 +128,7 @@ test('New posts anchored pagination, history position, keyboard and responsive V
     await expect(page.locator('#news-range')).toHaveText('101–105 / 105');
     await expect(page.locator('#news-next')).toBeDisabled();
     const last=page.locator('.news-title').last();
-    await last.click();await expect(page.locator('#feed-view')).toBeVisible();
+    await last.click();await expect(page.locator('#post-view')).toBeVisible();
     await page.goBack();
     await expect(page.locator('#news-range')).toHaveText('101–105 / 105');
     await expect(last).toBeFocused();

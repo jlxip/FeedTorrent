@@ -1,8 +1,10 @@
+import {size} from './reader.js';
+import {OrganizationUI} from "./organization.js";
 import {LibraryUI} from "./library.js";
 import {NewsUI} from "./news.js";
 import {PublishingUI} from "./publishing.js";
-import {FeedsUI} from "./feeds.js";
-import type { Snapshot, Command, Settings } from "./types.js";
+import {PostsUI} from "./posts.js";
+import type { Snapshot, Command, Settings, RemovalTarget, RemovalPreview } from "./types.js";
 const $ = <T extends Element = HTMLElement>(s: string) =>
   document.querySelector<T>(s)!;
 let state: Snapshot | null = null,
@@ -10,11 +12,14 @@ let state: Snapshot | null = null,
   removing: string | null = null;
 // Legacy bookmarks share the Library entry rather than adding a redirect to Back.
 function normalizeRoute() {
+  if(history.state?.feedReader&&!history.state?.postReader)history.replaceState({...history.state,postReader:history.state.feedReader},'');
   if (!location.hash || location.hash === "#" || location.hash === "#/")
     history.replaceState(history.state, "", "#/new");
   else if (location.hash === "#/transfers")
     history.replaceState(history.state, "", "#/library");
-  history.scrollRestoration = ["new", "library"].includes(location.hash.split("/")[1]) ? "manual" : "auto";
+  if (location.hash.startsWith("#/feeds/"))
+    history.replaceState(history.state, "", location.hash.replace(/^#\/feeds\//, "#/posts/"));
+  history.scrollRestoration = ["new", "library", "posts", "own"].includes(location.hash.split("/")[1]) ? "manual" : "auto";
 }
 normalizeRoute();
 window.addEventListener("hashchange", normalizeRoute);
@@ -119,7 +124,7 @@ function opened() {
   $<HTMLInputElement>("#magnet").value = "";
   $<HTMLInputElement>("#torrent-file").value = "";
   $("#magnet-error").textContent = "";
-  $("#torrent-error").textContent = "";
+  $("#open-torrent-error").textContent = "";
   $("#torrent-name").textContent = "No file selected";
   $<HTMLDialogElement>("#open-dialog").close();
   notice("");
@@ -142,32 +147,78 @@ async function send(c: Command) {
   return j;
 }
 async function command(c:Command){const result=await send(c);await sync();return result;}
-const libraryUI = new LibraryUI({
-  action: c => void action(c),
-  remove: id => {
-    removing = id;
-    $("#remove-error").textContent = "";
-    $("#remove-name").textContent = state?.transfers.find(t => t.id === id)?.name || id;
-    $<HTMLInputElement>("#delete-files").checked = false;
-    $<HTMLDialogElement>("#remove-dialog").showModal();
-  },
-});
+let removalTarget:RemovalTarget|null=null,removalPreview:RemovalPreview|null=null,removalRequest=0,removalBusy=false;
+function rootName(root:string){const [kind,id]=root.split(':');return kind==='own'?state?.publishing.posts.find(p=>p.id===id)?.title||'Post':state?.posts.find(p=>p.id===id)?.name||'Post';}
+async function refreshRemoval(){
+  if(!removalTarget)return;const request=++removalRequest;removalPreview=null;
+  const submit=$<HTMLButtonElement>('#remove-form button[type=submit]');submit.disabled=true;
+  try{
+    const preview=await send({type:'preview_removal',target:removalTarget}) as RemovalPreview;
+    if(request!==removalRequest)return;removalPreview=preview;
+    const used=(preview.used_by||[]).map(rootName);
+    $('#remove-preview').textContent=removalTarget.kind==='unpin'
+      ? `Unpin and delete ${preview.deleting.length} unreferenced torrents (${size(preview.bytes)}).`
+      : `${used.length?'Used by '+used.join(', ')+'. This removes the downloaded copy for all of them. ':''}${removalTarget.kind==='torrent'&&removalTarget.delete_files?'Downloaded files will be deleted.':'Downloaded files will be kept.'}`;
+  }catch(e){if(request===removalRequest)$('#remove-error').textContent=String(e);}
+  finally{if(request===removalRequest)submit.disabled=removalBusy||!removalPreview||!connected;}
+}
+function showRemoval(id:string,target:RemovalTarget){
+  removing=id;removalTarget=target;$('#remove-error').textContent='';$('#remove-preview').textContent='Checking references…';
+  $('#remove-name').textContent=state?.transfers.find(t=>t.id===id)?.name||id;
+  $('#remove-title').textContent=target.kind==='unpin'?'Unpin and delete?':'Remove torrent';
+  $('#remove-form button[type=submit]').textContent=target.kind==='unpin'?'Unpin and delete':'Remove';
+  $<HTMLInputElement>('#delete-files').checked=target.kind==='torrent'&&target.delete_files;
+  $('#delete-files').closest<HTMLElement>('.field')!.hidden=target.kind!=='torrent';
+  $<HTMLDialogElement>('#remove-dialog').showModal();$('#remove-dialog [data-close]').focus();void refreshRemoval();
+}
+function removeTorrent(id:string){showRemoval(id,{kind:'torrent',id,delete_files:false});}
+async function pinTorrent(id:string,pinned:boolean){
+  if(!connected)return;
+  try{
+    if(pinned){await command({type:'set_pin',id,pinned:true});return;}
+    const preview=await send({type:'preview_removal',target:{kind:'unpin',id}}) as RemovalPreview;
+    if(preview.deleting.length){showRemoval(id,{kind:'unpin',id});}
+    else await command({type:'set_pin',id,pinned:false,revision:preview.revision});
+  }catch(e){notice(String(e));}
+}
+$('#delete-files').addEventListener('change',()=>{if(removalTarget?.kind==='torrent'){removalTarget={...removalTarget,delete_files:$<HTMLInputElement>('#delete-files').checked};void refreshRemoval();}});
+async function downloadContent(id:string,c:Command){
+  try{return await command(c);}catch(e){await sync();if(!state?.transfers.some(t=>t.id===id))throw e;}
+}
+const contentHost={download:downloadContent,call:(c:Command,refresh=true)=>refresh?command(c):send(c),remove:removeTorrent,pin:(id:string,pinned:boolean)=>pinTorrent(id,pinned),follow:(magnet:string)=>postUI.follow(magnet)};
+const libraryUI = new LibraryUI({...contentHost,action:c=>void action(c)});
 function showLibrary(id?: string) { libraryUI.open(id); }
 const newsUI = new NewsUI((c,refresh=true)=>refresh?command(c):send(c));
-const feedUI=new FeedsUI({call:async(c,refresh=true)=>refresh?command(c):send(c),transfer:(id)=>showLibrary(id),followed:()=>opened()});
-const publishingUI=new PublishingUI(uri=>{if(uri.includes('urn:btpk:'))feedUI.follow(uri);else{$<HTMLInputElement>('#magnet').value=uri;$<HTMLButtonElement>('#open-button').click();updateOpenButtons();}},async data=>{
-  const before=new Set(state?.transfers.map(t=>t.id));
-  await command({type:'add_torrent',data});
-  const added=state?.transfers.filter(t=>!before.has(t.id))||[];
-  // If background feeds also registered torrents, keep the catalogue rather than guess an ID.
-  showLibrary(added.length===1?added[0].id:undefined);
-});
+const postUI=new PostsUI({...contentHost,transfer:(id)=>showLibrary(id),followed:()=>opened(),removePost:(id,trigger)=>organizationUI.openRemove('followed:'+id,trigger)});
+const publishingUI=new PublishingUI(uri=>{if(uri.includes('urn:btpk:'))postUI.follow(uri);else{$<HTMLInputElement>('#magnet').value=uri;$<HTMLButtonElement>('#open-button').click();updateOpenButtons();}},async (data,id,post)=>{
+  try{await command({type:'add_torrent',data,origin:{kind:'own',id:post}});}
+  catch(e){await sync();if(!state?.transfers.some(t=>t.id===id))throw e;}
+},id=>showLibrary(id),contentHost);
+const organizationUI = new OrganizationUI(async c => {
+  try { return await command(c); }
+  catch (error) { await sync().catch(() => {}); throw error; }
+},async (id,revision)=>{await publishingUI.removePost(id,()=>command({type:'delete_post',post_kind:'own',id,revision}));await sync();},id=>postUI.removed(id));
 async function action(c: Command) {
   try {
     notice("");
     await command(c);
   } catch (e) {
     notice(String(e));
+  }
+}
+const cleanupRows=new Map<number,HTMLElement>(),retrying=new Set<number>();
+function renderCleanup(){
+  const jobs=state?.cleanup||[],container=$('#cleanup-jobs');$('#cleanup-status').hidden=!jobs.length;
+  for(const [id,row] of cleanupRows)if(!jobs.some(j=>j.id===id)){row.remove();cleanupRows.delete(id);}
+  for(const job of jobs){
+    let row=cleanupRows.get(job.id);
+    if(!row){row=document.createElement('div');const text=document.createElement('span'),retry=document.createElement('button');retry.type='button';retry.className='btn';retry.dataset.variant='outline';retry.textContent='Retry cleanup';
+      retry.onclick=async()=>{if(retrying.has(job.id))return;retrying.add(job.id);renderCleanup();try{await command({type:'retry_cleanup',id:job.id});}catch(e){notice(String(e));}finally{retrying.delete(job.id);renderCleanup();}};
+      row.append(text,retry);container.append(row);cleanupRows.set(job.id,row);
+    }
+    const text=job.error||`Deleting downloaded content… ${job.remaining.length} remaining`;
+    if(row.firstElementChild!.textContent!==text)row.firstElementChild!.textContent=text;
+    const retry=row.lastElementChild as HTMLButtonElement;retry.hidden=!job.error;retry.disabled=!connected||retrying.has(job.id);
   }
 }
 function render() {
@@ -185,9 +236,11 @@ function render() {
   if ($("#network-warning > section").textContent !== warning) $("#network-warning > section").textContent = warning;
   $("#network-warning").hidden = !state?.warning;
   updateOpenButtons();
-  feedUI.render(state,connected);
+  postUI.render(state,connected);
   publishingUI.render(state,connected);
   newsUI.render(state,connected);
+  organizationUI.render(state,connected);
+  renderCleanup();
 }
 async function sync() {
   const r = await fetch("./api/snapshot");
@@ -211,7 +264,7 @@ $("#choose-torrent").onclick = () =>
 $("#torrent-file").onchange = () => {
   const file = $<HTMLInputElement>("#torrent-file").files?.[0];
   $("#torrent-name").textContent = file?.name || "No file selected";
-  $("#torrent-error").textContent =
+  $("#open-torrent-error").textContent =
     file && file.size > 8 * 1024 * 1024 ? "Torrent metadata exceeds 8 MiB" : "";
   $("#torrent-file").setAttribute("aria-invalid", String(!!file && file.size > 8 * 1024 * 1024));
   updateOpenButtons();
@@ -228,9 +281,9 @@ $("#magnet-form").onsubmit = async (event) => {
   try {
     const uri=$<HTMLInputElement>("#magnet").value.trim();
     const source=await send({type:"inspect_source",uri});
-    if(source.kind==="feed"){
+    if(source.kind==="post"){
       $<HTMLDialogElement>("#open-dialog").close();
-      if(state?.feeds.some(f=>f.id===source.id)){opened();location.hash=`#/feeds/${source.id}`;}else{feedUI.follow(source.magnet);}
+      if(state?.posts.some(f=>f.id===source.id)){opened();location.hash=`#/posts/${source.id}`;}else{postUI.follow(source.magnet);}
     }else{await command({type:"add_magnet",uri});opened();showLibrary();}
   } catch (error) {
     $("#magnet-error").textContent = String(error);
@@ -259,7 +312,7 @@ $("#torrent-form").onsubmit = async (event) => {
     opened();
     showLibrary();
   } catch (error) {
-    $("#torrent-error").textContent = String(error);
+    $("#open-torrent-error").textContent = String(error);
     if (/torrent|metadata|bencode|decode/i.test(String(error))) $("#torrent-file").setAttribute("aria-invalid", "true");
   } finally {
     opening = false;
@@ -348,22 +401,16 @@ $("#settings-form").addEventListener("keydown", (event) => {
     void saveSettings();
   }
 });
-$("#remove-form").onsubmit = async (e) => {
-  e.preventDefault();
-  if (!removing) return;
-  try {
-    await command({
-      type: "remove",
-      id: removing,
-      delete_files: $<HTMLInputElement>("#delete-files").checked,
-    });
-    $<HTMLDialogElement>("#remove-dialog").close();
-    libraryUI.removed(removing);
-    removing = null;
-    notice("");
-  } catch (error) {
-    $("#remove-error").textContent = String(error);
-  }
+$("#remove-form").onsubmit=async e=>{
+  e.preventDefault();if(!removing||!removalTarget||!removalPreview||removalBusy||!connected)return;
+  const target=removalTarget,id=removing;removalBusy=true;$<HTMLButtonElement>('#remove-form button[type=submit]').disabled=true;
+  try{
+    if(target.kind==='unpin')await command({type:'set_pin',id,pinned:false,revision:removalPreview.revision});
+    else if(target.kind==='torrent')await command({type:'remove',id,delete_files:target.delete_files,revision:removalPreview.revision});
+    $<HTMLDialogElement>('#remove-dialog').close();if(!state?.transfers.some(t=>t.id===id))libraryUI.removed(id);
+    removing=null;removalTarget=null;removalPreview=null;notice('');
+  }catch(error){$('#remove-error').textContent=String(error);if(/References changed/.test(String(error)))await refreshRemoval();}
+  finally{removalBusy=false;$<HTMLButtonElement>('#remove-form button[type=submit]').disabled=!removalPreview||!connected;}
 };
 document.addEventListener("invalid", event => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement)

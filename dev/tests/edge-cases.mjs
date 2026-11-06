@@ -224,10 +224,9 @@ async function paths() {
     await app.command({ type: "add_torrent", data: ref.bytes });
     await complete(app, ref.id);
     await symlink(victim, join(folder, "external"));
-    await assert.rejects(
-      () => app.command({ type: "remove", id: ref.id, delete_files: true }),
-      /Symlink/,
-    );
+    const unpin=await app.command({type:'preview_removal',target:{kind:'unpin',id:ref.id}});
+    await app.command({type:'set_pin',id:ref.id,pinned:false,revision:unpin.revision});
+    await wait(async()=>(await app.api()).cleanup.some(j=>j.error.includes('Symlink')),'unsafe deletion rejected');
     assert.equal(await readFile(join(victim, "keep.txt"), "utf8"), "preserve");
     pass("symlink paths cannot redirect writes or deletion outside a transfer");
   } finally {

@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import {generateKeyPairSync} from 'node:crypto';
+import {join} from 'node:path';
+import {mkdir,writeFile} from 'node:fs/promises';
+import {postFixture,magnet} from './post-fixtures.mjs';
+import {cleanup,startApp,temporary,wait} from './helpers.mjs';
+const root=await temporary();let app,fx;const checks=[];
+const pass=s=>{checks.push(s);console.log('PASS',s);};
+try{
+  fx=await postFixture(root);const args=['--dht-bootstrap',fx.bootstrap];app=await startApp(join(root,'app'),args);
+  const config={name:'Live post',mode:'current_catalog',automatic_limit:null};
+  await app.command({type:'follow_post',uri:fx.postMagnet,config});
+  const key='followed:'+fx.postId;
+  await wait(async()=>{const s=await app.api();return s.posts[0]?.head===fx.head.id&&s.organization.nodes.some(n=>n.key===key);},'first signed pointer');
+  const other=generateKeyPairSync('ed25519').publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('hex');
+  await app.command({type:'follow_post',uri:'magnet:?xs=urn:btpk:'+other,config:{...config,name:'Other'}});
+  const state=await app.api(),otherKey=state.organization.nodes.find(n=>n.key!==key).key;
+  const change=async(action,parent=null,before=null)=>{const s=await app.api();return app.command({type:'organize_post',key,revision:s.organization.revision,action,parent,before});};
+  await change('move',null,null);const manual=await app.api();assert.equal(manual.organization.nodes.filter(n=>!n.parent)[0].key,otherKey);
+  await app.command({type:'refresh_post',id:fx.postId});await new Promise(r=>setTimeout(r,1500));
+  assert.equal((await app.api()).organization.revision,manual.organization.revision);pass('same verified root and network refresh preserve manual order');
+  const next=await fx.catalog('Next',[{path:['note.txt'],data:Buffer.from('revision two')}],{prev:magnet(fx.head.id)});await fx.publish(next);
+  await app.command({type:'refresh_post',id:fx.postId});
+  await wait(async()=>{const s=await app.api();return s.posts.find(f=>f.id===fx.postId)?.head===next.id&&s.organization.nodes.filter(n=>!n.parent)[0].key===key;},'new verified root bumps followed post');
+  pass('real DHT/BEP46 update moves followed post to first sibling');
+  await change('archive');
+  const newer=await fx.catalog('Newer',[{path:['note.txt'],data:Buffer.from('revision three')}],{prev:magnet(next.id)});await fx.publish(newer);
+  await app.command({type:'refresh_post',id:fx.postId});
+  await wait(async()=>{const s=await app.api();return s.posts.find(f=>f.id===fx.postId)?.head===newer.id&&s.organization.nodes.find(n=>n.key===key).archived;},'archived post still receives updates');
+  const news=await app.command({type:'news_page',offset:0,anchor:null});assert(news.entries.some(e=>e.post===fx.postId));
+  pass('archived post keeps network updates and New posts');
+  const before=await app.api();await app.stop();app=await startApp(join(root,'app'),args);const restored=await app.api();
+  assert.deepEqual(restored.organization,before.organization);pass('restart preserves archive, order and version baselines without another bump');
+  await mkdir('.runtime/evidence',{recursive:true});
+  await writeFile('.runtime/evidence/organization.json',JSON.stringify({checks,status:'PASS'},null,2));
+}finally{await cleanup(root,app,fx);}

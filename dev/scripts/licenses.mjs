@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, copyFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, copyFile, readdir, writeFile, readFile, access } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -13,15 +13,28 @@ await copyFile(
   join(root, "backends/libtorrent/vendor/libtorrent/LICENSE"),
   join(notices, "LIBTORRENT-LICENSE"),
 );
-await copyFile(
-  join(output("brew", ["--prefix", "openssl@3"]), "LICENSE.txt"),
-  join(notices, "OPENSSL-LICENSE"),
-);
+// Use the TLS implementation selected by CMake, including system LibreSSL.
+const cache = await readFile(join(root, ".tools/libtorrent-build/CMakeCache.txt"), "utf8");
+const include = cache.match(/^OPENSSL_INCLUDE_DIR:[^=]+=(.+)$/m)?.[1];
+if (!include) throw Error("CMake did not record the TLS include directory");
+const version = await readFile(join(include, "openssl/opensslv.h"), "utf8");
+const libreSSL = version.includes("LIBRESSL_VERSION_NUMBER");
+const candidates = process.env.TLS_LICENSE_FILE ? [process.env.TLS_LICENSE_FILE] :
+  libreSSL ? [join(root, "dev/licenses/LibreSSL-LICENSE")] : [
+    join(include, "../LICENSE.txt"),
+    join(include, "../share/doc/openssl/LICENSE.txt"),
+    join(include, "../share/doc/openssl/LICENSE"),
+  ];
+let tlsLicense;
+for (const candidate of candidates) {
+  try { await access(candidate); tlsLicense = candidate; break; } catch {}
+}
+if (!tlsLicense) throw Error("TLS license not found; set TLS_LICENSE_FILE to its installed license");
+await copyFile(tlsLicense, join(notices, libreSSL ? "LIBRESSL-LICENSE" : "OPENSSL-LICENSE"));
 const metadata = JSON.parse(
   output("cargo", [
     "metadata",
     "--locked",
-    "--offline",
     "--format-version",
     "1",
   ]),

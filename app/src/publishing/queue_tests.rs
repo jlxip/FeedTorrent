@@ -31,17 +31,18 @@ fn fixture(count: usize) -> (PathBuf, Library, Vec<String>) {
         )
         .unwrap();
         let id = hex(&key.target());
-        let mut draft = Draft::new(format!("Feed {i}"));
+        let mut draft = Draft::new(format!("Post {i}"));
         draft.pages[0].body = format!("snapshot {i}");
-        lib.feeds.insert(
+        lib.posts.insert(
             id.clone(),
             Owned {
                 id: id.clone(),
                 magnet: bep46::format_magnet(&key),
-                title: format!("Feed {i}"),
+                title: format!("Post {i}"),
                 draft,
                 revision: 1,
                 published_revision: 0,
+                changed_at_us: 0,
                 signed_revision: 0,
                 pages: BTreeMap::new(),
                 record: None,
@@ -80,7 +81,7 @@ fn manager(dir: &Path, lib: Library) -> Manager {
 fn enqueue(m: &mut Manager, id: &str) -> u64 {
     m.command(Command::Publish {
         id: id.into(),
-        revision: m.lib.feeds[id].revision,
+        revision: m.lib.posts[id].revision,
         password: Password(PASSWORD.into()),
     })
     .unwrap()["operation"]
@@ -119,7 +120,7 @@ fn snapshots_are_durable_duplicate_guarded_and_secrets_are_not_serialized() {
     let (dir, lib, ids) = fixture(1);
     let mut m = manager(&dir, lib);
     let operation = enqueue(&mut m, &ids[0]);
-    let original = m.lib.feeds[&ids[0]].pending.as_ref().unwrap().draft.clone();
+    let original = m.lib.posts[&ids[0]].pending.as_ref().unwrap().draft.clone();
     let mut draft = original.clone();
     draft.pages[0].body = "later edit".into();
     m.command(Command::SaveDraft {
@@ -130,10 +131,10 @@ fn snapshots_are_durable_duplicate_guarded_and_secrets_are_not_serialized() {
     .unwrap();
     let saved = load(&m.dir).unwrap();
     assert_eq!(
-        saved.feeds[&ids[0]].pending.as_ref().unwrap().draft,
+        saved.posts[&ids[0]].pending.as_ref().unwrap().draft,
         original
     );
-    assert_eq!(saved.feeds[&ids[0]].pending.as_ref().unwrap().id, operation);
+    assert_eq!(saved.posts[&ids[0]].pending.as_ref().unwrap().id, operation);
     assert!(m
         .command(Command::Publish {
             id: ids[0].clone(),
@@ -169,14 +170,14 @@ fn stale_callbacks_and_commands_cannot_replace_a_new_job() {
         .signed(
             id,
             first,
-            record(&m.lib.feeds[id], 0, 3),
+            record(&m.lib.posts[id], 0, 3),
             BTreeMap::new(),
             vec![]
         )
         .is_err());
     m.finished(id.clone(), first, Ok(4));
-    assert_eq!(m.lib.feeds[id].pending.as_ref().unwrap().id, second);
-    assert_eq!(m.lib.feeds[id].published_revision, 0);
+    assert_eq!(m.lib.posts[id].pending.as_ref().unwrap().id, second);
+    assert_eq!(m.lib.posts[id].published_revision, 0);
     assert!(m
         .command(Command::CancelPublication {
             id: id.clone(),
@@ -198,7 +199,7 @@ fn canceled_signed_record_is_retained_and_unsigned_restart_never_revives_it() {
     let id = &ids[0];
     let op = enqueue(&mut m, id);
     running(&mut m, id, op);
-    let signed = record(&m.lib.feeds[id], 7, 4);
+    let signed = record(&m.lib.posts[id], 7, 4);
     m.signed(id, op, signed.clone(), BTreeMap::new(), vec![])
         .unwrap();
     m.command(Command::CancelPublication {
@@ -207,27 +208,27 @@ fn canceled_signed_record_is_retained_and_unsigned_restart_never_revives_it() {
     })
     .unwrap();
     assert_eq!(
-        m.lib.feeds[id].record.as_ref().unwrap().signature,
+        m.lib.posts[id].record.as_ref().unwrap().signature,
         signed.signature
     );
-    assert_eq!(m.lib.feeds[id].published_revision, 0);
+    assert_eq!(m.lib.posts[id].published_revision, 0);
     m.finished(id.clone(), op, Ok(3));
-    assert_eq!(m.lib.feeds[id].state, "Canceled");
+    assert_eq!(m.lib.posts[id].state, "Canceled");
     enqueue(&mut m, id);
     let mut reloaded = load(&m.dir).unwrap();
     recover(&mut reloaded).unwrap();
-    assert!(reloaded.feeds[id].pending.is_none());
-    assert!(!reloaded.feeds[id].active);
-    assert_eq!(reloaded.feeds[id].record.as_ref().unwrap().sequence, 7);
-    assert_eq!(reloaded.feeds[id].state, "Canceled");
+    assert!(reloaded.posts[id].pending.is_none());
+    assert!(!reloaded.posts[id].active);
+    assert_eq!(reloaded.posts[id].record.as_ref().unwrap().sequence, 7);
+    assert_eq!(reloaded.posts[id].state, "Canceled");
     fs::remove_dir_all(dir).unwrap();
 }
 #[test]
 fn old_record_is_not_a_signed_retry_for_a_new_snapshot() {
     let (dir, mut lib, ids) = fixture(1);
     let id = &ids[0];
-    install_record(lib.feeds.get_mut(id).unwrap(), 4);
-    lib.feeds.get_mut(id).unwrap().revision = 2;
+    install_record(lib.posts.get_mut(id).unwrap(), 4);
+    lib.posts.get_mut(id).unwrap().revision = 2;
     let mut m = manager(&dir, lib);
     let op = enqueue(&mut m, id);
     running(&mut m, id, op);
@@ -238,7 +239,7 @@ fn old_record_is_not_a_signed_retry_for_a_new_snapshot() {
             native::Failure::Dht(DhtError::Timeout),
         ))),
     );
-    let f = &m.lib.feeds[id];
+    let f = &m.lib.posts[id];
     assert!(f.pending.as_ref().unwrap().signed.is_none());
     assert_eq!(f.record.as_ref().unwrap().sequence, 4);
     assert_eq!(f.pending.as_ref().unwrap().revision, 2);
@@ -248,12 +249,12 @@ fn old_record_is_not_a_signed_retry_for_a_new_snapshot() {
         operation: op,
     })
     .unwrap();
-    assert_eq!(m.lib.feeds[id].pending.as_ref().unwrap().retry_at, None);
-    assert_eq!(m.lib.feeds[id].pending.as_ref().unwrap().id, op);
+    assert_eq!(m.lib.posts[id].pending.as_ref().unwrap().retry_at, None);
+    assert_eq!(m.lib.posts[id].pending.as_ref().unwrap().id, op);
     let mut recovered = load(&m.dir).unwrap();
     recover(&mut recovered).unwrap();
-    assert!(!recovered.feeds[id].active);
-    assert!(recovered.feeds[id].pending.is_none());
+    assert!(!recovered.posts[id].active);
+    assert!(recovered.posts[id].pending.is_none());
     fs::remove_dir_all(dir).unwrap();
 }
 #[test]
@@ -261,18 +262,18 @@ fn migration_resumes_only_the_matching_signed_revision() {
     let (dir, mut lib, ids) = fixture(2);
     lib.version = 1;
     for id in &ids {
-        install_record(lib.feeds.get_mut(id).unwrap(), 4);
-        let f = lib.feeds.get_mut(id).unwrap();
+        install_record(lib.posts.get_mut(id).unwrap(), 4);
+        let f = lib.posts.get_mut(id).unwrap();
         f.revision = 3;
         f.active = true;
     }
-    lib.feeds.get_mut(&ids[0]).unwrap().state = "Publication pending".into();
-    lib.feeds.get_mut(&ids[1]).unwrap().state = "Preparing".into();
+    lib.posts.get_mut(&ids[0]).unwrap().state = "Publication pending".into();
+    lib.posts.get_mut(&ids[1]).unwrap().state = "Preparing".into();
     assert!(recover(&mut lib).unwrap());
     assert_eq!(lib.version, 2);
-    assert_eq!(lib.feeds[&ids[0]].pending.as_ref().unwrap().revision, 1);
+    assert_eq!(lib.posts[&ids[0]].pending.as_ref().unwrap().revision, 1);
     assert_eq!(
-        lib.feeds[&ids[0]]
+        lib.posts[&ids[0]]
             .pending
             .as_ref()
             .unwrap()
@@ -282,8 +283,8 @@ fn migration_resumes_only_the_matching_signed_revision() {
             .sequence,
         4
     );
-    assert!(lib.feeds[&ids[1]].pending.is_none());
-    assert_eq!(lib.feeds[&ids[1]].state, "Canceled");
+    assert!(lib.posts[&ids[1]].pending.is_none());
+    assert_eq!(lib.posts[&ids[1]].state, "Canceled");
     validate(&lib).unwrap();
     persist(&dir.join("publishing"), &lib).unwrap();
     let mut again = load(&dir.join("publishing")).unwrap();
@@ -299,7 +300,7 @@ fn signed_recovery_and_failed_phase_commit_preserve_public_state() {
     let id = &ids[0];
     let op = enqueue(&mut m, id);
     running(&mut m, id, op);
-    let signed = record(&m.lib.feeds[id], 2, 3);
+    let signed = record(&m.lib.posts[id], 2, 3);
     m.signed(id, op, signed.clone(), BTreeMap::new(), vec![])
         .unwrap();
     let original = fs::read(m.dir.join("library.json")).unwrap();
@@ -313,7 +314,7 @@ fn signed_recovery_and_failed_phase_commit_preserve_public_state() {
     let mut again = load(&m.dir).unwrap();
     recover(&mut again).unwrap();
     assert_eq!(
-        again.feeds[id]
+        again.posts[id]
             .pending
             .as_ref()
             .unwrap()
@@ -323,8 +324,8 @@ fn signed_recovery_and_failed_phase_commit_preserve_public_state() {
             .signature,
         signed.signature
     );
-    assert_eq!(again.feeds[id].pending.as_ref().unwrap().id, op);
-    assert_eq!(again.feeds[id].pending.as_ref().unwrap().phase, "Queued");
+    assert_eq!(again.posts[id].pending.as_ref().unwrap().id, op);
+    assert_eq!(again.posts[id].pending.as_ref().unwrap().phase, "Queued");
     fs::remove_dir_all(dir).unwrap();
 }
 #[tokio::test]
@@ -348,7 +349,7 @@ async fn fifo_queue_limits_workers_and_cancel_frees_a_slot_without_waiting_for_n
         );
     }
     super::super::tests::until(&client, |v| {
-        v.feeds.iter().filter(|f| f.phase == "Checking DHT").count() == 2
+        v.posts.iter().filter(|f| f.phase == "Checking DHT").count() == 2
     })
     .await;
     let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -378,16 +379,16 @@ async fn fifo_queue_limits_workers_and_cancel_frees_a_slot_without_waiting_for_n
     thread.join().unwrap();
     let mut saved = load(&dir.join("publishing")).unwrap();
     recover(&mut saved).unwrap();
-    assert!(saved.feeds.values().all(|f| f.pending.is_none()));
-    assert_eq!(saved.feeds[&ids[3]].draft.pages[0].body, "snapshot 3");
+    assert!(saved.posts.values().all(|f| f.pending.is_none()));
+    assert_eq!(saved.posts[&ids[3]].draft.pages[0].body, "snapshot 3");
     fs::remove_dir_all(dir).unwrap();
 }
 #[tokio::test]
 async fn unsigned_timeout_retries_the_snapshot_and_signs_above_canceled_sequence() {
     let (dir, mut lib, ids) = fixture(1);
     let id = &ids[0];
-    install_record(lib.feeds.get_mut(id).unwrap(), 7);
-    lib.feeds.get_mut(id).unwrap().revision = 2;
+    install_record(lib.posts.get_mut(id).unwrap(), 7);
+    lib.posts.get_mut(id).unwrap().revision = 2;
     persist(&dir.join("publishing"), &lib).unwrap();
     let (native, rx) = mpsc::sync_channel::<NativeTask>(16);
     let records = Arc::new(Mutex::new(vec![]));
@@ -408,7 +409,10 @@ async fn unsigned_timeout_retries_the_snapshot_and_signs_above_canceled_sequence
                 Native::Location(hash) => {
                     Ok(NativeReply::Location(folder.join("payload").join(hash)))
                 }
-                Native::Seed(_) | Native::Ready(_) => Ok(NativeReply::Ready),
+                Native::Link { .. }
+                | Native::Reserve { .. }
+                | Native::Seed(_)
+                | Native::Ready(_) => Ok(NativeReply::Ready),
                 Native::Put(record) => {
                     observed.lock().unwrap().push(record);
                     Ok(NativeReply::Stored(1))
@@ -427,7 +431,7 @@ async fn unsigned_timeout_retries_the_snapshot_and_signs_above_canceled_sequence
         })
         .await
         .unwrap();
-    let mut later = lib.feeds[id].draft.clone();
+    let mut later = lib.posts[id].draft.clone();
     later.pages[0].body = "later draft".into();
     client
         .call(Command::SaveDraft {
@@ -437,8 +441,8 @@ async fn unsigned_timeout_retries_the_snapshot_and_signs_above_canceled_sequence
         })
         .await
         .unwrap();
-    super::super::tests::until(&client, |v| v.feeds[0].state == "Published").await;
-    let f = client.view.borrow().feeds[0].clone();
+    super::super::tests::until(&client, |v| v.posts[0].state == "Published").await;
+    let f = client.view.borrow().posts[0].clone();
     assert_eq!(f.published_revision, 2);
     assert_eq!(f.revision, 3);
     client.stop();
@@ -449,7 +453,7 @@ async fn unsigned_timeout_retries_the_snapshot_and_signs_above_canceled_sequence
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].sequence(), 8);
     let saved = load(&dir.join("publishing")).unwrap();
-    let hash = saved.feeds[id].pages[&saved.feeds[id].draft.root]
+    let hash = saved.posts[id].pages[&saved.posts[id].draft.root]
         .hash
         .clone();
     let package = package(&dir.join("publishing"), &hash).unwrap();
@@ -461,7 +465,7 @@ async fn unsigned_timeout_retries_the_snapshot_and_signs_above_canceled_sequence
 fn permanent_failure_does_not_resume_the_previous_record() {
     let (dir, mut lib, ids) = fixture(1);
     let id = &ids[0];
-    install_record(lib.feeds.get_mut(id).unwrap(), 4);
+    install_record(lib.posts.get_mut(id).unwrap(), 4);
     let mut m = manager(&dir, lib);
     let op = enqueue(&mut m, id);
     running(&mut m, id, op);
@@ -473,11 +477,11 @@ fn permanent_failure_does_not_resume_the_previous_record() {
             transient: false,
         }),
     );
-    assert_eq!(m.lib.feeds[id].state, "Error");
-    assert!(!m.lib.feeds[id].active);
-    assert!(m.lib.feeds[id].pending.is_none());
+    assert_eq!(m.lib.posts[id].state, "Error");
+    assert!(!m.lib.posts[id].active);
+    assert!(m.lib.posts[id].pending.is_none());
     assert!(!m.secrets.contains_key(&op));
-    assert_eq!(m.lib.feeds[id].record.as_ref().unwrap().sequence, 4);
+    assert_eq!(m.lib.posts[id].record.as_ref().unwrap().sequence, 4);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -507,7 +511,10 @@ async fn cancellation_during_lookup_checking_and_put_ignores_late_native_results
                     Native::Location(hash) => {
                         NativeReply::Location(folder.join("payload").join(hash))
                     }
-                    Native::Seed(_) | Native::Ready(_) => NativeReply::Ready,
+                    Native::Link { .. }
+                    | Native::Reserve { .. }
+                    | Native::Seed(_)
+                    | Native::Ready(_) => NativeReply::Ready,
                     Native::Put(_) => NativeReply::Stored(1),
                 };
                 let _ = task.reply.send(Ok(result));
@@ -534,12 +541,12 @@ async fn cancellation_during_lookup_checking_and_put_ignores_late_native_results
             .await
             .unwrap();
         assert!(late.cancel.load(Ordering::Acquire));
-        assert_eq!(client.view.borrow().feeds[0].published_revision, 0);
+        assert_eq!(client.view.borrow().posts[0].published_revision, 0);
         let saved = load(&dir.join("publishing")).unwrap();
-        assert_eq!(saved.feeds[id].record.is_some(), stage == "put");
+        assert_eq!(saved.posts[id].record.is_some(), stage == "put");
         let result = match late.command {
             Native::Lookup(_) => NativeReply::Record(None),
-            Native::Seed(_) => NativeReply::Ready,
+            Native::Link { .. } | Native::Reserve { .. } | Native::Seed(_) => NativeReply::Ready,
             Native::Put(_) => NativeReply::Stored(3),
             _ => panic!("Unexpected held command"),
         };
@@ -555,17 +562,122 @@ async fn cancellation_during_lookup_checking_and_put_ignores_late_native_results
             .as_u64()
             .unwrap();
         assert!(next > op);
-        super::super::tests::until(&client, |v| v.feeds[0].state == "Published").await;
+        super::super::tests::until(&client, |v| v.posts[0].state == "Published").await;
         let expected = if stage == "put" { "1" } else { "0" };
         assert_eq!(
-            client.view.borrow().feeds[0].sequence.as_deref(),
+            client.view.borrow().posts[0].sequence.as_deref(),
             Some(expected)
         );
-        assert_eq!(client.view.borrow().feeds[0].published_revision, 1);
+        assert_eq!(client.view.borrow().posts[0].published_revision, 1);
         client.stop();
         thread.join().unwrap();
         drop(client);
         peer.join().unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[test]
+fn removing_post_cancels_jobs_and_fences_late_callbacks_without_touching_other_data() {
+    let (dir, lib, ids) = fixture(2);
+    let mut m = manager(&dir, lib);
+    let id = &ids[0];
+    let other = serde_json::to_vec(&m.lib.posts[&ids[1]]).unwrap();
+    let vault = serde_json::to_vec(&m.lib.vault).unwrap();
+    let op = enqueue(&mut m, id);
+    running(&mut m, id, op);
+    let cancel = m.running[id].cancel.clone();
+    let credentials = m.secrets[&op].clone();
+    let signed = record(&m.lib.posts[id], 3, 9);
+    m.renewals.insert(id.clone(), Instant::now());
+    let package = m.dir.join("catalogs/keep.json");
+    fs::write(&package, b"existing catalog").unwrap();
+    m.command(Command::RemovePost { id: id.clone() }).unwrap();
+    assert!(cancel.load(Ordering::Acquire));
+    assert!(credentials.lock().unwrap().is_none());
+    assert!(!m.secrets.contains_key(&op));
+    assert!(!m.renewals.contains_key(id));
+    assert!(!load(&m.dir).unwrap().posts.contains_key(id));
+    assert_eq!(serde_json::to_vec(&m.lib.posts[&ids[1]]).unwrap(), other);
+    assert_eq!(serde_json::to_vec(&m.lib.vault).unwrap(), vault);
+    assert_eq!(fs::read(package).unwrap(), b"existing catalog");
+    assert!(m.phase(id, op, "Publishing".into()).is_err());
+    assert!(m.signed(id, op, signed, BTreeMap::new(), vec![]).is_err());
+    m.finished(id.clone(), op, Ok(2));
+    assert!(m
+        .command(Command::SaveDraft {
+            id: id.clone(),
+            revision: 1,
+            draft: Draft::new("late".into())
+        })
+        .is_err());
+    assert!(m.command(Command::RemovePost { id: id.clone() }).is_err());
+    m.pump().unwrap();
+    assert!(!m.lib.posts.contains_key(id));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_removal_preserves_persistent_draft_and_live_credentials() {
+    let (dir, lib, ids) = fixture(1);
+    let mut m = manager(&dir, lib);
+    let id = &ids[0];
+    let op = enqueue(&mut m, id);
+    running(&mut m, id, op);
+    let cancel = m.running[id].cancel.clone();
+    let path = m.dir.join("library.json");
+    let before = fs::read(&path).unwrap();
+    fs::rename(&path, path.with_extension("saved")).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(m.command(Command::RemovePost { id: id.clone() }).is_err());
+    assert!(!cancel.load(Ordering::Acquire));
+    assert!(m.secrets[&op].lock().unwrap().is_some());
+    assert_eq!(m.lib.posts[id].pending.as_ref().unwrap().id, op);
+    assert_eq!(fs::read(path.with_extension("saved")).unwrap(), before);
+    fs::remove_dir(&path).unwrap();
+    fs::rename(path.with_extension("saved"), &path).unwrap();
+    assert!(load(&m.dir).unwrap().posts.contains_key(id));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn removed_posts_are_absent_from_new_backups_and_old_backups_restore_explicitly() {
+    let (dir, lib, ids) = fixture(3);
+    let mut m = manager(&dir, lib);
+    install_record(m.lib.posts.get_mut(&ids[1]).unwrap(), 5);
+    m.lib.posts.get_mut(&ids[2]).unwrap().state = "Error".into();
+    let backup = backup::export(&m.dir, &m.lib, false).unwrap();
+    for id in &ids {
+        m.command(Command::RemovePost { id: id.clone() }).unwrap();
+    }
+    let mut saved = load(&m.dir).unwrap();
+    recover(&mut saved).unwrap();
+    assert!(saved.posts.is_empty());
+    assert!(saved.vault.is_some());
+    let fresh = backup::export(&m.dir, &saved, false).unwrap();
+    let fresh = backup::import(
+        &m.dir,
+        &Library::default(),
+        &fs::read(fresh).unwrap(),
+        &Password(PASSWORD.into()),
+    )
+    .unwrap();
+    assert!(fresh.posts.is_empty());
+    let restored = backup::import(
+        &m.dir,
+        &saved,
+        &fs::read(backup).unwrap(),
+        &Password(PASSWORD.into()),
+    )
+    .unwrap();
+    assert_eq!(restored.posts.len(), 3);
+    assert!(restored
+        .posts
+        .values()
+        .all(|f| !f.active && f.pending.is_none()));
+    assert_eq!(
+        restored.vault.unwrap().public_key,
+        saved.vault.unwrap().public_key
+    );
+    fs::remove_dir_all(dir).unwrap();
 }

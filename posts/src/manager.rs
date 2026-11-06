@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, VecDeque};
 #[path = "news.rs"]
 mod news;
 const MAX_WORK: usize = 32;
+#[derive(Clone)]
 struct Visit {
     origin: Origin,
     head: bool,
@@ -50,7 +51,7 @@ enum Work {
     Read(String, String, usize),
     Approve(String, String),
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Runtime {
     head: Option<String>,
     error: String,
@@ -60,7 +61,8 @@ struct Runtime {
     peers: usize,
     last_checked: Option<u64>,
 }
-pub struct FeedManager {
+#[derive(Clone)]
+pub struct PostManager {
     state: Checkpoint,
     visits: BTreeMap<(String, String), Visit>,
     runtime: BTreeMap<String, Runtime>,
@@ -75,12 +77,12 @@ pub struct FeedManager {
     content_failures: BTreeMap<(String, String), String>,
     authorized: std::collections::BTreeSet<String>,
 }
-impl Default for FeedManager {
+impl Default for PostManager {
     fn default() -> Self {
         Self::new()
     }
 }
-impl FeedManager {
+impl PostManager {
     pub fn new() -> Self {
         Self {
             state: Checkpoint::default(),
@@ -100,18 +102,18 @@ impl FeedManager {
     }
     pub fn restore(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > 32 * 1024 * 1024 {
-            return Err(err("Feed checkpoint exceeds 32 MiB"));
+            return Err(err("Post checkpoint exceeds 32 MiB"));
         }
         let state: Checkpoint = serde_json::from_slice(bytes).map_err(err)?;
         let legacy = state.version == 1;
         if !matches!(state.version, 1 | 2) {
-            return Err(err("Unsupported feed checkpoint version"));
+            return Err(err("Unsupported post checkpoint version"));
         }
-        for (id, s) in &state.feeds {
+        for (id, s) in &state.posts {
             s.config.validate()?;
             let key = identity(&s.magnet)?;
             if hex(&key.target()) != *id {
-                return Err(err("Feed identity mismatch"));
+                return Err(err("Post identity mismatch"));
             }
             let mut known = None;
             for record in &s.records {
@@ -128,9 +130,9 @@ impl FeedManager {
             hash(h)?;
         }
         let mut m = Self::new();
-        for (feed, refs) in &state.references {
-            if !state.feeds.contains_key(feed) {
-                return Err(err("Reference has unknown feed"));
+        for (post, refs) in &state.references {
+            if !state.posts.contains_key(post) {
+                return Err(err("Reference has unknown post"));
             }
             for (id, r) in refs {
                 hash(id)?;
@@ -156,7 +158,7 @@ impl FeedManager {
                     "Checking reference"
                 }
                 .into();
-                m.visits.insert((feed.clone(), id.clone()), v);
+                m.visits.insert((post.clone(), id.clone()), v);
             }
         }
         m.state = state;
@@ -165,14 +167,14 @@ impl FeedManager {
     }
     pub fn checkpoint(&self) -> Result<Vec<u8>> {
         let mut state = self.state.clone();
-        for ((feed, id), v) in &self.visits {
-            if let Some(r) = state.references.get_mut(feed).and_then(|r| r.get_mut(id)) {
+        for ((post, id), v) in &self.visits {
+            if let Some(r) = state.references.get_mut(post).and_then(|r| r.get_mut(id)) {
                 r.pending = !v.ready;
             }
         }
         let bytes = serde_json::to_vec(&state).map_err(err)?;
         if bytes.len() > 32 * 1024 * 1024 {
-            return Err(err("Feed checkpoint exceeds 32 MiB"));
+            return Err(err("Post checkpoint exceeds 32 MiB"));
         }
         Ok(bytes)
     }
@@ -206,18 +208,18 @@ impl FeedManager {
         identity(
             &self
                 .state
-                .feeds
+                .posts
                 .get(id)
-                .ok_or_else(|| err("Feed not found"))?
+                .ok_or_else(|| err("Post not found"))?
                 .magnet,
         )
     }
     fn known(&self, id: &str) -> Result<Option<MutableRecord>> {
         let s = self
             .state
-            .feeds
+            .posts
             .get(id)
-            .ok_or_else(|| err("Feed not found"))?;
+            .ok_or_else(|| err("Post not found"))?;
         let key = identity(&s.magnet)?;
         s.records.last().map(|r| r.verify(&key)).transpose()
     }
@@ -238,8 +240,47 @@ impl FeedManager {
         self.pending.insert(id, work);
         Some(id)
     }
-    fn visit(&mut self, feed: &str, id: &str, origin: Origin, head: bool) {
-        let refs = self.state.references.entry(feed.into()).or_default();
+    pub fn retention_edges(&self) -> Vec<(String, String)> {
+        let mut out = vec![];
+        for ((_, parent), v) in &self.visits {
+            for entry in v.entries.values() {
+                if let Some(child) = &entry.infohash {
+                    out.push((parent.clone(), child.clone()));
+                }
+            }
+            if let Some(meta) = &v.meta {
+                for link in [
+                    meta.fields().previous.as_ref(),
+                    meta.fields().archive_next.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    out.push((parent.clone(), hex(&link.infohash())));
+                }
+            }
+        }
+        out
+    }
+    /// Retention metadata, never authority to start a download.
+    pub fn retention_references(&self) -> Vec<(String, String, Option<String>)> {
+        self.state
+            .references
+            .iter()
+            .filter(|(post, _)| self.followed(post))
+            .flat_map(|(post, refs)| {
+                refs.iter().map(move |(id, r)| {
+                    let parent = match &r.origin {
+                        Origin::Item(parent, _) => Some(parent.clone()),
+                        Origin::Link(_) => None,
+                    };
+                    (post.clone(), id.clone(), parent)
+                })
+            })
+            .collect()
+    }
+    fn visit(&mut self, post: &str, id: &str, origin: Origin, head: bool) {
+        let refs = self.state.references.entry(post.into()).or_default();
         if refs.get(id).is_none_or(|r| r.origin != origin) {
             refs.insert(
                 id.into(),
@@ -252,7 +293,7 @@ impl FeedManager {
         }
         let v = self
             .visits
-            .entry((feed.into(), id.into()))
+            .entry((post.into(), id.into()))
             .or_insert_with(|| Visit::new(origin.clone(), head));
         v.origin = origin;
         if head && !v.head {
@@ -266,17 +307,17 @@ impl FeedManager {
     }
     pub fn start(&mut self, now: u64) {
         self.now = now;
-        for id in self.state.feeds.keys().cloned().collect::<Vec<_>>() {
+        for id in self.state.posts.keys().cloned().collect::<Vec<_>>() {
             self.runtime.insert(id.clone(), Runtime::default());
-            if self.state.feeds[&id].followed {
+            if self.state.posts[&id].followed {
                 if let Ok(key) = self.key(&id) {
                     self.out.push_back(Action::Watch {
-                        feed: id.clone(),
+                        post: id.clone(),
                         key,
                         known: self.known(&id).ok().flatten(),
                     });
                 }
-                let records = self.state.feeds[&id].records.clone();
+                let records = self.state.posts[&id].records.clone();
                 for r in records {
                     if let Ok(record) = r.verify(&self.key(&id).unwrap()) {
                         self.remember_pointer(&id, record);
@@ -293,7 +334,7 @@ impl FeedManager {
         self.now = now;
         let s = self
             .state
-            .feeds
+            .posts
             .entry(id.clone())
             .or_insert_with(|| Subscription {
                 magnet: bep46::format_magnet(&key),
@@ -308,7 +349,7 @@ impl FeedManager {
         self.runtime.entry(id.clone()).or_default().next_check = now;
         self.dirty = true;
         self.out.push_back(Action::Watch {
-            feed: id.clone(),
+            post: id.clone(),
             key,
             known: self.known(&id)?,
         });
@@ -318,9 +359,9 @@ impl FeedManager {
     pub fn configure(&mut self, id: &str, config: Config) -> Result<()> {
         config.validate()?;
         self.state
-            .feeds
+            .posts
             .get_mut(id)
-            .ok_or_else(|| err("Feed not found"))?
+            .ok_or_else(|| err("Post not found"))?
             .config = config;
         self.dirty = true;
         self.tick(self.now);
@@ -328,19 +369,19 @@ impl FeedManager {
     }
     pub fn unfollow(&mut self, id: &str) -> Result<()> {
         let key = self.key(id)?;
-        self.state.feeds.get_mut(id).unwrap().followed = false;
+        self.state.posts.get_mut(id).unwrap().followed = false;
         self.dirty = true;
-        self.out.retain(|a| action_feed(a) != id);
-        self.pending.retain(|_, w| work_feed(w) != id);
+        self.out.retain(|a| action_post(a) != id);
+        self.pending.retain(|_, w| work_post(w) != id);
         self.out.push_back(Action::Unwatch {
-            feed: id.into(),
+            post: id.into(),
             key,
         });
         Ok(())
     }
     pub fn refresh(&mut self, id: &str, now: u64) -> Result<()> {
-        if !self.state.feeds.get(id).is_some_and(|s| s.followed) {
-            return Err(err("Feed not followed"));
+        if !self.state.posts.get(id).is_some_and(|s| s.followed) {
+            return Err(err("Post not followed"));
         }
         self.runtime.entry(id.into()).or_default().next_check = now;
         self.content_failures.retain(|(f, _), _| f != id);
@@ -360,7 +401,7 @@ impl FeedManager {
     }
     pub fn notice(&mut self, id: &str, message: String) {
         self.event(Event::Attention {
-            feed: id.into(),
+            post: id.into(),
             message: message.clone(),
         });
         if let Some(r) = self.runtime.get_mut(id) {
@@ -375,7 +416,7 @@ impl FeedManager {
     pub fn receive_record(&mut self, id: &str, record: MutableRecord, now: u64) -> Result<()> {
         self.now = now;
         if !self.followed(id) {
-            return Err(err("Feed not followed"));
+            return Err(err("Post not followed"));
         }
         let key = self.key(id)?;
         record.verify_for(&key).map_err(err)?;
@@ -383,21 +424,21 @@ impl FeedManager {
         let r = select_mutable(old.as_ref(), record).map_err(err)?;
         if old.as_ref().is_none_or(|o| r.sequence() > o.sequence()) {
             self.state
-                .feeds
+                .posts
                 .get_mut(id)
                 .unwrap()
                 .records
                 .push(SignedRecord::from_record(&r));
             self.dirty = true;
             self.event(Event::RecordAccepted {
-                feed: id.into(),
+                post: id.into(),
                 sequence: r.sequence(),
                 infohash: bep46::decode_payload(r.value()).ok(),
             });
             self.out
-                .retain(|a| !matches!(a,Action::Relay{feed,..}if feed==id));
+                .retain(|a| !matches!(a,Action::Relay{post,..}if post==id));
             self.out.push_back(Action::Relay {
-                feed: id.into(),
+                post: id.into(),
                 record: r.clone(),
             });
         }
@@ -415,7 +456,7 @@ impl FeedManager {
                 r.error.clear();
                 self.visit(id, &hash, Origin::Link(target_uri(&hash)), true);
             }
-            Err(e) => self.notice(id, format!("Unsupported feed update: {e}")),
+            Err(e) => self.notice(id, format!("Unsupported post update: {e}")),
         }
     }
     pub fn lookup_result(&mut self, work: WorkId, result: Result<Option<MutableRecord>>, now: u64) {
@@ -447,8 +488,8 @@ impl FeedManager {
             }
         }
     }
-    fn desired(&self, feed: &str, id: &str) -> bool {
-        let Some(s) = self.state.feeds.get(feed) else {
+    fn desired(&self, post: &str, id: &str) -> bool {
+        let Some(s) = self.state.posts.get(post) else {
             return false;
         };
         s.followed
@@ -456,17 +497,20 @@ impl FeedManager {
                 || self.state.approvals.contains(id)
                 || self
                     .runtime
-                    .get(feed)
+                    .get(post)
                     .is_some_and(|r| r.head.as_deref() == Some(id))
                 || s.manual_catalogs.contains(id))
     }
-    fn allowed(&self, feed: &str, id: &str, size: u64) -> bool {
+    fn allowed(&self, post: &str, id: &str, size: u64) -> bool {
         !self.state.suppressed.contains(id)
             && (self.state.approvals.contains(id)
-                || self.state.feeds[feed]
+                || self.state.posts[post]
                     .config
                     .automatic_limit
                     .is_none_or(|max| size <= max))
+    }
+    pub fn suppressed(&self, id: &str) -> bool {
+        self.state.suppressed.contains(id)
     }
     pub fn suppress(&mut self, id: &str) -> Result<()> {
         hash(id)?;
@@ -508,28 +552,28 @@ impl FeedManager {
         self.tick(self.now);
         Ok(())
     }
-    pub fn open_catalog(&mut self, feed: &str, id: &str) -> Result<()> {
+    pub fn open_catalog(&mut self, post: &str, id: &str) -> Result<()> {
         if !self
             .visits
-            .get(&(feed.into(), id.into()))
+            .get(&(post.into(), id.into()))
             .is_some_and(|v| v.trusted)
         {
-            return Err(err("Catalog is not referenced by this feed"));
+            return Err(err("Catalog is not referenced by this post"));
         }
         self.state
-            .feeds
-            .get_mut(feed)
-            .ok_or_else(|| err("Feed not found"))?
+            .posts
+            .get_mut(post)
+            .ok_or_else(|| err("Post not found"))?
             .manual_catalogs
             .insert(id.into());
         self.dirty = true;
         self.tick(self.now);
         Ok(())
     }
-    pub fn download_item(&mut self, feed: &str, catalog: &str, index: usize) -> Result<String> {
+    pub fn download_item(&mut self, post: &str, catalog: &str, index: usize) -> Result<String> {
         let v = self
             .visits
-            .get(&(feed.into(), catalog.into()))
+            .get(&(post.into(), catalog.into()))
             .ok_or_else(|| err("Catalog not found"))?;
         if !v.ready || !v.trusted {
             return Err(err("Catalog files are not available"));
@@ -543,17 +587,17 @@ impl FeedManager {
             .clone()
             .ok_or_else(|| err("Item metadata pending"))?;
         if item.kind == "catalog" {
-            self.visit(feed, &id, Origin::Item(catalog.into(), index), false);
+            self.visit(post, &id, Origin::Item(catalog.into(), index), false);
             self.state
-                .feeds
-                .get_mut(feed)
+                .posts
+                .get_mut(post)
                 .unwrap()
                 .manual_catalogs
                 .insert(id.clone());
         }
         self.state
-            .feeds
-            .get_mut(feed)
+            .posts
+            .get_mut(post)
             .unwrap()
             .manual_items
             .insert((catalog.into(), index));
@@ -595,14 +639,14 @@ impl FeedManager {
             self.fail(work, description.error.clone());
             return Err(err(description.error));
         }
-        let Some(Work::Stage(feed, id, role)) = self.pending.remove(&work) else {
+        let Some(Work::Stage(post, id, role)) = self.pending.remove(&work) else {
             return Ok(());
         };
         if description.id != id {
-            return self.metadata_failure(&feed, &id, "Metadata infohash mismatch");
+            return self.metadata_failure(&post, &id, "Metadata infohash mismatch");
         }
         if role == Role::Content {
-            return self.content_metadata(&feed, &id, description.total, already_authorized);
+            return self.content_metadata(&post, &id, description.total, already_authorized);
         }
         let result: Result<Feed> = (|| {
             let catalog = Feed::from_info(&info).map_err(err)?;
@@ -611,10 +655,10 @@ impl FeedManager {
         })();
         let catalog = match result {
             Ok(c) => c,
-            Err(e) => return self.metadata_failure(&feed, &id, &e.to_string()),
+            Err(e) => return self.metadata_failure(&post, &id, &e.to_string()),
         };
-        let key = self.key(&feed)?;
-        let own = self.visits[&(feed.clone(), id.clone())].head;
+        let key = self.key(&post)?;
+        let own = self.visits[&(post.clone(), id.clone())].head;
         let foreign = if !own {
             catalog
                 .fields()
@@ -630,14 +674,14 @@ impl FeedManager {
             catalog.fields().archive_next.clone(),
         ];
         let total = catalog.total_length();
-        let v = self.visits.get_mut(&(feed.clone(), id.clone())).unwrap();
+        let v = self.visits.get_mut(&(post.clone(), id.clone())).unwrap();
         v.meta = Some(catalog);
         v.foreign = foreign.clone();
         v.approved = already_authorized;
         v.stage = true;
         v.error.clear();
         v.state = if foreign.is_some() {
-            "External feed"
+            "External post"
         } else if self.state.suppressed.contains(&id) {
             "Paused or removed"
         } else if already_authorized {
@@ -649,56 +693,56 @@ impl FeedManager {
         if foreign.is_none() {
             for link in links.into_iter().flatten() {
                 let next = hex(&link.infohash());
-                self.visit(&feed, &next, Origin::Link(link.uri().into()), false);
+                self.visit(&post, &next, Origin::Link(link.uri().into()), false);
             }
-            if !already_authorized && self.desired(&feed, &id) && self.allowed(&feed, &id, total) {
-                self.queue_approval(&feed, &id);
+            if !already_authorized && self.desired(&post, &id) && self.allowed(&post, &id, total) {
+                self.queue_approval(&post, &id);
             }
         }
         Ok(())
     }
-    fn metadata_failure(&mut self, feed: &str, id: &str, message: &str) -> Result<()> {
-        if let Some(v) = self.visits.get_mut(&(feed.into(), id.into())) {
+    fn metadata_failure(&mut self, post: &str, id: &str, message: &str) -> Result<()> {
+        if let Some(v) = self.visits.get_mut(&(post.into(), id.into())) {
             v.error = message.into();
             v.state = "Error".into();
             v.stage = false;
         }
         Err(err(message))
     }
-    fn content_metadata(&mut self, feed: &str, id: &str, total: u64, approved: bool) -> Result<()> {
-        self.content_totals.insert((feed.into(), id.into()), total);
+    fn content_metadata(&mut self, post: &str, id: &str, total: u64, approved: bool) -> Result<()> {
+        self.content_totals.insert((post.into(), id.into()), total);
         if approved {
             self.authorized.insert(id.into());
         }
-        if !approved && self.can_approve(feed, id) {
-            self.queue_approval(feed, id);
+        if !approved && self.can_approve(post, id) {
+            self.queue_approval(post, id);
         }
         Ok(())
     }
-    pub fn can_approve(&self, feed: &str, id: &str) -> bool {
-        let Some(s) = self.state.feeds.get(feed) else {
+    pub fn can_approve(&self, post: &str, id: &str) -> bool {
+        let Some(s) = self.state.posts.get(post) else {
             return false;
         };
         if !s.followed {
             return false;
         }
-        if let Some(v) = self.visits.get(&(feed.into(), id.into())) {
+        if let Some(v) = self.visits.get(&(post.into(), id.into())) {
             return v.trusted
                 && v.foreign.is_none()
-                && self.desired(feed, id)
+                && self.desired(post, id)
                 && v.meta
                     .as_ref()
-                    .is_some_and(|m| self.allowed(feed, id, m.total_length()));
+                    .is_some_and(|m| self.allowed(post, id, m.total_length()));
         }
         let wanted = s.config.mode == Mode::MirrorAll || self.state.approvals.contains(id);
         wanted
             && !self
                 .content_failures
-                .contains_key(&(feed.into(), id.into()))
+                .contains_key(&(post.into(), id.into()))
             && self
                 .content_totals
-                .get(&(feed.into(), id.into()))
-                .is_some_and(|size| self.allowed(feed, id, *size))
+                .get(&(post.into(), id.into()))
+                .is_some_and(|size| self.allowed(post, id, *size))
     }
     pub fn removed(&mut self, id: &str) {
         self.transfer_states.remove(id);
@@ -716,7 +760,7 @@ impl FeedManager {
             }
         }
     }
-    fn queue_approval(&mut self, feed: &str, id: &str) {
+    fn queue_approval(&mut self, post: &str, id: &str) {
         if self
             .pending
             .values()
@@ -724,21 +768,21 @@ impl FeedManager {
         {
             return;
         }
-        if let Some(work) = self.new_work(Work::Approve(feed.into(), id.into())) {
-            if let Some(v) = self.visits.get_mut(&(feed.into(), id.into())) {
+        if let Some(work) = self.new_work(Work::Approve(post.into(), id.into())) {
+            if let Some(v) = self.visits.get_mut(&(post.into(), id.into())) {
                 v.approve = true;
             }
             self.out.push_back(Action::Approve {
                 work,
-                feed: feed.into(),
+                post: post.into(),
                 id: id.into(),
             });
         }
     }
     pub fn approved(&mut self, work: WorkId) {
-        if let Some(Work::Approve(feed, id)) = self.pending.remove(&work) {
+        if let Some(Work::Approve(post, id)) = self.pending.remove(&work) {
             self.authorized.insert(id.clone());
-            if let Some(v) = self.visits.get_mut(&(feed, id)) {
+            if let Some(v) = self.visits.get_mut(&(post, id)) {
                 v.approve = false;
                 v.approved = true;
                 v.state = "Downloading".into();
@@ -752,17 +796,17 @@ impl FeedManager {
                 message: message.clone(),
             });
             match w {
-                Work::Lookup(feed) => {
-                    let r = self.runtime.entry(feed).or_default();
+                Work::Lookup(post) => {
+                    let r = self.runtime.entry(post).or_default();
                     r.checking = false;
                     r.error = message;
                     r.next_check = self.now.saturating_add(30_000);
                 }
-                Work::Stage(feed, id, _) | Work::Approve(feed, id) => {
+                Work::Stage(post, id, _) | Work::Approve(post, id) => {
                     self.content_failures
-                        .insert((feed.clone(), id.clone()), message.clone());
+                        .insert((post.clone(), id.clone()), message.clone());
                     for ((owner, _), v) in &mut self.visits {
-                        if owner == &feed {
+                        if owner == &post {
                             for e in v.entries.values_mut() {
                                 if e.infohash.as_deref() == Some(&id) {
                                     e.error = message.clone();
@@ -771,16 +815,16 @@ impl FeedManager {
                             }
                         }
                     }
-                    if let Some(v) = self.visits.get_mut(&(feed.clone(), id)) {
+                    if let Some(v) = self.visits.get_mut(&(post.clone(), id)) {
                         v.error = message.clone();
                         v.stage = false;
                         v.approve = false;
                         v.state = "Error".into();
                     }
-                    self.notice(&feed, message);
+                    self.notice(&post, message);
                 }
-                Work::Read(feed, catalog, index) => {
-                    if let Some(v) = self.visits.get_mut(&(feed, catalog)) {
+                Work::Read(post, catalog, index) => {
+                    if let Some(v) = self.visits.get_mut(&(post, catalog)) {
                         v.reads.insert(index, true);
                         if let Some(e) = v.entries.get_mut(&index) {
                             e.error = message;
@@ -799,10 +843,10 @@ impl FeedManager {
         mut reader: R,
         describe: F,
     ) -> Result<()> {
-        let Some(Work::Read(feed, catalog, index)) = self.pending.get(&work).cloned() else {
+        let Some(Work::Read(post, catalog, index)) = self.pending.get(&work).cloned() else {
             return Ok(());
         };
-        let entry = self.visits[&(feed.clone(), catalog.clone())]
+        let entry = self.visits[&(post.clone(), catalog.clone())]
             .meta
             .as_ref()
             .and_then(|m| m.entries().get(index))
@@ -837,7 +881,7 @@ impl FeedManager {
             self.item(work, data, d)
         } else {
             self.pending.remove(&work);
-            let v = self.visits.get_mut(&(feed, catalog)).unwrap();
+            let v = self.visits.get_mut(&(post, catalog)).unwrap();
             v.reads.insert(index, true);
             let row = v.entries.get_mut(&index).unwrap();
             row.kind = "file".into();
@@ -852,10 +896,10 @@ impl FeedManager {
         data: Vec<u8>,
         description: Option<Description>,
     ) -> Result<()> {
-        let Some(Work::Read(feed, catalog, index)) = self.pending.remove(&work) else {
+        let Some(Work::Read(post, catalog, index)) = self.pending.remove(&work) else {
             return Ok(());
         };
-        let key = (feed.clone(), catalog.clone());
+        let key = (post.clone(), catalog.clone());
         let file = self.visits[&key]
             .meta
             .as_ref()
@@ -920,9 +964,9 @@ impl FeedManager {
                     match Feed::from_metainfo(&data) {
                         Ok(nested) => {
                             if let Some(source) = nested.fields().source.as_ref() {
-                                if source != &self.key(&feed)? {
-                                    row.kind = "external_feed".into();
-                                    row.feed_magnet = Some(bep46::format_magnet(source));
+                                if source != &self.key(&post)? {
+                                    row.kind = "external_post".into();
+                                    row.post_magnet = Some(bep46::format_magnet(source));
                                 }
                             }
                         }
@@ -932,7 +976,7 @@ impl FeedManager {
                         }
                     }
                 }
-                let s = &self.state.feeds[&feed];
+                let s = &self.state.posts[&post];
                 let manual = s.manual_items.contains(&(catalog.clone(), index));
                 let automatic = match row.kind.as_str() {
                     "catalog" => s.config.mode != Mode::CurrentCatalog,
@@ -950,21 +994,21 @@ impl FeedManager {
                         Role::Content
                     };
                     if role == Role::Catalog {
-                        self.visit(&feed, &id, Origin::Item(catalog.clone(), index), false);
+                        self.visit(&post, &id, Origin::Item(catalog.clone(), index), false);
                     }
                     let loaded = if role == Role::Catalog {
                         self.visits
-                            .get(&(feed.clone(), id.clone()))
+                            .get(&(post.clone(), id.clone()))
                             .is_some_and(|v| v.meta.is_some() || v.stage)
                     } else {
                         self.content_totals
-                            .contains_key(&(feed.clone(), id.clone()))
+                            .contains_key(&(post.clone(), id.clone()))
                     };
                     if !loaded
                         && !self
                             .pending
                             .values()
-                            .any(|w| matches!(w,Work::Stage(f,h,_)if f==&feed && h==&id))
+                            .any(|w| matches!(w,Work::Stage(f,h,_)if f==&post && h==&id))
                     {
                         stage = Some((id, role));
                     }
@@ -975,13 +1019,13 @@ impl FeedManager {
         v.entries.insert(index, row);
         v.reads.insert(index, true);
         if let Some((id, role)) = stage {
-            if let Some(work) = self.new_work(Work::Stage(feed.clone(), id.clone(), role)) {
-                if let Some(v) = self.visits.get_mut(&(feed.clone(), id.clone())) {
+            if let Some(work) = self.new_work(Work::Stage(post.clone(), id.clone(), role)) {
+                if let Some(v) = self.visits.get_mut(&(post.clone(), id.clone())) {
                     v.stage = true;
                 }
                 self.out.push_back(Action::Stage {
                     work,
-                    feed,
+                    post,
                     id,
                     source: Source::Torrent(data),
                     role,
@@ -992,36 +1036,36 @@ impl FeedManager {
     }
     pub fn tick(&mut self, now: u64) {
         self.now = self.now.max(now);
-        for feed in self.state.feeds.keys().cloned().collect::<Vec<_>>() {
-            if !self.state.feeds[&feed].followed {
+        for post in self.state.posts.keys().cloned().collect::<Vec<_>>() {
+            if !self.state.posts[&post].followed {
                 continue;
             }
-            let r = self.runtime.entry(feed.clone()).or_default();
+            let r = self.runtime.entry(post.clone()).or_default();
             if !r.checking && r.next_check <= self.now {
-                if let Some(work) = self.new_work(Work::Lookup(feed.clone())) {
-                    let key = self.key(&feed).unwrap();
-                    let r = self.runtime.get_mut(&feed).unwrap();
+                if let Some(work) = self.new_work(Work::Lookup(post.clone())) {
+                    let key = self.key(&post).unwrap();
+                    let r = self.runtime.get_mut(&post).unwrap();
                     r.checking = true;
                     r.next_check = self.now.saturating_add(POLL_MS);
-                    self.out.push_back(Action::Lookup { work, feed, key });
+                    self.out.push_back(Action::Lookup { work, post, key });
                 }
             }
         }
-        for (feed, id) in self.content_totals.keys().cloned().collect::<Vec<_>>() {
-            if !self.authorized.contains(&id) && self.can_approve(&feed, &id) {
-                self.queue_approval(&feed, &id);
+        for (post, id) in self.content_totals.keys().cloned().collect::<Vec<_>>() {
+            if !self.authorized.contains(&id) && self.can_approve(&post, &id) {
+                self.queue_approval(&post, &id);
             }
         }
-        for (feed, id) in self.visits.keys().cloned().collect::<Vec<_>>() {
-            if !self.followed(&feed) {
+        for (post, id) in self.visits.keys().cloned().collect::<Vec<_>>() {
+            if !self.followed(&post) {
                 continue;
             }
             if self.work_load() >= MAX_WORK || self.out.len() >= MAX_WORK {
                 break;
             }
-            let key = (feed.clone(), id.clone());
-            let desired = self.desired(&feed, &id);
-            let s = &self.state.feeds[&feed];
+            let key = (post.clone(), id.clone());
+            let desired = self.desired(&post, &id);
+            let s = &self.state.posts[&post];
             let mode = s.config.mode;
             let v = &self.visits[&key];
             if !v.trusted || v.foreign.is_some() || !v.error.is_empty() {
@@ -1033,18 +1077,18 @@ impl FeedManager {
                 && !self.state.suppressed.contains(&id)
             {
                 if let Origin::Item(parent, index) = v.origin.clone() {
-                    if let Some(p) = self.visits.get_mut(&(feed.clone(), parent)) {
+                    if let Some(p) = self.visits.get_mut(&(post.clone(), parent)) {
                         p.reads.remove(&index);
                     }
                 }
                 if let Origin::Link(uri) = self.visits[&key].origin.clone() {
                     if let Some(work) =
-                        self.new_work(Work::Stage(feed.clone(), id.clone(), Role::Catalog))
+                        self.new_work(Work::Stage(post.clone(), id.clone(), Role::Catalog))
                     {
                         self.visits.get_mut(&key).unwrap().stage = true;
                         self.out.push_back(Action::Stage {
                             work,
-                            feed: feed.clone(),
+                            post: post.clone(),
                             id: id.clone(),
                             source: Source::Magnet(uri),
                             role: Role::Catalog,
@@ -1057,9 +1101,9 @@ impl FeedManager {
                 if desired
                     && !v.approved
                     && !v.approve
-                    && self.allowed(&feed, &id, meta.total_length())
+                    && self.allowed(&post, &id, meta.total_length())
                 {
-                    self.queue_approval(&feed, &id);
+                    self.queue_approval(&post, &id);
                 }
             }
             let v = self.visits.get_mut(&key).unwrap();
@@ -1075,6 +1119,7 @@ impl FeedManager {
                 v.entries.entry(entry.index()).or_insert_with(|| EntryView {
                     index: entry.index(),
                     name: entry.path().join("/"),
+                    source_name: entry.path().join("/"),
                     length: entry.length(),
                     kind: "pending".into(),
                     state: "Reading metadata".into(),
@@ -1091,7 +1136,7 @@ impl FeedManager {
                     continue;
                 }
                 let row = &v.entries[&index];
-                let manual = self.state.feeds[&feed]
+                let manual = self.state.posts[&post]
                     .manual_items
                     .contains(&(id.clone(), index));
                 let wanted = manual
@@ -1103,7 +1148,7 @@ impl FeedManager {
                 let existing = row.infohash.as_ref().is_some_and(|h| {
                     (self.transfer_states.contains_key(h)
                         && (row.kind == "catalog"
-                            || self.content_totals.contains_key(&(feed.clone(), h.clone()))))
+                            || self.content_totals.contains_key(&(post.clone(), h.clone()))))
                         || self.state.suppressed.contains(h)
                         || self
                             .pending
@@ -1114,7 +1159,7 @@ impl FeedManager {
                     !v.reads.contains_key(&index) || (wanted && !existing && row.error.is_empty());
                 if needed {
                     let length = v.entries[&index].length;
-                    if let Some(work) = self.new_work(Work::Read(feed.clone(), id.clone(), index)) {
+                    if let Some(work) = self.new_work(Work::Read(post.clone(), id.clone(), index)) {
                         self.visits
                             .get_mut(&key)
                             .unwrap()
@@ -1122,7 +1167,7 @@ impl FeedManager {
                             .insert(index, false);
                         self.out.push_back(Action::Read {
                             work,
-                            feed: feed.clone(),
+                            post: post.clone(),
                             catalog: id.clone(),
                             index,
                             length,
@@ -1158,18 +1203,18 @@ impl FeedManager {
             }
         }
     }
-    pub fn should_stage(&self, feed: &str, id: &str, role: Role) -> bool {
-        self.followed(feed)
+    pub fn should_stage(&self, post: &str, id: &str, role: Role) -> bool {
+        self.followed(post)
             && !self.state.suppressed.contains(id)
             && match role {
                 Role::Catalog => {
                     self.visits
-                        .get(&(feed.into(), id.into()))
+                        .get(&(post.into(), id.into()))
                         .is_some_and(|v| v.trusted)
-                        && (self.desired(feed, id) || self.transfer_states.contains_key(id))
+                        && (self.desired(post, id) || self.transfer_states.contains_key(id))
                 }
                 Role::Content => {
-                    self.state.feeds[feed].config.mode == Mode::MirrorAll
+                    self.state.posts[post].config.mode == Mode::MirrorAll
                         || self.state.approvals.contains(id)
                 }
             }
@@ -1177,7 +1222,7 @@ impl FeedManager {
     pub fn work_is_current(&self, id: WorkId) -> bool {
         self.pending.contains_key(&id)
     }
-    fn catalog_view(&self, _feed: &str, id: &str, v: &Visit) -> CatalogView {
+    fn catalog_view(&self, _post: &str, id: &str, v: &Visit) -> CatalogView {
         let (name, total, previous, archive, count) = if let Some(m) = &v.meta {
             (
                 m.name().to_string(),
@@ -1198,15 +1243,15 @@ impl FeedManager {
             ready: v.ready,
             previous,
             archive,
-            foreign_feed: v.foreign.clone(),
+            foreign_post: v.foreign.clone(),
             count,
             indexed: v.reads.values().filter(|done| **done).count(),
         }
     }
-    pub fn page(&self, feed: &str, catalog: &str, offset: usize) -> Result<Page> {
+    pub fn page(&self, post: &str, catalog: &str, offset: usize) -> Result<Page> {
         let v = self
             .visits
-            .get(&(feed.into(), catalog.into()))
+            .get(&(post.into(), catalog.into()))
             .ok_or_else(|| err("Catalog not found"))?;
         let mut entries: Vec<_> = v.entries.values().skip(offset).take(100).cloned().collect();
         for e in &mut entries {
@@ -1227,15 +1272,15 @@ impl FeedManager {
             }
         }
         Ok(Page {
-            catalog: self.catalog_view(feed, catalog, v),
+            catalog: self.catalog_view(post, catalog, v),
             total: v.entries.len(),
             entries,
             offset,
         })
     }
-    pub fn views(&self) -> Vec<FeedView> {
+    pub fn views(&self) -> Vec<PostView> {
         self.state
-            .feeds
+            .posts
             .iter()
             .filter(|(_, s)| s.followed)
             .map(|(id, s)| {
@@ -1271,7 +1316,7 @@ impl FeedManager {
                     });
                 let relevant: Vec<_> = catalogs
                     .iter()
-                    .filter(|c| self.desired(id, &c.id) && c.foreign_feed.is_none())
+                    .filter(|c| self.desired(id, &c.id) && c.foreign_post.is_none())
                     .collect();
                 let ready = available.is_some();
                 let mut needs = relevant.iter().any(|c| {
@@ -1325,7 +1370,7 @@ impl FeedManager {
                 } else if head.is_some() {
                     "Syncing catalog"
                 } else {
-                    "Resolving feed"
+                    "Resolving post"
                 };
                 let mirror_status = if needs {
                     "Incomplete"
@@ -1334,7 +1379,7 @@ impl FeedManager {
                 } else {
                     "Observed catalogs up to date"
                 };
-                FeedView {
+                PostView {
                     local_name: s.config.name.clone(),
                     id: id.clone(),
                     name: if !s.config.name.is_empty() {
@@ -1383,21 +1428,21 @@ impl FeedManager {
             .find_map(|((_, h), v)| (h == id && !v.error.is_empty()).then_some(v.error.as_str()))
     }
     pub fn followed(&self, id: &str) -> bool {
-        self.state.feeds.get(id).is_some_and(|s| s.followed)
+        self.state.posts.get(id).is_some_and(|s| s.followed)
     }
 }
-fn action_feed(a: &Action) -> &str {
+fn action_post(a: &Action) -> &str {
     match a {
-        Action::Relay { feed, .. }
-        | Action::Watch { feed, .. }
-        | Action::Unwatch { feed, .. }
-        | Action::Lookup { feed, .. }
-        | Action::Stage { feed, .. }
-        | Action::Read { feed, .. }
-        | Action::Approve { feed, .. } => feed,
+        Action::Relay { post, .. }
+        | Action::Watch { post, .. }
+        | Action::Unwatch { post, .. }
+        | Action::Lookup { post, .. }
+        | Action::Stage { post, .. }
+        | Action::Read { post, .. }
+        | Action::Approve { post, .. } => post,
     }
 }
-fn work_feed(w: &Work) -> &str {
+fn work_post(w: &Work) -> &str {
     match w {
         Work::Lookup(f) | Work::Stage(f, _, _) | Work::Read(f, _, _) | Work::Approve(f, _) => f,
     }

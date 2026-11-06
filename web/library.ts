@@ -1,4 +1,6 @@
 import type {Command, Snapshot, Transfer} from './types.js';
+import {ContentReader, ContentPage, torrentRoute, type ContentHost} from './content.js';
+import {ReaderHistory} from './reader.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id:string) => document.getElementById(id)! as T;
 function node(tag:string, value='', cls='') {
@@ -29,7 +31,7 @@ const percent=(t:Transfer)=>`${Math.floor(Math.max(0,Math.min(1,t.progress))*100
 const total=(t:Transfer)=>t.files.length?bytes(t.approval_size??t.total):'—';
 const amount=(t:Transfer)=>`${bytes(t.verified)} / ${total(t)}${t.approval_size!==null&&t.approval_size!==t.total?' incl. padding':''}`;
 type Position={scroll:number;focus:string|null;token:string};
-interface Host {action:(c:Command)=>void;remove:(id:string)=>void;}
+interface Host extends ContentHost {action:(c:Command)=>void;}
 
 export class LibraryUI {
   private state:Snapshot|null=null;
@@ -40,22 +42,22 @@ export class LibraryUI {
   private sidebarRoute='';
   private restoringSidebar=false;
   private cards=new Map<string,HTMLElement>();
-  private fileRows:HTMLElement[]=[];
-  private fileId='';
+  private reader=new ContentReader($('library-reader'),'library-reader',undefined,'torrent');
+  private position=new ReaderHistory($('library-detail'),'torrentReader',$('torrent-heading'));
+  private content:ContentPage;
   private tooltipId:string|null=null;
   private tooltipTrigger:HTMLButtonElement|null=null;
   private leaving:ReturnType<typeof setTimeout>|undefined;
   constructor(private host:Host) {
-    $('torrent-toggle').onclick=()=>{const t=this.current();if(t)this.host.action({type:t.active?'pause':'resume',id:t.id});};
-    $('torrent-remove').onclick=()=>{const t=this.current();if(t)this.host.remove(t.id);};
-    $('torrent-approve').onclick=()=>{const t=this.current();if(t)this.host.action({type:'approve_transfer',id:t.id});};
-    $('show-folder').onclick=()=>{const t=this.current();if(t)this.host.action({type:'reveal',id:t.id,file:null});};
+    this.content=new ContentPage(this.reader,host);
     $('library-back').onclick=e=>{
       if(e.button===0&&!e.metaKey&&!e.ctrlKey&&!e.shiftKey&&!e.altKey&&history.state?.libraryFrom){e.preventDefault();history.back();}
     };
-    window.addEventListener('scroll',()=>{this.save();this.positionTooltip();},{passive:true});
+    let saving:ReturnType<typeof setTimeout>|undefined;
+    const later=()=>{clearTimeout(saving);saving=setTimeout(()=>this.save(),350);};
+    window.addEventListener('scroll',()=>{later();this.positionTooltip();},{passive:true});
     window.addEventListener('resize',()=>this.positionTooltip());
-    document.addEventListener('focusin',()=>this.save());
+    document.addEventListener('focusin',later);
     document.addEventListener('click',e=>{
       const link=(e.target as Element).closest<HTMLAnchorElement>('a[href]');
       this.sidebarRoute=link?.closest('#sidebar')&&matchMedia('(max-width:767px)').matches?new URL(link.href).hash:'';
@@ -87,12 +89,13 @@ export class LibraryUI {
   removed(id:string) {
     if(this.currentId()===id){history.replaceState(history.state,'','#/library');this.render(this.state,this.connected);}
   }
-  private currentId() {const parts=location.hash.split('/');return parts[1]==='library'&&parts.length===3?parts[2]:'';}
+  private currentId() {const parts=location.hash.split('/');return parts[1]==='library'?(torrentRoute()?.id||parts[2]||''):'';}
   private current() {return this.state?.transfers.find(t=>t.id===this.currentId());}
   private save(chosen?:string) {
     if(this.route!=='#/library'||location.hash!=='#/library'||this.restoring)return;
     const old:Position|undefined=history.state?.library;
     const focus=chosen||(document.activeElement as HTMLElement|null)?.id||null;
+    if(old?.token&&old.scroll===scrollY&&old.focus===focus)return;
     history.replaceState({...history.state,library:{scroll:scrollY,focus,token:old?.token||crypto.randomUUID()}},'');
   }
   render(state:Snapshot|null,connected:boolean) {
@@ -105,15 +108,15 @@ export class LibraryUI {
       this.pendingOrigin=null;
     }
     $('library-catalog').hidden=!catalog;$('library-detail').hidden=!active||catalog;
-    if(!active)return;
+    if(!active){this.content.leave();this.position.leave();return;}
     const transfers=state?.transfers||[];
     $('count').textContent=`${transfers.length} torrent${transfers.length===1?'':'s'}`;
     $('empty').hidden=!!transfers.length||!state?.ready;
     this.drawCards(transfers);
-    if(!catalog)this.drawDetail();
+    if(!catalog){this.position.enter();this.drawDetail();}else{this.content.leave();this.position.leave();}
     this.drawTooltip();
     if(this.restoring&&state){
-      this.restoring='';const saved:Position|undefined=catalog?history.state?.library:undefined;
+      this.restoring='';if(!catalog)return;const saved:Position|undefined=catalog?history.state?.library:undefined;
       const fromSidebar=this.restoringSidebar;
       requestAnimationFrame(()=>{
         if(location.hash!==route)return;
@@ -152,40 +155,14 @@ export class LibraryUI {
     }
   }
   private drawDetail() {
-    const t=this.current(),loading=!this.state?.ready;
-    $('torrent-heading').textContent=t?.name||(loading?'Loading…':'Torrent unavailable');
-    $('torrent-content').hidden=!t;
-    $('torrent-loading').hidden=!loading;$('torrent-loading').textContent=loading?'Loading…':'';
-    $('library-detail').querySelector<HTMLElement>('.actions')!.hidden=!t;
-    if(!t)return;
-    const enabled=this.connected&&!!this.state?.ready;
-    const toggle=$<HTMLButtonElement>('torrent-toggle');toggle.textContent=t.active?'Pause':'Resume';toggle.disabled=!enabled;
-    $<HTMLButtonElement>('torrent-remove').disabled=!enabled;
-    $<HTMLButtonElement>('torrent-approve').disabled=!enabled||!t.files.length;$('torrent-approve').hidden=!t.held;
-    const summary=$('torrent-content');summary.querySelector('.state')!.textContent=t.state;
-    summary.querySelector('.amount')!.textContent=`${amount(t)} · ${percent(t)}`;
-    progress(t,summary.querySelector<HTMLElement>('.progress')!);
-    summary.querySelector('.rates')!.textContent=this.connected?`↓ ${bytes(t.down)}/s    ↑ ${bytes(t.up)}/s · ${t.peers} peers`:'Server disconnected';
-    const source=t.kind?`${t.kind==='catalog'?'Catalog':'Content'} · ${this.state?.feeds.find(f=>f.id===t.feed)?.name||'Feed'}`:'';
-    $('torrent-source').textContent=source;$('torrent-source').hidden=!source;
-    for(const [id,message] of [['torrent-detail-error',t.error],['torrent-warning',t.warning|| (t.held?'Download approval required.':'')]]){
-      $(id).firstElementChild!.textContent=message;$(id).hidden=!message;
+    const nested=torrentRoute(),id=this.currentId(),crumbs=[];
+    $('library-back').hidden=!!nested;
+    if(nested){
+      crumbs.push({name:'Library',href:'#/library'});
+      const parts=location.hash.split('/');
+      for(let i=2;i<parts.length-1;i++)if(/^[0-9a-f]{40}$/.test(parts[i]))crumbs.push({name:this.state?.transfers.find(t=>t.id===parts[i])?.name||'Catalog',href:parts.slice(0,i+1).join('/')});
     }
-    $('save-path').textContent=t.save_path;$('file-count').textContent=String(t.files.length);
-    $<HTMLButtonElement>('show-folder').disabled=!enabled;
-    $('files-waiting').hidden=!!t.files.length;
-    if(this.fileId!==t.id){this.fileId=t.id;this.fileRows=[];$('files').replaceChildren();}
-    while(this.fileRows.length>t.files.length)this.fileRows.pop()!.remove();
-    t.files.forEach((f,index)=>{
-      let row=this.fileRows[index];
-      if(!row){
-        row=node('div','','file');const reveal=document.createElement('button');reveal.type='button';reveal.className='btn';reveal.textContent='Show in Finder';
-        reveal.onclick=()=>this.host.action({type:'reveal',id:t.id,file:index});
-        row.append(icon('file'),node('span','','file-name'),node('span','','muted'),reveal);this.fileRows.push(row);$('files').append(row);
-      }
-      row.querySelector('.file-name')!.textContent=f.name;row.querySelector('.muted')!.textContent=`${bytes(f.verified)} / ${bytes(f.length)}`;
-      row.querySelector('button')!.disabled=!enabled||!f.ready;
-    });
+    this.content.render({id,parent:nested?.parent,state:this.state,connected:this.connected,crumbs,position:this.position,source:'Library'});
   }
   private showTooltip(trigger:HTMLButtonElement) {
     clearTimeout(this.leaving);

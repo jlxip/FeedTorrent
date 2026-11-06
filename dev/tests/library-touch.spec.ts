@@ -19,7 +19,7 @@ test('touch opens only the info tooltip, long names fit, and the grid has two in
     await expect(tip).toContainText('—');await page.locator('#library-heading').tap();await expect(tip).toBeHidden();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     await page.locator('.transfer-name').tap();await expect(page).toHaveURL(new RegExp('#/library/'+id+'$'));
-    await expect(page.locator('#files-waiting')).toBeVisible();
+    await expect(page.locator('#library-reader .content-status')).toBeVisible();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     await page.locator('#library-back').tap();await expect(page.locator('.transfer-name')).toBeFocused();
     await page.setViewportSize({width:1000,height:740});

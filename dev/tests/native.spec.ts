@@ -11,6 +11,7 @@ import {
   reverse,
   cleanup,
   wait,
+  retainForRemoval,
 } from "./helpers.mjs";
 async function magnet(page, uri) {
   await page.locator("#open-button").click();
@@ -20,7 +21,7 @@ async function magnet(page, uri) {
 }
 async function remove(page, id, files = false) {
   if (!page.url().endsWith("/" + id)) await page.locator(`[data-id="${id}"] .transfer-name`).click();
-  await page.locator("#torrent-remove").click();
+  await page.locator("#torrent-more").click();await page.locator("#torrent-remove").click();
   await expect(page.locator("#delete-files")).not.toBeChecked();
   if (files) await page.locator("#delete-files").check();
   await page.locator("#remove-form button[type=submit]").click();
@@ -71,17 +72,17 @@ test("native torrent, exact files, reverse seeding, reload and multi-tab control
     const t = await exact(app, ref);
     expect(t.files).toHaveLength(3);
     await page.locator(".transfer-name").click();
-    await expect(page.locator(".file button").first()).toBeEnabled();
+    await expect(page.locator("#library-reader .reader-row button").first()).toBeEnabled();
     await page.reload();
     await expect(page.locator(".state:visible")).toHaveText("Seeding");
     const second = await context.newPage();
     await second.goto(app.url + "/#/library");
     await expect(second.locator(".state:visible")).toHaveText("Seeding");
     await second.locator(".transfer-name").click();
-    await second.locator(".actions button").first().click();
+    await second.locator("#torrent-toggle").click();
     await expect(page.locator(".state:visible")).toHaveText("Paused");
     await second.close();
-    await page.locator(".actions button").first().click();
+    await page.locator("#torrent-toggle").click();
     await expect(page.locator(".state:visible")).toHaveText("Seeding");
     await ref.stop();
     ref.stop = async () => {};
@@ -94,6 +95,7 @@ test("native torrent, exact files, reverse seeding, reload and multi-tab control
     const last = await context.newPage();
     await last.goto(app.url + "/#/library");
     await expect(last.locator(".state:visible")).toHaveText("Seeding");
+    await retainForRemoval(app,ref.id,ref.bytes);
     await remove(last, ref.id);
     expect(await readFile(join(t.save_path, t.files[0].name))).toHaveLength(
       ref.originals[0].length,
@@ -101,6 +103,7 @@ test("native torrent, exact files, reverse seeding, reload and multi-tab control
     await app.command({ type: "add_torrent", data: ref.bytes });
     await complete(app, ref.id);
     await last.reload();
+    await retainForRemoval(app,ref.id,ref.bytes);
     await remove(last, ref.id, true);
     await expect
       .poll(async () => {
@@ -137,8 +140,9 @@ test("magnet metadata, unlimited activity, errors, settings and compact layout",
     await page.locator("#open-button").click();
     await page.locator("#magnet").fill(ref.magnet);
     await page.locator("#magnet-form button[type=submit]").click();
-    await expect(page.locator("#magnet-error")).toContainText("already exists");
-    await page.locator("#open-dialog [data-close]").click();
+    await expect(page.locator('#open-dialog')).toBeHidden();
+    expect((await app.api()).transfers).toHaveLength(1);
+    expect((await app.api()).transfers[0].pinned).toBe(true);
     for (let i = 1; i <= 5; i++)
       await app.command({
         type: "add_magnet",
@@ -318,14 +322,14 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
       buffer: Buffer.from("invalid"),
     });
     await page.locator("#torrent-form button[type=submit]").click();
-    await expect(page.locator("#torrent-error")).not.toBeEmpty();
+    await expect(page.locator("#open-torrent-error")).not.toBeEmpty();
     await expect(dialog).toBeVisible();
     await page.locator("#torrent-file").setInputFiles({
       name: "large.torrent",
       mimeType: "application/x-bittorrent",
       buffer: Buffer.alloc(8 * 1024 * 1024 + 1),
     });
-    await expect(page.locator("#torrent-error")).toContainText("8 MiB");
+    await expect(page.locator("#open-torrent-error")).toContainText("8 MiB");
     await expect(page.locator("#torrent-file")).toHaveAttribute("aria-invalid", "true");
     await expect(
       page.locator("#torrent-form button[type=submit]"),
@@ -333,7 +337,9 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
     await page.locator("#magnet-tab").click();
     await page.locator("#magnet").fill(ref.id.toUpperCase());
     await page.locator("#magnet-form button[type=submit]").click();
-    await expect(page.locator("#magnet-error")).toContainText("already exists");
+    await expect(page.locator('#open-dialog')).toBeHidden();
+    expect((await app.api()).transfers).toHaveLength(1);
+    await page.locator('#open-button').click();
     await page.locator("#magnet").fill(ref.id);
     await app.stop();
     await expect(

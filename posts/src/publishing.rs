@@ -284,13 +284,13 @@ impl Draft {
 
 /// Check every payload and padding byte before accepting an imported catalog.
 pub fn verify_payload(metainfo: &[u8], files: &[(Vec<String>, Vec<u8>)]) -> Result<()> {
-    let feed = Feed::from_metainfo(metainfo).map_err(err)?;
+    let post = Feed::from_metainfo(metainfo).map_err(err)?;
     let mut piece = Sha1::new();
     let mut filled = 0usize;
     let mut hashes = vec![];
     let zeros = [0u8; 32768];
     let mut seen = 0;
-    for entry in feed.entries() {
+    for entry in post.entries() {
         let padding = entry.kind() == EntryKind::Padding;
         let data = if padding {
             None
@@ -317,7 +317,7 @@ pub fn verify_payload(metainfo: &[u8], files: &[(Vec<String>, Vec<u8>)]) -> Resu
         while offset < entry.length() {
             let len = (entry.length() - offset)
                 .min(zeros.len() as u64)
-                .min((feed.piece_length() as usize - filled) as u64) as usize;
+                .min((post.piece_length() as usize - filled) as u64) as usize;
             if let Some(data) = data {
                 piece.update(&data[offset as usize..offset as usize + len])
             } else {
@@ -325,7 +325,7 @@ pub fn verify_payload(metainfo: &[u8], files: &[(Vec<String>, Vec<u8>)]) -> Resu
             }
             offset += len as u64;
             filled += len;
-            if filled == feed.piece_length() as usize {
+            if filled == post.piece_length() as usize {
                 hashes.extend_from_slice(&piece.finalize_reset());
                 filled = 0;
             }
@@ -334,7 +334,7 @@ pub fn verify_payload(metainfo: &[u8], files: &[(Vec<String>, Vec<u8>)]) -> Resu
     if filled > 0 {
         hashes.extend_from_slice(&piece.finalize())
     }
-    if seen != files.len() || hashes != feed.pieces() {
+    if seen != files.len() || hashes != post.pieces() {
         return Err(err("Catalog piece hashes do not match payload"));
     }
     Ok(())

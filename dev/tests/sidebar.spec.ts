@@ -13,15 +13,15 @@ test('Sidebar navigation, mobile overlay, focus, Escape and breakpoint resize', 
     page.on('pageerror', e => errors.push(e.message));
     page.on('request', r => {if (!r.url().startsWith(app.url)) external.push(r.url());});
     const key = generateKeyPairSync('ed25519').publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('hex');
-    await app.command({type:'follow_feed', uri:'magnet:?xs=urn:btpk:'+key, config:{name:'Reading list', mode:'current_catalog', automatic_limit:8388608}});
+    await app.command({type:'follow_post', uri:'magnet:?xs=urn:btpk:'+key, config:{name:'Reading list', mode:'current_catalog', automatic_limit:8388608}});
     const password = 'isolated UI test password';
     await app.api('/api/publishing', {action:'create_key',password,confirmation:password});
-    await app.api('/api/publishing', {action:'create_feed',title:'Field notes'});
+    await app.api('/api/publishing', {action:'create_post',title:'Field notes'});
     await page.setViewportSize({width:1024,height:740});
     await page.goto(app.url);
     const sidebar = page.locator('#sidebar'), toggle = page.locator('#sections-button');
     const nav = sidebar.locator('nav'), selected = sidebar.locator('a[aria-current="page"]');
-    await expect(page.locator('#own-nav a')).toHaveText('Field notes');
+    await expect(page.locator('#post-tree a[data-kind=own]')).toHaveText('Field notes');
     await expect(sidebar).toHaveAttribute('data-sidebar-initialized','true');
     await expect(sidebar).toHaveAttribute('aria-hidden','false');
     await expect(toggle).toBeHidden();
@@ -33,8 +33,8 @@ test('Sidebar navigation, mobile overlay, focus, Escape and breakpoint resize', 
       const r = e.getBoundingClientRect();
       return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
     })).toBe(true);
-    await expect(sidebar.locator('ul > li > a')).toHaveCount(4);
-    for (const link of ['#new-nav','#feed-nav a','#own-nav a','#transfers-nav']) {
+    await expect(sidebar.locator('#new-nav, #transfers-nav, .post-link')).toHaveCount(4);
+    for (const link of ['#new-nav','#post-tree a[data-kind=followed]','#post-tree a[data-kind=own]','#transfers-nav']) {
       await page.locator(link).click();
       await expect(selected).toHaveCount(1);
       await expect(page.locator(link)).toHaveAttribute('aria-current','page');
@@ -62,7 +62,7 @@ test('Sidebar navigation, mobile overlay, focus, Escape and breakpoint resize', 
         await page.keyboard.press('Shift+Tab');
         await expect(toggle).toBeFocused();
         await page.keyboard.press('Shift+Tab');
-        await expect(page.locator('#own-nav a')).toBeFocused();
+        await expect(sidebar.locator('.post-row-menu > button').last()).toBeFocused();
         const box = (await nav.boundingBox())!;
         expect(box.width).toBeLessThanOrEqual(width-32+0.5);
         if (close==='escape') await page.keyboard.press('Escape');
@@ -75,8 +75,8 @@ test('Sidebar navigation, mobile overlay, focus, Escape and breakpoint resize', 
         await expect(toggle).toBeFocused();
         await expect(page.locator('.workspace > main')).not.toHaveAttribute('inert','');
       }
-      // Native navigation closes for both followed and owned feeds.
-      for (const link of ['#new-nav','#feed-nav a','#own-nav a','#transfers-nav']) {
+      // Native navigation closes for both followed and owned posts.
+      for (const link of ['#new-nav','#post-tree a[data-kind=followed]','#post-tree a[data-kind=own]','#transfers-nav']) {
         await toggle.click();
         await page.locator(link).click();
         await expect(sidebar).toHaveAttribute('aria-hidden','true');
@@ -86,12 +86,14 @@ test('Sidebar navigation, mobile overlay, focus, Escape and breakpoint resize', 
       }
       // A sidebar action opens its dialog without focus being stolen by the close adaptation.
       await toggle.click();
+      await page.locator('#post-add').click();
       await page.locator('#follow-open').click();
       await expect(sidebar).toHaveAttribute('aria-hidden','true');
-      await expect(page.locator('#feed-magnet')).toBeFocused();
+      await expect(page.locator('#post-magnet')).toBeFocused();
       await page.keyboard.press('Escape');
       await expect(toggle).toBeFocused();
       await toggle.click();
+      await page.locator('#post-add').click();
       await page.locator('#own-create').click();
       await expect(page.locator('#own-create-dialog')).toBeVisible();
       await expect(page.locator('#own-create-title')).toBeFocused();

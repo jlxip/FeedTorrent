@@ -78,6 +78,9 @@ pub(super) struct Work {
     tx: mpsc::SyncSender<Message>,
 }
 impl Work {
+    pub fn identity(&self) -> (&str, u64) {
+        (&self.id, self.operation)
+    }
     pub fn check(&self) -> Result<()> {
         if self.cancel.load(Ordering::Acquire) {
             bail!("Publication canceled")
@@ -238,7 +241,7 @@ fn recover(lib: &mut Library) -> Result<bool> {
     let old = lib.version == 1;
     lib.version = 2;
     let mut next = lib.next_operation;
-    for f in lib.feeds.values_mut() {
+    for f in lib.posts.values_mut() {
         if old
             && f.pending.is_none()
             && f.state == "Publication pending"
@@ -299,6 +302,14 @@ struct Manager {
     stopping: bool,
 }
 impl Manager {
+    fn current_view(&self) -> View {
+        let mut value = view(
+            &self.lib,
+            self.disabled.clone().unwrap_or_else(|| self.error.clone()),
+        );
+        value.busy = self.running.keys().cloned().collect();
+        value
+    }
     fn commit(&mut self, candidate: Library) -> Result<()> {
         persist(&self.dir, &candidate)?;
         self.lib = candidate;
@@ -316,7 +327,7 @@ impl Manager {
         !self.stopping
             && self
                 .lib
-                .feeds
+                .posts
                 .get(id)
                 .and_then(|f| f.pending.as_ref())
                 .is_some_and(|p| p.id == operation)
@@ -338,7 +349,7 @@ impl Manager {
         let dir = &self.dir;
         match command {
             Command::Preview { body } => {
-                Ok(serde_json::json!({"body":feedtorrent_feeds::markdown::parse(&body)?}))
+                Ok(serde_json::json!({"body":feedtorrent_posts::markdown::parse(&body)?}))
             }
             Command::CreateKey {
                 password,
@@ -375,9 +386,9 @@ impl Manager {
                 *lib = c;
                 Ok(serde_json::json!({"ok":true}))
             }
-            Command::CreateFeed { title } => {
-                if lib.feeds.len() >= 256 {
-                    bail!("Publishing library has 256 feeds")
+            Command::CreatePost { title } => {
+                if lib.posts.len() >= 256 {
+                    bail!("Publishing library has 256 posts")
                 };
                 let d = Draft::new(title.clone());
                 d.validate()?;
@@ -386,7 +397,7 @@ impl Manager {
                     .as_ref()
                     .context("Create or import your publishing key first")?;
                 let mut salt = [0; 32];
-                getrandom::fill(&mut salt).map_err(|_| anyhow!("Cannot obtain feed entropy"))?;
+                getrandom::fill(&mut salt).map_err(|_| anyhow!("Cannot obtain post entropy"))?;
                 let key = MutableKey::new(
                     unhex(&v.public_key)?
                         .try_into()
@@ -401,6 +412,7 @@ impl Manager {
                     draft: d,
                     revision: 1,
                     published_revision: 0,
+                    changed_at_us: crate::organization::now_us(),
                     signed_revision: 0,
                     pages: BTreeMap::new(),
                     record: None,
@@ -411,14 +423,61 @@ impl Manager {
                     pending: None,
                 };
                 let mut c = lib.clone();
-                c.feeds.insert(id.clone(), f);
+                c.posts.insert(id.clone(), f);
                 persist(dir, &c)?;
                 *lib = c;
                 Ok(serde_json::json!({"id":id}))
             }
-            Command::GetFeed { id } => {
-                let f = lib.feeds.get(&id).context("Own feed not found")?;
-                Ok(serde_json::json!({"draft":f.draft,"revision":f.revision}))
+            Command::RemovePost { id } => {
+                let f = lib.posts.get(&id).context("Own post not found")?;
+                let operation = f.pending.as_ref().map(|p| p.id);
+                let mut candidate = lib.clone();
+                candidate.posts.remove(&id);
+                // Commit before canceling: a failed write preserves the draft and job.
+                persist(dir, &candidate)?;
+                *lib = candidate;
+                if let Some(job) = self.running.get(&id) {
+                    job.cancel.store(true, Ordering::Release);
+                }
+                if let Some(operation) = operation {
+                    self.clear_secret(operation);
+                }
+                self.renewals.remove(&id);
+                Ok(serde_json::json!({"ok":true}))
+            }
+            Command::InspectEntry { id, page, infohash } => {
+                let f = lib.posts.get(&id).context("Own post not found")?;
+                let p = f
+                    .draft
+                    .pages
+                    .iter()
+                    .find(|p| p.id == page)
+                    .context("Page unavailable")?;
+                let data = p
+                    .entries
+                    .iter()
+                    .find_map(|entry| {
+                        if let feedtorrent_posts::publishing::Entry::Torrent { data, .. } = entry {
+                            if let feedtorrent_bep::bep49::ItemContent::Torrent(t) =
+                                feedtorrent_bep::bep49::inspect_item(data)
+                            {
+                                if hex(&t.infohash()) == infohash {
+                                    return Some(data);
+                                }
+                            }
+                        }
+                        None
+                    })
+                    .context("Torrent is not referenced by this draft page")?;
+                let mut view = crate::content::preview(data)?;
+                view["source"] = serde_json::json!(data);
+                Ok(view)
+            }
+            Command::GetPost { id } => {
+                let f = lib.posts.get(&id).context("Own post not found")?;
+                Ok(
+                    serde_json::json!({"draft":f.draft,"revision":f.revision,"torrent_ids":reader_torrent_ids(&f.draft)}),
+                )
             }
             Command::SaveDraft {
                 id,
@@ -426,12 +485,16 @@ impl Manager {
                 draft,
             } => {
                 draft.validate()?;
-                let f = lib.feeds.get(&id).context("Own feed not found")?;
+                let f = lib.posts.get(&id).context("Own post not found")?;
                 if revision != f.revision {
                     bail!("Draft changed in another tab; reload before editing")
                 };
+                if f.draft == draft {
+                    return Ok(serde_json::json!({"revision": f.revision}));
+                }
                 let mut c = lib.clone();
-                let f = c.feeds.get_mut(&id).unwrap();
+                let f = c.posts.get_mut(&id).unwrap();
+                f.changed_at_us = crate::organization::now_us();
                 f.title = draft
                     .pages
                     .iter()
@@ -450,13 +513,13 @@ impl Manager {
                 Ok(serde_json::json!({"revision":revision}))
             }
             Command::SetActive { id, active } => {
-                if lib.feeds.get(&id).is_some_and(|f| f.pending.is_some())
+                if lib.posts.get(&id).is_some_and(|f| f.pending.is_some())
                     || self.running.contains_key(&id)
                 {
                     bail!("Wait for the current publication")
                 }
                 let mut c = lib.clone();
-                c.feeds.get_mut(&id).context("Own feed not found")?.active = active;
+                c.posts.get_mut(&id).context("Own post not found")?.active = active;
                 persist(dir, &c)?;
                 *lib = c;
                 Ok(serde_json::json!({"ok":true}))
@@ -466,7 +529,7 @@ impl Manager {
                 revision,
                 password,
             } => {
-                let f = lib.feeds.get(&id).context("Own feed not found")?;
+                let f = lib.posts.get(&id).context("Own post not found")?;
                 if f.pending.is_some() {
                     bail!("Publication busy; wait or cancel the current operation")
                 }
@@ -479,7 +542,7 @@ impl Manager {
                 let vault = lib.vault.clone().context("No publishing key")?;
                 let mut c = lib.clone();
                 let operation = allocate(&mut c)?;
-                let f = c.feeds.get_mut(&id).unwrap();
+                let f = c.posts.get_mut(&id).unwrap();
                 f.pending = Some(pending(f, operation, false));
                 f.active = true;
                 f.state = "Queued".into();
@@ -492,7 +555,7 @@ impl Manager {
             }
             Command::RetryPublication { id, operation } => {
                 let mut c = lib.clone();
-                let f = c.feeds.get_mut(&id).context("Own feed not found")?;
+                let f = c.posts.get_mut(&id).context("Own post not found")?;
                 let p = f
                     .pending
                     .as_mut()
@@ -511,7 +574,7 @@ impl Manager {
             }
             Command::CancelPublication { id, operation } => {
                 let mut c = lib.clone();
-                let f = c.feeds.get_mut(&id).context("Own feed not found")?;
+                let f = c.posts.get_mut(&id).context("Own post not found")?;
                 let p = f
                     .pending
                     .as_ref()
@@ -541,7 +604,7 @@ impl Manager {
             bail!("Publication canceled or replaced")
         }
         let mut c = self.lib.clone();
-        let f = c.feeds.get_mut(id).unwrap();
+        let f = c.posts.get_mut(id).unwrap();
         let p = f.pending.as_mut().unwrap();
         p.phase = state.clone();
         p.retry_at = None;
@@ -565,7 +628,7 @@ impl Manager {
             bail!("Publication canceled or replaced")
         }
         let mut c = self.lib.clone();
-        let f = c.feeds.get_mut(id).unwrap();
+        let f = c.posts.get_mut(id).unwrap();
         let p = f.pending.as_mut().unwrap();
         let key = bep46::parse_magnet(&f.magnet)?;
         let verified = record.verify(&key)?;
@@ -602,7 +665,7 @@ impl Manager {
         if self.stopping
             || self
                 .lib
-                .feeds
+                .posts
                 .get(&id)
                 .and_then(|f| f.pending.as_ref())
                 .is_none_or(|p| p.id != operation)
@@ -611,7 +674,7 @@ impl Manager {
             return;
         }
         let mut c = self.lib.clone();
-        let f = c.feeds.get_mut(&id).unwrap();
+        let f = c.posts.get_mut(&id).unwrap();
         let p = f.pending.as_mut().unwrap();
         match result {
             Ok(_) => {
@@ -657,7 +720,7 @@ impl Manager {
         while self.running.len() < 2 {
             let ready = self
                 .lib
-                .feeds
+                .posts
                 .values()
                 .filter(|f| !self.running.contains_key(&f.id))
                 .filter_map(|f| {
@@ -672,7 +735,7 @@ impl Manager {
             } else {
                 let renewal = self
                     .lib
-                    .feeds
+                    .posts
                     .values()
                     .find(|f| {
                         f.active
@@ -689,14 +752,14 @@ impl Manager {
                 let Some(id) = renewal else { break };
                 let mut c = self.lib.clone();
                 let operation = allocate(&mut c)?;
-                let f = c.feeds.get_mut(&id).unwrap();
+                let f = c.posts.get_mut(&id).unwrap();
                 f.pending = Some(pending(f, operation, true));
                 f.state = "Queued".into();
                 self.commit(c)?;
                 id
             };
             let mut c = self.lib.clone();
-            let f = c.feeds.get_mut(&id).unwrap();
+            let f = c.posts.get_mut(&id).unwrap();
             let p = f.pending.as_mut().unwrap();
             p.retry_at = None;
             p.phase = "Preparing".into();
@@ -746,6 +809,10 @@ impl Manager {
                 *value = None;
             }
         }
+        // A failed load uses an empty in-memory view, never a replacement library.
+        if self.disabled.is_some() {
+            return;
+        }
         let mut c = self.lib.clone();
         if let Err(e) = recover(&mut c).and_then(|_| self.commit(c)) {
             self.error = format!("Publishing shutdown: {e:#}");
@@ -754,13 +821,13 @@ impl Manager {
     fn message(&mut self, message: Message) {
         match message {
             Message::Command(command, reply) => {
-                let writes = !matches!(&command, Command::Preview { .. } | Command::GetFeed { .. });
+                let writes = !matches!(&command, Command::Preview { .. } | Command::GetPost { .. });
                 let result = self.command(command);
                 if writes && result.is_ok() {
                     self.error.clear();
                 }
                 // Publish is acknowledged only after the immutable job is saved.
-                self.views.send_replace(view(&self.lib, self.error.clone()));
+                self.views.send_replace(self.current_view());
                 let _ = reply.send(result.map_err(|e| format!("{e:#}")));
             }
             Message::Phase {
@@ -803,7 +870,7 @@ impl Manager {
                 let result = if let Some(error) = &self.disabled {
                     Err(anyhow!(error.clone()))
                 } else if self.running.is_empty()
-                    && self.lib.feeds.values().all(|f| f.pending.is_none())
+                    && self.lib.posts.values().all(|f| f.pending.is_none())
                 {
                     backup::import(&self.dir, &self.lib, &bytes, &password).map(|lib| {
                         self.lib = lib;
@@ -816,15 +883,15 @@ impl Manager {
             }
             Message::ReadBody { path, reply } => {
                 let result = (|| -> Result<serde_json::Value> {
-                    if fs::metadata(&path)?.len() > feedtorrent_feeds::publishing::MAX_BODY as u64 {
+                    if fs::metadata(&path)?.len() > feedtorrent_posts::publishing::MAX_BODY as u64 {
                         bail!("Markdown exceeds 1 MiB")
                     }
                     let mut bytes = vec![];
                     File::open(path)?
-                        .take(feedtorrent_feeds::publishing::MAX_BODY as u64 + 1)
+                        .take(feedtorrent_posts::publishing::MAX_BODY as u64 + 1)
                         .read_to_end(&mut bytes)?;
                     let text = std::str::from_utf8(&bytes).context("Markdown must be UTF-8")?;
-                    Ok(serde_json::json!({"body":feedtorrent_feeds::markdown::parse(text)?}))
+                    Ok(serde_json::json!({"body":feedtorrent_posts::markdown::parse(text)?}))
                 })();
                 let _ = reply.send(result.map_err(|e| format!("{e:#}")));
             }
@@ -895,10 +962,7 @@ pub(super) fn start(
             if let Err(e) = m.pump() {
                 m.error = format!("Publishing queue: {e:#}");
             }
-            m.views.send_replace(view(
-                &m.lib,
-                m.disabled.clone().unwrap_or_else(|| m.error.clone()),
-            ));
+            m.views.send_replace(m.current_view());
         }
         for handle in m.handles {
             let _ = handle.join();

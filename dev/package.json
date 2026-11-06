@@ -8,6 +8,7 @@
     "test": "make -f ../Makefile test"
   },
   "devDependencies": {
+    "@noble/hashes": "2.0.1",
     "typescript": "7.0.2",
     "@playwright/test": "1.64.1",
     "webtorrent": "3.0.21",

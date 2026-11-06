@@ -51,6 +51,17 @@ pub struct Seed {
     pub path: PathBuf,
 }
 pub enum Native {
+    Reserve {
+        post: String,
+        operation: u64,
+        metainfo: Vec<u8>,
+    },
+    Link {
+        post: String,
+        operation: u64,
+        parent: String,
+        children: Vec<String>,
+    },
     Lookup(MutableKey),
     Put(MutableRecord),
     Seed(Vec<Seed>),
@@ -94,7 +105,7 @@ impl Bridge {
             checking: vec![],
         }
     }
-    pub fn event(&mut self, event: &DhtEvent, host: &mut feeds::FeedHost) -> bool {
+    pub fn event(&mut self, event: &DhtEvent, host: &mut posts::PostHost) -> bool {
         let Some((record, reply, cancel)) = self.dht.remove(&event.id.0) else {
             return false;
         };
@@ -128,6 +139,65 @@ impl Bridge {
             let reply = task.reply;
             let cancel = task.cancel;
             match task.command {
+                Native::Link {
+                    post,
+                    operation,
+                    parent,
+                    children,
+                } => {
+                    let result = (|| -> Result<()> {
+                        let view = e
+                            .publication_view
+                            .as_ref()
+                            .context("Publishing service unavailable")?
+                            .borrow();
+                        if !view
+                            .posts
+                            .iter()
+                            .any(|p| p.id == post && p.operation == Some(operation))
+                        {
+                            bail!("Publication canceled or replaced")
+                        }
+                        drop(view);
+                        let root = format!("own:{post}");
+                        if e.store.retention.blocked(&root) {
+                            bail!("Post is being deleted")
+                        }
+                        e.change_retention(|g| {
+                            for child in children {
+                                g.link(&parent, &child)?;
+                            }
+                            Ok(())
+                        })
+                    })();
+                    let _ = reply.send(
+                        result
+                            .map(|()| NativeReply::Ready)
+                            .map_err(|e| Failure::Other(e.to_string())),
+                    );
+                }
+                Native::Reserve {
+                    post,
+                    operation,
+                    metainfo,
+                } => {
+                    let result = e.reserve_source(
+                        metainfo,
+                        false,
+                        Some(crate::lifecycle::SourceOrigin::Publication {
+                            id: post,
+                            operation,
+                        }),
+                        "owned_catalog",
+                        true,
+                        true,
+                    );
+                    let _ = reply.send(
+                        result
+                            .map(|_| NativeReply::Ready)
+                            .map_err(|e| Failure::Other(e.to_string())),
+                    );
+                }
                 Native::Lookup(key) => match e.native.start_dht(
                     DhtRequest::GetMutable(key),
                     DhtOptions {
@@ -155,11 +225,7 @@ impl Bridge {
                     }
                 },
                 Native::Location(id) => {
-                    let result = if let Ok(r) = e.record(&id) {
-                        Ok(r.path.clone())
-                    } else {
-                        payload_path(&e.store.settings.download_dir, &id)
-                    };
+                    let result = e.record(&id).map(|record| record.path.clone());
                     let _ = reply.send(
                         result
                             .map(NativeReply::Location)
@@ -173,12 +239,21 @@ impl Bridge {
                             if e.native.inspect(TorrentSource::Torrent(&s.metainfo))? != s.id {
                                 bail!("Catalog identity mismatch")
                             }
-                            if let Ok(existing) = e.record(&s.id) {
-                                if !existing.active {
-                                    bail!("Catalog is paused; resume it before publishing")
-                                };
-                                e.native.remove(&s.id)?;
+                            if cancel.load(Ordering::Acquire) {
+                                bail!("Publication canceled")
                             }
+                            let existing = e.record(&s.id)?;
+                            if existing.path != s.path {
+                                bail!("Catalog reservation changed")
+                            }
+                            if !existing.active
+                                || e.posts
+                                    .as_ref()
+                                    .is_some_and(|h| h.manager.suppressed(&s.id))
+                            {
+                                bail!("Catalog is paused or removed; restore it explicitly before publishing")
+                            }
+                            e.native.remove(&s.id)?;
                             atomic(&e.dir.join(format!("{}.source", s.id)), &s.metainfo)?;
                             e.native.add(AddTransfer {
                                 id: &s.id,
@@ -191,17 +266,6 @@ impl Bridge {
                             {
                                 record.seed = true;
                                 record.held = false;
-                            } else {
-                                e.store.records.push(Record {
-                                    id: s.id.clone(),
-                                    magnet: false,
-                                    path: s.path,
-                                    active: true,
-                                    seed: true,
-                                    held: false,
-                                    kind: "owned_catalog".into(),
-                                    feed: None,
-                                })
                             }
                             e.persist()?;
                             ids.push(s.id);

@@ -39,7 +39,7 @@ test('Library replaces Transfers, preserves legacy history and opens manual magn
     await expect(page).toHaveURL(new RegExp('#/library/'+id+'$'));
     await page.locator('#torrent-toggle').click();
     await expect.poll(async()=>(await app.api()).transfers[0].active).toBe(false);
-    await expect(page.locator('#torrent-toggle')).toHaveText('Resume');
+    await expect(page.locator('#torrent-toggle')).toHaveAccessibleName('Resume');
     await page.locator('#torrent-toggle').click();
     await expect.poll(async()=>(await app.api()).transfers[0].active).toBe(true);
     expect(await page.locator('#transfers-nav').getAttribute('aria-current')).toBe('page');
@@ -56,8 +56,9 @@ test('Library replaces Transfers, preserves legacy history and opens manual magn
       await page.screenshot({path:info.outputPath(`library-${width}-${theme}.png`),animations:'disabled'});
     }
     await row.locator('.transfer-name').click();
-    await page.locator('#torrent-remove').click();
-    await expect(page.locator('#delete-files')).not.toBeChecked();
+    await page.locator('#torrent-more').click();await expect(page.locator('#torrent-remove')).toBeDisabled();await page.locator('#torrent-pin').click();
+    await expect(page.locator('#remove-title')).toHaveText('Unpin and delete?');
+    await expect(page.locator('#delete-files')).toBeHidden();
     await page.locator('#remove-form button[type=submit]').click();
     await expect(row).toHaveCount(0);await expect(page.locator('#empty')).toHaveText('No torrents');
     expect((await app.api()).transfers).toHaveLength(0);
@@ -67,4 +68,17 @@ test('Library replaces Transfers, preserves legacy history and opens manual magn
     expect(errors).toEqual([]);expect(external).toEqual([]);
     console.log(info.project.name,browser.version());
   }finally{await cleanup(root,app);}
+});
+
+
+test('legacy post destinations normalize the complete route without another history entry',async({page})=>{
+ const root=await temporary();let app;
+ try{
+  app=await startApp(join(root,'app'));await page.goto(app.url+'/#/new');
+  const suffix='a'.repeat(40)+'/'+'b'.repeat(40)+'/seq/42',length=await page.evaluate(()=>history.length);
+  await page.evaluate(suffix=>location.hash='#/feeds/'+suffix,suffix);await expect(page).toHaveURL(app.url+'/#/posts/'+suffix);
+  expect(await page.evaluate(()=>history.length)).toBe(length+1);
+  await page.goBack();await expect(page).toHaveURL(/#\/new$/);await page.goForward();await expect(page).toHaveURL(app.url+'/#/posts/'+suffix);
+  const before=await page.evaluate(()=>history.length);await page.reload();expect(await page.evaluate(()=>history.length)).toBe(before);await expect(page.locator('#post-title')).toHaveText('Post unavailable');
+ }finally{await cleanup(root,app);}
 });

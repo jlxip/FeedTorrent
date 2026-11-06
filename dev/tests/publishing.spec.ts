@@ -22,6 +22,7 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     });
     await page.goto(app.url);
     await expect(page.locator("#own-create")).toBeEnabled();
+    await page.locator("#post-add").click();
     await page.locator("#own-create").click();
     await expect(
       page.locator("#own-create-dialog [data-close] svg"),
@@ -29,6 +30,7 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.locator("#own-create-title").fill("Field notes");
     await page.mouse.click(2, 2);
     await expect(page.locator("#own-create-dialog")).toBeHidden();
+    await page.locator("#post-add").click();
     await page.locator("#own-create").click();
     await expect(page.locator("#own-create-title")).toHaveValue("Field notes");
     await page
@@ -38,14 +40,21 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.locator("#own-create-submit").click();
     await expect(page.locator("#own-create-dialog")).toBeHidden();
     await expect(page.locator("#own-title")).toHaveValue("Field notes");
+    await expect(page.locator("#own-editor")).toBeVisible();
+    await expect(page.locator("#own-toggle")).toHaveText("Public view");
     await expect(page.locator("#own-breadcrumb")).toBeHidden();
     await expect(page.locator("#transfers-nav")).toHaveAttribute("aria-current","false");
-    await expect(page.locator("#own-nav a").first()).toHaveAttribute("aria-current","page");
+    await expect(page.locator("#post-tree a[data-kind=own]").first()).toHaveAttribute("aria-current","page");
     await expect(page.locator("#own-editor label").last()).not.toContainText("optional");
     await page.locator("#transfers-nav").click();
     await expect(page.locator("#transfers-nav")).toHaveAttribute("aria-current","page");
-    await expect(page.locator("#own-nav a").first()).toHaveAttribute("aria-current","false");
-    await page.locator("#own-nav a").first().click();
+    await expect(page.locator("#post-tree a[data-kind=own]").first()).toHaveAttribute("aria-current","false");
+    await page.locator("#post-tree a[data-kind=own]").first().click();
+    await expect(page.locator("#own-preview")).toBeVisible();
+    await expect(page.locator("#own-editor")).toBeHidden();
+    await expect(page.locator("#own-toggle")).toHaveText("Edit");
+    await page.reload();await expect(page.locator("#own-preview")).toBeVisible();
+    await page.locator("#own-toggle").click();
     await expect(page.locator("#transfers-nav")).toHaveAttribute("aria-current","false");
     await expect(page.locator("#own-key-password")).toHaveValue("");
     await page
@@ -88,7 +97,7 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await expect(page.locator("#own-title")).toHaveValue("Field notes");
     await page.locator("#own-toggle").click();
     await expect(page.locator("#own-preview strong")).toHaveText("Readable");
-    await expect(page.locator("#own-preview a")).toHaveCount(1);
+    await expect(page.locator("#own-preview .reader-body a")).toHaveCount(1);
     await expect(page.locator("#own-preview")).toContainText("Missing");
     await expect(page.locator("#own-preview")).toContainText("<script>");
     await expect(page.locator("#own-preview img")).toHaveCount(0);
@@ -134,13 +143,33 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await expect(page.locator("#own-draft-status")).toHaveText("Draft saved");
     expect(external).toEqual([]);
     await page.locator("#own-toggle").click();
-    await page.locator("#own-preview a").click();
+    await page.locator("#own-preview .reader-body a").click();
     await expect.poll(async () => (await app.api()).transfers.length).toBe(1);
-    await expect(page.locator("#transfer-view")).toBeVisible();
+    await expect(page.locator("#own-preview")).toBeVisible();
     const added=(await app.api()).transfers[0];
-    await expect(page).toHaveURL(new RegExp("#/library/"+added.id+"$"));
-    await expect(page.locator("#torrent-heading")).toHaveText("payload.txt");
+    await expect(page).toHaveURL(/#\/own\/.*\/read\/1$/);
+    await page.locator("#own-preview").getByRole("link",{name:/Movie|torrent/}).click();
+    await expect(page).toHaveURL(new RegExp("#/own/.*?/read/1/torrent/"+added.id+"$"));
+    await expect(page.locator("#own-preview h2")).toHaveText("payload.txt");
   } finally {
     await cleanup(root, app);
   }
+});
+
+
+test("existing posts open Public view at their actual root without an extra history entry",async({page})=>{
+  const root=await temporary();let app;
+  try{
+    app=await startApp(join(root,'app'));const password='public view test password';
+    await app.api('/api/publishing',{action:'create_key',password,confirmation:password});
+    const {id}=await app.api('/api/publishing',{action:'create_post',title:'Existing notebook'});
+    await app.api('/api/publishing',{action:'save_draft',id,revision:1,draft:{root:7,pages:[{id:7,title:'Existing notebook',body:'Saved page',entries:[]}]}});
+    await page.goto(app.url+'/#/library');const link=page.locator(`#post-tree a[data-post="${id}"]`);
+    await expect(link).toHaveAttribute('href',`#/own/${id}/read`);await link.click();
+    await expect(page).toHaveURL(new RegExp('#/own/'+id+'/read/7$'));await expect(page.locator('#own-preview')).toContainText('Saved page');await expect(page.locator('#own-editor')).toBeHidden();
+    await page.goBack();await expect(page).toHaveURL(/#\/library$/);await page.goForward();await expect(page.locator('#own-preview')).toContainText('Saved page');
+    await page.reload();await expect(page.locator('#own-preview')).toContainText('Saved page');
+    await page.getByRole('button',{name:'Edit',exact:true}).click();await expect(page.locator('#own-editor')).toBeVisible();await expect(page.locator('#own-title')).toHaveValue('Existing notebook');
+    await page.setViewportSize({width:320,height:740});await page.getByRole('button',{name:'Public view',exact:true}).click();await expect(page.locator('#own-preview')).toContainText('Saved page');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  }finally{await cleanup(root,app);}
 });

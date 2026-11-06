@@ -10,7 +10,7 @@ import {reference, wait, seed, tracker} from './helpers.mjs';
 export const sha1 = b => createHash('sha1').update(b).digest();
 const utf = b => Buffer.from(b).toString();
 export const magnet = h => 'magnet:?xt=urn:btih:' + h;
-export async function feedFixture(root) {
+export async function postFixture(root) {
   const resources = [], nodes = [];
   const stop = async () => {
     for (const r of resources.reverse()) await r.stop();
@@ -47,9 +47,9 @@ export async function feedFixture(root) {
     const secret = Buffer.alloc(32, 77), salt = Buffer.from([1, 255]);
     let seq = 0;
     const identity = signed(secret, 0, {ih: Buffer.alloc(20)}, salt);
-    const feedMagnet =
+    const postMagnet =
         `magnet:?xs=urn:btpk:${identity.k.toString('hex')}&s=${salt.toString('hex')}`;
-    const feedId = target(identity.k, salt).toString('hex');
+    const postId = target(identity.k, salt).toString('hex');
     const content = await seed(
         join(root, 'content'), [19001, 12021, 0], {tracker: true, announce: [tr.http]});
     resources.push(content);
@@ -149,8 +149,8 @@ export async function feedFixture(root) {
       tr,
       nodes,
       bootstrap: `127.0.0.1:${nodes[0].address().port}`,
-      feedMagnet,
-      feedId,
+      postMagnet,
+      postId,
       catalog,
       publish,
       get contentRequests() {

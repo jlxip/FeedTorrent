@@ -1,4 +1,8 @@
-mod feeds;
+mod content;
+mod desktop;
+mod lifecycle;
+mod organization;
+mod posts;
 mod publishing;
 mod publishing_keys;
 use anyhow::{anyhow, bail, Context, Result};
@@ -70,13 +74,16 @@ struct Record {
     #[serde(default)]
     kind: String,
     #[serde(default)]
-    feed: Option<String>,
+    #[serde(alias = "feed")]
+    post: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Store {
     version: u32,
     settings: Settings,
     records: Vec<Record>,
+    #[serde(default)]
+    retention: lifecycle::Graph,
 }
 #[derive(Clone, Default, Debug, Serialize)]
 struct TorrentFile {
@@ -104,7 +111,10 @@ struct Transfer {
     held: bool,
     approval_size: Option<u64>,
     kind: String,
-    feed: Option<String>,
+    post: Option<String>,
+    pinned: bool,
+    protected_by: Vec<String>,
+    used_by: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 struct Snapshot {
@@ -115,58 +125,110 @@ struct Snapshot {
     listen_port: u16,
     warning: String,
     ready: bool,
-    feeds: Vec<feedtorrent_feeds::FeedView>,
-    feed_error: String,
-    feed_time_ms: u64,
+    posts: Vec<feedtorrent_posts::PostView>,
+    post_error: String,
+    post_time_ms: u64,
     news_unread: usize,
     news_revision: String,
     publishing: publishing::View,
+    organization: organization::View,
+    cleanup: Vec<lifecycle::Cleanup>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    PreviewRemoval {
+        target: lifecycle::Target,
+    },
+    DeletePost {
+        post_kind: String,
+        id: String,
+        revision: String,
+    },
+    SetPin {
+        id: String,
+        pinned: bool,
+        revision: Option<String>,
+    },
+    RetryCleanup {
+        id: u64,
+    },
+    #[serde(skip)]
+    BeginPostDelete {
+        target: lifecycle::Target,
+        revision: String,
+    },
+    #[serde(skip)]
+    FinishPostDelete {
+        job: u64,
+    },
+    #[serde(skip)]
+    AbortPostDelete {
+        job: u64,
+    },
+    #[serde(skip)]
+    FailCleanup {
+        job: u64,
+        error: String,
+    },
+    OrganizePost {
+        revision: String,
+        key: String,
+        action: String,
+        parent: Option<String>,
+        before: Option<String>,
+    },
     NewsPage {
         #[serde(default)]
         offset: usize,
         anchor: Option<String>,
     },
     SetUpdateRead {
-        feed: String,
+        #[serde(alias = "feed")]
+        post: String,
         sequence: String,
         read: bool,
     },
     MarkCatalogRead {
-        feed: String,
+        #[serde(alias = "feed")]
+        post: String,
         catalog: String,
         sequence: Option<String>,
     },
     ReadCatalogBody {
-        feed: String,
+        #[serde(alias = "feed")]
+        post: String,
         catalog: String,
+    },
+    ReadContent {
+        id: String,
+        parent: Option<String>,
+        #[serde(default)]
+        offset: usize,
     },
     InspectSource {
         uri: String,
     },
-    FollowFeed {
+    FollowPost {
         uri: String,
-        config: feedtorrent_feeds::Config,
+        config: feedtorrent_posts::Config,
     },
-    ConfigureFeed {
+    ConfigurePost {
         id: String,
-        config: feedtorrent_feeds::Config,
+        config: feedtorrent_posts::Config,
     },
-    UnfollowFeed {
-        id: String,
-    },
-    RefreshFeed {
+
+    RefreshPost {
         id: String,
     },
     OpenCatalog {
-        feed: String,
+        #[serde(alias = "feed")]
+        post: String,
         id: String,
     },
     DownloadEntry {
-        feed: String,
+        #[serde(alias = "feed")]
+        post: String,
         catalog: String,
         index: usize,
     },
@@ -178,16 +240,19 @@ enum Command {
         index: usize,
     },
     CatalogPage {
-        feed: String,
+        #[serde(alias = "feed")]
+        post: String,
         catalog: String,
         #[serde(default)]
         offset: usize,
     },
     AddMagnet {
         uri: String,
+        origin: Option<lifecycle::SourceOrigin>,
     },
     AddTorrent {
         data: Vec<u8>,
+        origin: Option<lifecycle::SourceOrigin>,
     },
     Pause {
         id: String,
@@ -199,6 +264,7 @@ enum Command {
         id: String,
         #[serde(default)]
         delete_files: bool,
+        revision: Option<String>,
     },
     Reveal {
         id: String,
@@ -245,13 +311,14 @@ fn default_seed() -> bool {
 }
 fn default_store() -> Store {
     Store {
-        version: 3,
+        version: 4,
         settings: Settings {
             download_dir: "downloads".into(),
             peer_port: 6881,
             seed_by_default: true,
         },
         records: vec![],
+        retention: lifecycle::Graph::default(),
     }
 }
 fn migrate_store(store: &mut Store, home: &Path) -> Result<()> {
@@ -262,10 +329,11 @@ fn migrate_store(store: &mut Store, home: &Path) -> Result<()> {
             }
             store.version = 2;
         }
-        2 | 3 => {}
+        2..=4 => {}
         _ => bail!("Unsupported transfer registry version; data preserved"),
     }
-    store.version = 3;
+    store.version = 4;
+    store.retention.validate()?;
     Ok(())
 }
 fn directory_setting(value: &str) -> Result<String> {
@@ -291,24 +359,15 @@ fn reject_symlinks(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn payload_path(base: &str, id: &str) -> Result<PathBuf> {
-    if !valid_id(id) {
-        bail!("Invalid transfer identifier");
-    }
-    let base = ensure_directory(Path::new(base))?;
-    let target = base.join(id);
-    if !target.exists() {
-        fs::create_dir(&target)?;
-    }
-    reject_symlinks(&target)?;
-    Ok(target)
-}
 struct Engine {
     refresh_serial: u64,
+    organization: organization::Organization,
+    organization_error: String,
+    retention_recovery: std::collections::BTreeSet<u64>,
     native: LibtorrentBackend,
     publication_native: Option<publishing::Bridge>,
     publication_view: Option<watch::Receiver<publishing::View>>,
-    feeds: Option<feeds::FeedHost>,
+    posts: Option<posts::PostHost>,
     store: Store,
     dir: PathBuf,
     failures: BTreeMap<String, String>,
@@ -337,19 +396,24 @@ impl Engine {
             listen_port: 0,
             warning: String::new(),
             ready: false,
-            feeds: vec![],
-            feed_error: String::new(),
-            feed_time_ms: 0,
+            posts: vec![],
+            post_error: String::new(),
+            post_time_ms: 0,
             news_unread: 0,
             news_revision: String::new(),
             publishing: publishing::View::default(),
+            organization: organization::View::default(),
+            cleanup: vec![],
         };
         let mut e = Self {
             refresh_serial: 0,
+            retention_recovery: store.retention.jobs.keys().copied().collect(),
+            organization: organization::Organization::load(&dir)?,
+            organization_error: String::new(),
             native,
             publication_native: None,
             publication_view: None,
-            feeds: Some(feeds::FeedHost::new(&dir, args.isolated)),
+            posts: Some(posts::PostHost::new(&dir, args.isolated)),
             store,
             dir,
             failures: BTreeMap::new(),
@@ -369,7 +433,13 @@ impl Engine {
                     id: &record.id,
                     source: TorrentSource::from_bytes(&bytes, record.magnet)?,
                     save_path: record.path.to_str().context("Non-UTF-8 transfer path")?,
-                    active: record.active,
+                    active: record.active
+                        && !e
+                            .store
+                            .retention
+                            .jobs
+                            .values()
+                            .any(|j| e.store.retention.may_delete(j.id, &record.id)),
                     restore: true,
                 };
                 if record.held {
@@ -389,9 +459,9 @@ impl Engine {
         }
         e.persist()?;
         // Commit migrations and their detection times before serving the first snapshot.
-        if let Err(error) = e.persist_feeds() {
-            if let Some(host) = &mut e.feeds {
-                host.error = format!("Feed persistence: {error:#}");
+        if let Err(error) = e.persist_posts() {
+            if let Some(host) = &mut e.posts {
+                host.error = format!("Post persistence: {error:#}");
             }
         }
         e.refresh()?;
@@ -405,89 +475,86 @@ impl Engine {
             .ok_or_else(|| anyhow!("Transfer not found"))
     }
     fn add(&mut self, bytes: Vec<u8>, magnet: bool) -> Result<()> {
-        if bytes.len() > 8 * 1024 * 1024 {
-            bail!("Torrent metadata exceeds 8 MiB");
-        }
-        let id = self
-            .native
-            .inspect(TorrentSource::from_bytes(&bytes, magnet)?)?;
-        if self.store.records.iter().any(|r| r.id == id) {
-            bail!("Transfer already exists");
-        }
-        let path = payload_path(&self.store.settings.download_dir, &id)?;
-        atomic(&self.dir.join(format!("{id}.source")), &bytes)?;
-        self.native.add(AddTransfer {
-            id: &id,
-            source: TorrentSource::from_bytes(&bytes, magnet)?,
-            save_path: path.to_str().context("Non-UTF-8 transfer path")?,
-            active: true,
-            restore: false,
-        })?;
-        self.store.records.push(Record {
-            id: id.clone(),
-            magnet,
-            path,
-            active: true,
-            seed: self.store.settings.seed_by_default,
-            held: false,
-            kind: String::new(),
-            feed: None,
-        });
-        if let Err(error) = self.persist() {
-            self.store.records.retain(|r| r.id != id);
-            let _ = self.native.remove(&id);
-            return Err(error);
-        }
-        Ok(())
+        self.reserve_source(bytes, magnet, None, "", false, false)
+            .map(|_| ())
     }
     fn apply(&mut self, command: Command) -> Result<()> {
         match command {
+            Command::OrganizePost {
+                revision,
+                key,
+                action,
+                parent,
+                before,
+            } => {
+                self.sync_organization()?;
+                self.organization
+                    .change(&self.dir, &revision, &key, &action, parent, before)?;
+            }
             Command::SetUpdateRead {
-                feed,
+                post,
                 sequence,
                 read,
-            } => return self.news_read(&feed, &sequence, read),
+            } => return self.news_read(&post, &sequence, read),
             Command::MarkCatalogRead {
-                feed,
+                post,
                 catalog,
                 sequence,
             } => {
-                let host = self.feeds.as_ref().context("Feed service unavailable")?;
-                if !host.manager.page(&feed, &catalog, 0)?.catalog.ready {
+                let host = self.posts.as_ref().context("Post service unavailable")?;
+                if !host.manager.page(&post, &catalog, 0)?.catalog.ready {
                     bail!("Catalog has not been verified")
                 }
                 if let Some(seq) =
                     host.manager
-                        .news_for_catalog(&feed, &catalog, sequence.as_deref())
+                        .news_for_catalog(&post, &catalog, sequence.as_deref())
                 {
-                    return self.news_read(&feed, &seq, true);
+                    return self.news_read(&post, &seq, true);
                 }
                 return Ok(());
             }
-            c @ (Command::FollowFeed { .. }
-            | Command::ConfigureFeed { .. }
-            | Command::UnfollowFeed { .. }
-            | Command::RefreshFeed { .. }
+            c @ (Command::FollowPost { .. }
+            | Command::ConfigurePost { .. }
+            | Command::RefreshPost { .. }
             | Command::OpenCatalog { .. }
             | Command::DownloadEntry { .. }
             | Command::ApproveTransfer { .. }
-            | Command::RevealEntry { .. }) => return self.feed_command(c),
+            | Command::RevealEntry { .. }) => return self.post_command(c),
+            Command::PreviewRemoval { .. }
+            | Command::DeletePost { .. }
+            | Command::SetPin { .. }
+            | Command::BeginPostDelete { .. }
+            | Command::FinishPostDelete { .. }
+            | Command::AbortPostDelete { .. }
+            | Command::FailCleanup { .. } => bail!("Lifecycle command dispatched incorrectly"),
             Command::InspectSource { .. }
             | Command::NewsPage { .. }
             | Command::CatalogPage { .. }
+            | Command::ReadContent { .. }
             | Command::ReadCatalogBody { .. } => {
                 bail!("Read-only command dispatched incorrectly")
             }
-            Command::AddMagnet { uri } => {
-                self.add(normalize_magnet_input(&uri)?.into_bytes(), true)?
+            Command::AddMagnet { uri, origin } => {
+                let bytes = normalize_magnet_input(&uri)?.into_bytes();
+                if origin.is_none() {
+                    self.add(bytes, true)?;
+                } else {
+                    self.reserve_source(bytes, true, origin, "content", false, false)?;
+                }
             }
-            Command::AddTorrent { data } => self.add(data, false)?,
+            Command::AddTorrent { data, origin } => {
+                if origin.is_none() {
+                    self.add(data, false)?;
+                } else {
+                    self.reserve_source(data, false, origin, "content", false, false)?;
+                }
+            }
             Command::Pause { id } => {
                 self.record(&id)?;
-                if let Some(h) = &mut self.feeds {
+                if let Some(h) = &mut self.posts {
                     h.manager.suppress(&id)?;
                 }
-                self.persist_feeds()?;
+                self.persist_posts()?;
                 self.record(&id)?;
                 if !self.failures.contains_key(&id) {
                     self.native.pause(&id)?;
@@ -526,17 +593,17 @@ impl Engine {
                         .unwrap()
                         .active = true;
                     self.persist()?;
-                    if let (Some(feed), Some(host)) = (&r.feed, &mut self.feeds) {
+                    if let (Some(post), Some(host)) = (&r.post, &mut self.posts) {
                         let now = host.now();
-                        host.manager.refresh(feed, now)?;
+                        host.manager.refresh(post, now)?;
                     }
-                    self.persist_feeds()?;
+                    self.persist_posts()?;
                     return Ok(());
                 };
-                if let Some(h) = &mut self.feeds {
+                if let Some(h) = &mut self.posts {
                     h.manager.approve_once(&id)?;
                 }
-                self.persist_feeds()?;
+                self.persist_posts()?;
                 if self.failures.contains_key(&id) {
                     reject_symlinks(&r.path)?;
                     let bytes = read_limited(&self.dir.join(format!("{id}.source")))?;
@@ -566,37 +633,12 @@ impl Engine {
                     .active = true;
                 self.persist()?;
             }
-            Command::Remove { id, delete_files } => {
-                self.record(&id)?;
-                if let Some(h) = &mut self.feeds {
-                    h.manager.suppress(&id)?;
-                    h.manager.removed(&id);
-                }
-                self.persist_feeds()?;
-                let record = self.record(&id)?.clone();
-                if !self.failures.contains_key(&id) {
-                    self.native.remove(&id)?;
-                }
-                self.store.records.retain(|r| r.id != id);
-                self.persist()?;
-                self.failures.remove(&id);
-                for suffix in ["source", "resume", "info"] {
-                    let path = self.dir.join(format!("{id}.{suffix}"));
-                    if path.exists() {
-                        fs::remove_file(path)?;
-                    }
-                }
-                if delete_files && record.path.exists() {
-                    if !valid_id(&id)
-                        || record.path.file_name().and_then(|s| s.to_str()) != Some(&id)
-                    {
-                        bail!("Unsafe deletion path; files preserved");
-                    }
-                    reject_symlinks(&record.path)?;
-                    fs::remove_dir_all(&record.path)
-                        .context("Transfer removed, but downloaded files could not be deleted")?;
-                }
-            }
+            Command::Remove {
+                id,
+                delete_files,
+                revision,
+            } => return self.remove_transfer(&id, delete_files, revision.as_deref()),
+            Command::RetryCleanup { id } => return self.retry_cleanup(id),
             Command::Reveal { id, file } => {
                 let r = self.record(&id)?;
                 let path = if let Some(index) = file {
@@ -618,13 +660,7 @@ impl Engine {
                 if !canonical.starts_with(fs::canonicalize(&r.path)?) {
                     bail!("Unsafe file path");
                 }
-                let status = std::process::Command::new("/usr/bin/open")
-                    .arg("-R")
-                    .arg(canonical)
-                    .status()?;
-                if !status.success() {
-                    bail!("Finder could not reveal this file");
-                }
+                desktop::reveal(&canonical)?;
             }
             Command::Configure { mut settings } => {
                 settings.download_dir = directory_setting(&settings.download_dir)?;
@@ -634,7 +670,43 @@ impl Engine {
         }
         Ok(())
     }
+    fn sync_organization(&mut self) -> Result<()> {
+        let Some(publication) = &self.publication_view else {
+            return Ok(());
+        };
+        let publication = publication.borrow();
+        if !publication.error.is_empty() {
+            bail!("{}", publication.error);
+        }
+        if self.posts.as_ref().is_none_or(|h| !h.available()) {
+            bail!("Post state unavailable; organization preserved");
+        }
+        let mut input: Vec<_> = self
+            .posts
+            .as_ref()
+            .map(|h| h.manager.views())
+            .unwrap_or_default()
+            .iter()
+            .map(|f| organization::Input {
+                key: format!("followed:{}", f.id),
+                stamp: f.head.clone().unwrap_or_default(),
+                changed_at: organization::now_us(),
+            })
+            .collect();
+        input.extend(publication.posts.iter().map(|f| organization::Input {
+            key: format!("own:{}", f.id),
+            stamp: format!("{}:{}", f.revision, f.changed_at_us),
+            changed_at: f.changed_at_us,
+        }));
+        self.organization.sync(&self.dir, input)
+    }
     fn refresh(&mut self) -> Result<()> {
+        self.sync_retention()?;
+        self.organization_error = self
+            .sync_organization()
+            .err()
+            .map(|e| format!("Post organization: {e:#}"))
+            .unwrap_or_default();
         let native = self.native.snapshot()?;
         self.refresh_serial = self.refresh_serial.wrapping_add(1);
         let mut transfers = Vec::new();
@@ -674,8 +746,8 @@ impl Engine {
                             && n.state != "Error",
                     })
                     .collect();
-                let feed_error = if r.held {
-                    self.feeds
+                let post_error = if r.held {
+                    self.posts
                         .as_ref()
                         .and_then(|h| h.manager.validation_error(&r.id))
                         .unwrap_or("")
@@ -689,7 +761,7 @@ impl Engine {
                     } else {
                         n.name.clone()
                     },
-                    state: if !feed_error.is_empty() {
+                    state: if !post_error.is_empty() {
                         "Error".into()
                     } else if r.held
                         && r.active
@@ -710,10 +782,10 @@ impl Engine {
                     } else {
                         n.state.clone()
                     },
-                    error: if feed_error.is_empty() {
+                    error: if post_error.is_empty() {
                         n.error.clone()
                     } else {
-                        feed_error.into()
+                        post_error.into()
                     },
                     warning: n.warning.clone(),
                     active: r.active,
@@ -733,14 +805,17 @@ impl Engine {
                     save_path: r.path.display().to_string(),
                     held: r.held,
                     approval_size: if r.held {
-                        self.feeds
+                        self.posts
                             .as_ref()
                             .and_then(|h| h.manager.approval_size(&r.id))
                     } else {
                         None
                     },
                     kind: r.kind.clone(),
-                    feed: r.feed.clone(),
+                    post: r.post.clone(),
+                    pinned: self.store.retention.pins.contains(&r.id),
+                    protected_by: self.store.retention.protected_by(&r.id),
+                    used_by: self.store.retention.used_by(&r.id),
                 });
             } else {
                 transfers.push(Transfer {
@@ -755,7 +830,10 @@ impl Engine {
                     save_path: r.path.display().to_string(),
                     held: r.held,
                     kind: r.kind.clone(),
-                    feed: r.feed.clone(),
+                    post: r.post.clone(),
+                    pinned: self.store.retention.pins.contains(&r.id),
+                    protected_by: self.store.retention.protected_by(&r.id),
+                    used_by: self.store.retention.used_by(&r.id),
                     ..Default::default()
                 });
             }
@@ -773,19 +851,21 @@ impl Engine {
                 .map(|v| v.borrow().clone())
                 .unwrap_or_default(),
             ready: true,
-            feeds: self
-                .feeds
+            posts: self
+                .posts
                 .as_ref()
                 .map(|h| h.manager.views())
                 .unwrap_or_default(),
-            feed_time_ms: self.feeds.as_ref().map_or(0, |h| h.now()),
-            news_unread: self.feeds.as_ref().map_or(0, |h| h.manager.news_unread()),
+            organization: self.organization.view(self.organization_error.clone()),
+            cleanup: self.store.retention.jobs.values().cloned().collect(),
+            post_time_ms: self.posts.as_ref().map_or(0, |h| h.now()),
+            news_unread: self.posts.as_ref().map_or(0, |h| h.manager.news_unread()),
             news_revision: self
-                .feeds
+                .posts
                 .as_ref()
                 .map_or_else(String::new, |h| h.manager.news_revision()),
-            feed_error: self
-                .feeds
+            post_error: self
+                .posts
                 .as_ref()
                 .map(|h| h.error.clone())
                 .unwrap_or_default(),
@@ -794,9 +874,9 @@ impl Engine {
     }
     fn checkpoint(&mut self) -> Result<()> {
         self.persist()?;
-        let feeds = self.persist_feeds();
+        let posts = self.persist_posts();
         self.native.checkpoint()?;
-        feeds?;
+        posts?;
         Ok(())
     }
 }
@@ -877,6 +957,16 @@ async fn events(State(app): State<Arc<App>>) -> impl IntoResponse {
     };
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
+async fn engine_call(
+    app: &App,
+    command: Command,
+) -> std::result::Result<serde_json::Value, String> {
+    let (tx, rx) = oneshot::channel();
+    app.jobs
+        .try_send(Job { command, reply: tx })
+        .map_err(|_| "Engine busy or stopped".to_string())?;
+    rx.await.map_err(|_| "Engine stopped".to_string())?
+}
 async fn command(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -894,11 +984,19 @@ async fn command(
     }
     let command = match payload {
         Ok(Json(c)) => c,
-        Err(e) => return api_error(StatusCode::BAD_REQUEST, e.body_text()),
+        Err(e) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Reload FeedTorrent to update this client: {}",
+                    e.body_text()
+                ),
+            )
+        }
     };
     if let Command::InspectSource { uri } = &command {
         if let Ok(key) = feedtorrent_bep::bep46::parse_magnet(uri) {
-            return Json(serde_json::json!({"ok":true,"kind":"feed","magnet":feedtorrent_bep::bep46::format_magnet(&key),"id":feedtorrent_feeds::hex(&key.target())})).into_response();
+            return Json(serde_json::json!({"ok":true,"kind":"post","magnet":feedtorrent_bep::bep46::format_magnet(&key),"id":feedtorrent_posts::hex(&key.target())})).into_response();
         }
         return match normalize_magnet_input(uri) {
             Ok(uri) => {
@@ -907,7 +1005,88 @@ async fn command(
             Err(e) => api_error(StatusCode::BAD_REQUEST, e),
         };
     }
+    if let Command::DeletePost {
+        post_kind,
+        id,
+        revision,
+    } = &command
+    {
+        let target = lifecycle::Target::Post {
+            post_kind: post_kind.clone(),
+            id: id.clone(),
+        };
+        let begun = match engine_call(
+            &app,
+            Command::BeginPostDelete {
+                target,
+                revision: revision.clone(),
+            },
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(error) => return api_error(StatusCode::BAD_REQUEST, error),
+        };
+        let job = begun["job"].as_u64().unwrap();
+        if post_kind == "own" {
+            if let Err(error) = app
+                .publishing
+                .call(publishing::Command::RemovePost { id: id.clone() })
+                .await
+            {
+                let _ = engine_call(&app, Command::AbortPostDelete { job }).await;
+                return api_error(StatusCode::BAD_REQUEST, error);
+            }
+        }
+        return match engine_call(&app, Command::FinishPostDelete { job }).await {
+            Ok(value) => Json(value).into_response(),
+            Err(error) => {
+                let _ = engine_call(
+                    &app,
+                    Command::FailCleanup {
+                        job,
+                        error: error.clone(),
+                    },
+                )
+                .await;
+                api_error(StatusCode::BAD_REQUEST, error)
+            }
+        };
+    }
+    if let Command::RetryCleanup { id } = &command {
+        let job = app
+            .view
+            .borrow()
+            .cleanup
+            .iter()
+            .find(|j| j.id == *id)
+            .cloned();
+        if let Some(job) = job {
+            if !job.detached {
+                if let lifecycle::Target::Post { post_kind, id } = &job.target {
+                    if post_kind == "own"
+                        && app
+                            .publishing
+                            .view
+                            .borrow()
+                            .posts
+                            .iter()
+                            .any(|p| &p.id == id)
+                    {
+                        if let Err(error) = app
+                            .publishing
+                            .call(publishing::Command::RemovePost { id: id.clone() })
+                            .await
+                        {
+                            return api_error(StatusCode::BAD_REQUEST, error);
+                        }
+                    }
+                }
+            }
+        }
+    }
     let read_body = matches!(&command, Command::ReadCatalogBody { .. });
+    let read_content = matches!(&command, Command::ReadContent { .. });
     let (tx, rx) = oneshot::channel();
     if app.jobs.try_send(Job { command, reply: tx }).is_err() {
         return api_error(
@@ -916,7 +1095,23 @@ async fn command(
         );
     }
     match rx.await {
-        Ok(Ok(result)) => {
+        Ok(Ok(mut result)) => {
+            if read_content {
+                let path = result
+                    .as_object_mut()
+                    .and_then(|v| v.remove("body_path"))
+                    .and_then(|v| v.as_str().map(PathBuf::from));
+                if let Some(path) = path {
+                    match app.publishing.read_body(path).await {
+                        Ok(body) => result["body"] = body["body"].clone(),
+                        Err(error) => {
+                            result["body_state"] = serde_json::json!("error");
+                            result["body_error"] = serde_json::json!(error);
+                        }
+                    }
+                }
+                return Json(result).into_response();
+            }
             if read_body {
                 let Some(path) = result.get("path").and_then(|p| p.as_str()) else {
                     return Json(serde_json::json!({"body":null})).into_response();
@@ -943,11 +1138,23 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
             "text/javascript",
             include_bytes!("../../web/dist/markdown.js"),
         ),
-        "feeds.js" => ("text/javascript", include_bytes!("../../web/dist/feeds.js")),
+        "organization.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/organization.js"),
+        ),
+        "posts.js" => ("text/javascript", include_bytes!("../../web/dist/posts.js")),
         "news.js" => ("text/javascript", include_bytes!("../../web/dist/news.js")),
         "library.js" => (
             "text/javascript",
             include_bytes!("../../web/dist/library.js"),
+        ),
+        "content.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/content.js"),
+        ),
+        "reader.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/reader.js"),
         ),
         "types.js" => ("text/javascript", include_bytes!("../../web/dist/types.js")),
         "app.css" => ("text/css", include_bytes!("../../web/dist/app.css")),
@@ -959,6 +1166,10 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
         "basecoat-tabs.js" => (
             "text/javascript",
             include_bytes!("../../web/dist/basecoat-tabs.js"),
+        ),
+        "basecoat-dropdown-menu.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/basecoat-dropdown-menu.js"),
         ),
         "basecoat-sidebar.js" => (
             "text/javascript",
@@ -1027,12 +1238,14 @@ async fn main() -> Result<()> {
         listen_port: 0,
         warning: String::new(),
         ready: false,
-        feeds: vec![],
-        feed_error: String::new(),
-        feed_time_ms: 0,
+        posts: vec![],
+        post_error: String::new(),
+        post_time_ms: 0,
         news_unread: 0,
         news_revision: String::new(),
         publishing: publishing::View::default(),
+        organization: organization::View::default(),
+        cleanup: vec![],
     };
     let (publication_tx, publication_rx) = mpsc::sync_channel(16);
     let (publishing, publishing_thread) = publishing::start(&dir, publication_tx)?;
@@ -1063,9 +1276,16 @@ async fn main() -> Result<()> {
             match receiver.recv_timeout(Duration::from_millis(200)) {
                 Ok(job) => {
                     let result = match job.command {
-                        Command::NewsPage{offset,anchor}=>engine.feeds.as_ref().context("Feed service unavailable").and_then(|h|h.manager.news_page(offset,anchor.as_deref()).map_err(Into::into)).and_then(|p|serde_json::to_value(p).map_err(Into::into)),
-                        Command::ReadCatalogBody{feed,catalog}=>engine.catalog_body(&feed,&catalog).map(|p|serde_json::json!({"path":p})),
-                        Command::CatalogPage{feed,catalog,offset}=>engine.feeds.as_ref().context("Feed service unavailable").and_then(|h|h.manager.page(&feed,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total})),
+                        Command::PreviewRemoval{target}=>engine.removal_preview(target),
+                        Command::BeginPostDelete{target,revision}=>engine.begin_removal(target,&revision),
+                        Command::FinishPostDelete{job}=>engine.finish_post_removal(job),
+                        Command::AbortPostDelete{job}=>engine.cancel_removal(job),
+                        Command::SetPin{id,pinned,revision}=>engine.set_pin(&id,pinned,revision.as_deref()),
+                        Command::FailCleanup{job,error}=>engine.change_retention(|g|{g.jobs.get_mut(&job).context("Cleanup unavailable")?.error=error;Ok(())}).map(|()|serde_json::json!({"ok":true})),
+                        Command::NewsPage{offset,anchor}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.news_page(offset,anchor.as_deref()).map_err(Into::into)).and_then(|p|serde_json::to_value(p).map_err(Into::into)),
+                        Command::ReadContent{id,parent,offset}=>engine.read_content(&id,parent.as_deref(),offset),
+                        Command::ReadCatalogBody{post,catalog}=>engine.catalog_body(&post,&catalog).map(|p|serde_json::json!({"path":p})),
+                        Command::CatalogPage{post,catalog,offset}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.page(&post,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total})),
                         c=>engine.apply(c).map(|()|serde_json::json!({"ok":true})),
                     }.map_err(|e|format!("{e:#}"));
                     if let Err(e) = engine.refresh() {
@@ -1081,7 +1301,8 @@ async fn main() -> Result<()> {
                 bridge.tick(&mut engine);
                 engine.publication_native = Some(bridge);
             }
-            engine.feed_tick();
+            engine.post_tick();
+            engine.cleanup_tick();
             if refresh.elapsed() >= Duration::from_secs(1) {
                 if let Err(e) = engine.refresh() {
                     engine.view.warning = format!("Engine: {e:#}");
@@ -1098,12 +1319,12 @@ async fn main() -> Result<()> {
             }
         }
         engine.persist()?;
-        let feed_result = engine.persist_feeds();
-        if let Some(host) = &mut engine.feeds {
+        let post_result = engine.persist_posts();
+        if let Some(host) = &mut engine.posts {
             host.close();
         }
         engine.native.shutdown()?;
-        feed_result?;
+        post_result?;
         Ok(())
     });
     init_rx.await?.map_err(anyhow::Error::msg)?;
@@ -1117,6 +1338,40 @@ async fn main() -> Result<()> {
         origin: origin.clone(),
         host: address.to_string(),
         token,
+    });
+    let recovery = app.clone();
+    tokio::spawn(async move {
+        let pending = recovery.view.borrow().cleanup.clone();
+        for job in pending.into_iter().filter(|j| !j.detached) {
+            if let lifecycle::Target::Post { post_kind, id } = &job.target {
+                if post_kind == "own" {
+                    let exists = recovery
+                        .publishing
+                        .view
+                        .borrow()
+                        .posts
+                        .iter()
+                        .any(|p| &p.id == id);
+                    if exists {
+                        if let Err(error) = recovery
+                            .publishing
+                            .call(publishing::Command::RemovePost { id: id.clone() })
+                            .await
+                        {
+                            let _ =
+                                engine_call(&recovery, Command::FailCleanup { job: job.id, error })
+                                    .await;
+                            continue;
+                        }
+                    }
+                }
+            }
+            if let Err(error) =
+                engine_call(&recovery, Command::FinishPostDelete { job: job.id }).await
+            {
+                let _ = engine_call(&recovery, Command::FailCleanup { job: job.id, error }).await;
+            }
+        }
     });
     let router = Router::new()
         .route("/", get(index))
@@ -1135,9 +1390,7 @@ async fn main() -> Result<()> {
         .with_state(app);
     println!("FeedTorrent {origin}/");
     if !Args::parse().no_open {
-        let _ = std::process::Command::new("/usr/bin/open")
-            .arg(format!("{origin}/"))
-            .spawn();
+        let _ = desktop::open_browser(&format!("{origin}/"));
     }
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
@@ -1172,7 +1425,7 @@ mod tests {
     fn default_and_one_time_registry_migration() {
         let home = Path::new("/fixture-home");
         let mut store = default_store();
-        assert_eq!(store.version, 3);
+        assert_eq!(store.version, 4);
         assert_eq!(store.settings.download_dir, "downloads");
         assert!(store.settings.seed_by_default);
         let legacy: Settings =
@@ -1188,7 +1441,7 @@ mod tests {
             seed: true,
             held: false,
             kind: String::new(),
-            feed: None,
+            post: None,
         });
         migrate_store(&mut store, home).unwrap();
         assert_eq!(store.settings.download_dir, "downloads");

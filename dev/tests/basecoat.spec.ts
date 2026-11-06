@@ -1,13 +1,14 @@
 import {expect, test} from '@playwright/test';
 import {join} from 'node:path';
-import {cleanup, startApp, temporary} from './helpers.mjs';
+import {cleanup, startApp, temporary,seed,retainForRemoval} from './helpers.mjs';
 
 test('native removal surface, inline failure, progress accessibility and mobile CSP', async ({page, browserName}) => {
-  const root = await temporary(); let app;
+  const root = await temporary(); let app,ref;
   try {
     app = await startApp(join(root, 'app'));
-    const id = 'a'.repeat(40);
-    await app.command({type:'add_magnet', uri:'magnet:?xt=urn:btih:'+id});
+    ref=await seed(join(root,'source'),[17001]);const id=ref.id;
+    await app.command({type:'add_magnet',uri:ref.magnet});
+    await retainForRemoval(app,id,ref.bytes);
     const errors: string[] = [], csp: string[] = [], external: string[] = [];
     const nativeSelectWarnings: string[] = [];
     if (browserName === 'webkit') {
@@ -19,13 +20,17 @@ test('native removal surface, inline failure, progress accessibility and mobile 
       try {
         const response = await page.request.get(app.url);
         const policy = response.headers()['content-security-policy'];
-        const metaPolicy = (await response.text()).match(/http-equiv="Content-Security-Policy"\s+content="([^"]+)"/)![1];
+        const html = await response.text();
+        const metaPolicy = html.match(/http-equiv="Content-Security-Policy"\s+content="([^"]+)"/)![1];
+        // Reproduce the same native control count, including the two new Move
+        // selects. Any additional application violation still fails below.
+        const selectCount = (html.match(/<select\b/g) || []).length;
         const messages: string[] = [];
         control.on('console', m => {if (/content security|refused to/i.test(m.text())) messages.push(m.text());});
         const url = app.url + '/native-select-csp-control';
         await control.route(url, route => route.fulfill({contentType:'text/html',
           headers:{'Content-Security-Policy':policy},
-          body:`<!doctype html><meta http-equiv="Content-Security-Policy" content="${metaPolicy}"><select><option>Native</option></select>`}));
+          body:`<!doctype html><meta http-equiv="Content-Security-Policy" content="${metaPolicy}">${'<select><option>Native</option></select>'.repeat(selectCount)}`}));
         const settle = () => control.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
         await control.goto(url);await settle();
         nativeSelectWarnings.push(...messages);
@@ -44,7 +49,7 @@ test('native removal surface, inline failure, progress accessibility and mobile 
     await expect(progress).toHaveAttribute('aria-valuenow','0');
     await expect(progress).toHaveAccessibleName(/download progress/);
     await row.locator('.transfer-name').click();
-    await page.locator('#torrent-remove').click();
+    await page.locator('#torrent-more').click();await page.locator('#torrent-remove').click();
     const dialog = page.locator('#remove-dialog'), surface = dialog.locator(':scope > .dialog-surface');
     await page.route('**/api/commands', async route => {
       if (route.request().postDataJSON()?.type === 'remove') await route.fulfill({status:503,json:{error:'Removal refused by test'}});
@@ -57,7 +62,7 @@ test('native removal surface, inline failure, progress accessibility and mobile 
     await expect(page.locator('#delete-files')).toBeChecked();
     await page.unroute('**/api/commands');
     await page.keyboard.press('Escape');
-    await page.locator('#torrent-remove').click();
+    await page.locator('#torrent-more').click();await page.locator('#torrent-remove').click();
     await expect(page.locator('#delete-files')).not.toBeChecked();
     await expect(page.locator('#remove-error')).toBeEmpty();
     const bounds = (await surface.boundingBox())!;
@@ -73,26 +78,28 @@ test('native removal surface, inline failure, progress accessibility and mobile 
     for (const asset of ['basecoat.css','basecoat-runtime.js','basecoat-tabs.js','basecoat-sidebar.js'])
       expect((await page.request.get(app.url+'/'+asset)).status()).toBe(200);
     expect(errors).toEqual([]);expect(csp).toEqual(nativeSelectWarnings);expect(external).toEqual([]);
-  } finally {await cleanup(root, app);}
+  } finally {await cleanup(root, app,ref);}
 });
 
-test('feed field errors, native nested key forms, secret cleanup and breadcrumb navigation', async ({page}) => {
+test('post field errors, native nested key forms, secret cleanup and breadcrumb navigation', async ({page}) => {
   const root = await temporary();let app;
   try {
     app = await startApp(join(root,'app'));
     await page.goto(app.url);
     await expect(page.locator('#follow-open')).toBeEnabled();
-    await page.locator('#follow-open').click();
-    await page.locator('#feed-limit').fill('0');
-    await page.locator('#feed-submit').click();
-    await expect(page.locator('#feed-limit')).toHaveAttribute('aria-invalid','true');
-    await expect(page.locator('#feed-limit')).toHaveAttribute('aria-describedby',/follow-error/);
-    await page.locator('#feed-unlimited').check();
-    await expect(page.locator('#feed-limit')).toBeDisabled();
-    await expect(page.locator('#feed-limit')).not.toHaveAttribute('aria-invalid','true');
-    await page.locator('#feed-dialog [data-close]').click();
-    await page.locator('#own-create').click();
-    await page.locator('#own-create-title').fill('Integration feed');
+    await page.locator('#post-add').click();
+      await page.locator('#follow-open').click();
+    await page.locator('#post-limit').fill('0');
+    await page.locator('#post-submit').click();
+    await expect(page.locator('#post-limit')).toHaveAttribute('aria-invalid','true');
+    await expect(page.locator('#post-limit')).toHaveAttribute('aria-describedby',/follow-error/);
+    await page.locator('#post-unlimited').check();
+    await expect(page.locator('#post-limit')).toBeDisabled();
+    await expect(page.locator('#post-limit')).not.toHaveAttribute('aria-invalid','true');
+    await page.locator('#post-dialog [data-close]').click();
+    await page.locator('#post-add').click();
+      await page.locator('#own-create').click();
+    await page.locator('#own-create-title').fill('Integration post');
     const password = 'native UI integration passphrase';
     await page.locator('#own-key-password').fill(password);
     await page.locator('#own-key-confirm').fill('different passphrase');
@@ -106,8 +113,8 @@ test('feed field errors, native nested key forms, secret cleanup and breadcrumb 
     await page.locator('#own-new-page').click();
     await page.locator('#own-title').fill('Child page');
     await expect(page.locator('#own-breadcrumb [aria-current=page]')).toHaveText('Child page');
-    await page.locator('#own-breadcrumb').getByRole('button',{name:'Integration feed',exact:true}).click();
-    await expect(page.locator('#own-title')).toHaveValue('Integration feed');
+    await page.locator('#own-breadcrumb').getByRole('button',{name:'Integration post',exact:true}).click();
+    await expect(page.locator('#own-title')).toHaveValue('Integration post');
     await page.locator('#settings-open').click();
     await page.locator('#publishing-keys-open').click();
     await page.setViewportSize({width:320,height:740});
@@ -122,7 +129,7 @@ test('feed field errors, native nested key forms, secret cleanup and breadcrumb 
     await expect(page.locator('#own-password-error')).toContainText('Passwords do not match');
     await expect(page.locator('#own-confirm-password')).toHaveAttribute('aria-invalid','true');
     await expect(page.locator('#own-old-password')).toHaveValue('');
-    await expect.poll(async () => (await app.api()).publishing.feeds.length).toBe(1);
+    await expect.poll(async () => (await app.api()).publishing.posts.length).toBe(1);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     await page.keyboard.press('Escape');await expect(keys).toBeHidden();await expect(page.locator('#settings-dialog')).toBeVisible();
     await page.keyboard.press('Escape');await expect(page.locator('#settings-dialog')).toBeHidden();

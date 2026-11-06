@@ -24,10 +24,9 @@ try {
   app = await startApp(root, [], { cwd: a, defaultDownloads: true });
   assert.equal((await app.api()).settings.download_dir, "downloads");
   await app.command({ type: "add_magnet", uri: `  ${id.toUpperCase()}\n` });
-  await assert.rejects(
-    () => app.command({ type: "add_magnet", uri: base32.toLowerCase() }),
-    /already exists/,
-  );
+  await app.command({type:'add_magnet',uri:base32.toLowerCase()});
+  assert.equal((await app.api()).transfers.length,1);
+  assert.equal((await app.api()).transfers[0].pinned,true);
   assert.equal(
     await readFile(join(root, "state", id + ".source"), "utf8"),
     `magnet:?xt=urn:btih:${id}`,
@@ -80,7 +79,7 @@ try {
   assert.equal((await app.api()).settings.download_dir, "downloads");
   assert.equal(
     (await readJson(join(legacy, "state/transfers.json"))).version,
-    3,
+    4,
   );
   await app.stop();
   app = undefined;
@@ -105,6 +104,8 @@ try {
   const sandbox = join(root, "clean");
   await mkdir(sandbox);
   await cp(join(repo, "Makefile"), join(sandbox, "Makefile"));
+  await mkdir(join(sandbox, "dev"));
+  await cp(join(repo, "dev/build.mk"), join(sandbox, "dev/build.mk"));
   for (const p of [
     "downloads",
     "web/dist",

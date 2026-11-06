@@ -11,11 +11,11 @@ pub(super) fn export(dir: &Path, lib: &Library, full: bool) -> Result<PathBuf> {
         bail!("No publishing key to export")
     }
     let mut library = lib.clone();
-    for f in library.feeds.values_mut() {
+    for f in library.posts.values_mut() {
         f.pending = None;
     }
     if !full {
-        for f in library.feeds.values_mut() {
+        for f in library.posts.values_mut() {
             f.draft = Draft::new(f.title.clone());
             f.pages.clear();
             f.history.clear();
@@ -49,7 +49,7 @@ pub(super) fn export(dir: &Path, lib: &Library, full: bool) -> Result<PathBuf> {
         let mut total = data.len();
         if full {
             let hashes: BTreeSet<_> = lib
-                .feeds
+                .posts
                 .values()
                 .flat_map(|f| f.history.iter().chain(f.pages.values().map(|p| &p.hash)))
                 .collect();
@@ -146,7 +146,7 @@ pub(super) fn import(
         if hex(&f.infohash()) != hash {
             bail!("Backup catalog identity mismatch")
         };
-        feedtorrent_feeds::publishing::verify_payload(&pack.metainfo, &pack.files)?;
+        feedtorrent_posts::publishing::verify_payload(&pack.metainfo, &pack.files)?;
         let path = package_path(dir, hash)?;
         if path.exists() && read(&path)? != *data {
             bail!("Backup conflicts with an existing catalog")
@@ -156,10 +156,10 @@ pub(super) fn import(
     if candidate.vault.is_none() {
         candidate.vault = manifest.library.vault.clone()
     }
-    for (id, mut f) in manifest.library.feeds {
-        if let Some(existing) = candidate.feeds.get(&id) {
+    for (id, mut f) in manifest.library.posts {
+        if let Some(existing) = candidate.posts.get(&id) {
             if serde_json::to_vec(existing)? != serde_json::to_vec(&f)? {
-                bail!("Backup conflicts with an existing feed or draft")
+                bail!("Backup conflicts with an existing post or draft")
             };
             continue;
         }
@@ -174,7 +174,7 @@ pub(super) fn import(
         f.active = false;
         f.state = "Restored; publishing disabled".into();
         f.error.clear();
-        candidate.feeds.insert(id, f);
+        candidate.posts.insert(id, f);
     }
     validate(&candidate)?;
     // Commit immutable packages only after validating the entire archive. They

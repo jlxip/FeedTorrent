@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdir, readFile, rm, stat, utimes, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 
-import {feedFixture, magnet} from './feed-fixtures.mjs';
+import {postFixture, magnet} from './post-fixtures.mjs';
 import {cleanup, hash, startApp, temporary, wait} from './helpers.mjs';
 
 const report = {
@@ -17,12 +17,12 @@ let app, fx;
 const root = await temporary();
 const config = (mode = 'current_catalog', automatic_limit = 8 * 1024 * 1024) =>
     ({name: 'Reading list', mode, automatic_limit});
-const feed = async () => (await app.api()).feeds.find(f => f.id === fx.feedId);
+const post = async () => (await app.api()).posts.find(f => f.id === fx.postId);
 const indexed = async (catalog) => wait(async () => {
   let p;
   try {
     p = await app.command(
-        {type: 'catalog_page', feed: fx.feedId, catalog: catalog.id, offset: 0})
+        {type: 'catalog_page', post: fx.postId, catalog: catalog.id, offset: 0})
   } catch (e) {
     if (/Catalog not found/.test(e.message)) return false;
     throw e
@@ -31,18 +31,18 @@ const indexed = async (catalog) => wait(async () => {
       p.entries.every(e => e.kind !== 'pending' || e.error) && p
 }, 'indexed catalog');
 try {
-  fx = await feedFixture(root);
+  fx = await postFixture(root);
   const args = ['--dht-bootstrap', fx.bootstrap];
   app = await startApp(join(root, 'app'), args);
   assert.equal(
-      (await app.command({type: 'inspect_source', uri: fx.feedMagnet})).kind, 'feed');
+      (await app.command({type: 'inspect_source', uri: fx.postMagnet})).kind, 'post');
   await app.command(
-      {type: 'follow_feed', uri: fx.feedMagnet, config: config('current_catalog', 1)});
+      {type: 'follow_post', uri: fx.postMagnet, config: config('current_catalog', 1)});
   let t = await wait(
       async () => (await app.api())
                       .transfers.find(
                           t => t.id === fx.head.id && t.state === 'Awaiting approval'),
-      'DHT feed resolution/metadata');
+      'DHT post resolution/metadata');
   assert.equal(t.verified, 0);
   assert(t.held);
   assert.equal(fx.head.requests, 0);
@@ -80,7 +80,7 @@ try {
       'per-transfer disk-path failure recovers through Resume without releasing the metadata hold');
   await app.command({type: 'approve_transfer', id: t.id});
   let page = await indexed(fx.head);
-  assert.equal((await feed()).automatic_limit, 1);
+  assert.equal((await post()).automatic_limit, 1);
   assert.equal(page.entries[0].kind, 'torrent');
   assert.equal(page.entries[1].kind, 'file');
   assert.equal(page.entries[2].kind, 'file');
@@ -95,7 +95,7 @@ try {
   pass(
       'Download once preserves cap; current catalog indexes exact embedded torrents, opaque and empty items without fetching content');
   await app.command(
-      {type: 'configure_feed', id: fx.feedId, config: config('mirror_all', 1)});
+      {type: 'configure_post', id: fx.postId, config: config('mirror_all', 1)});
   t = await wait(
       async () => (await app.api())
                       .transfers.find(
@@ -103,10 +103,10 @@ try {
       'Mirror content size gate');
   assert.equal(fx.contentRequests, 0);
   await wait(
-      async () => (await feed()).mirror_status === 'Incomplete',
+      async () => (await post()).mirror_status === 'Incomplete',
       'mirror approval status');
   await app.command(
-      {type: 'download_entry', feed: fx.feedId, catalog: fx.head.id, index: 0});
+      {type: 'download_entry', post: fx.postId, catalog: fx.head.id, index: 0});
   await wait(
       async () => (await app.api())
                       .transfers.some(t => t.id === fx.content.id && t.progress === 1),
@@ -117,10 +117,11 @@ try {
         hash(await readFile(join(content.save_path, 'source', `file-${i}.bin`))),
         hash(fx.content.originals[i]));
   await app.command({type: 'pause', id: fx.content.id});
-  await app.command({type: 'refresh_feed', id: fx.feedId});
+  await app.command({type: 'refresh_post', id: fx.postId});
   assert.equal(
       (await app.api()).transfers.find(t => t.id === fx.content.id).state, 'Paused');
-  await app.command({type: 'remove', id: fx.content.id, delete_files: false});
+  const removal=await app.command({type:'preview_removal',target:{kind:'torrent',id:fx.content.id,delete_files:false}});
+  await app.command({type:'remove',id:fx.content.id,delete_files:false,revision:removal.revision});
   await app.stop();
   app = await startApp(join(root, 'app'), args);
   await indexed(fx.head);
@@ -144,11 +145,11 @@ try {
       {prev: magnet(fx.head.id), 'archive next': magnet(history.id)});
   await fx.publish(next);
   await app.command(
-      {type: 'configure_feed', id: fx.feedId, config: config('mirror_catalogs', null)});
-  await app.command({type: 'refresh_feed', id: fx.feedId});
+      {type: 'configure_post', id: fx.postId, config: config('mirror_catalogs', null)});
+  await app.command({type: 'refresh_post', id: fx.postId});
   page = await indexed(next);
   await indexed(history);
-  assert.equal(page.entries[0].kind, 'external_feed');
+  assert.equal(page.entries[0].kind, 'external_post');
   assert.equal(external.requests, 0);
   assert(!(await app.api()).transfers.some(t => t.id === external.id));
   assert((await app.api()).transfers.some(t => t.id === fx.head.id));
@@ -161,7 +162,7 @@ try {
   const pushed = await fx.publish(live, 3);
   await fx.push(await app.api(), pushed);
   await indexed(live);
-  await wait(async () => (await feed()).update_peers > 0, 'live update contact');
+  await wait(async () => (await post()).update_peers > 0, 'live update contact');
   assert((await app.api()).transfers.some(t => t.id === next.id));
   pass(
       'independent Node BEP50 discovery delivers a signed live revision without Refresh, retaining previous catalogs');
@@ -186,15 +187,15 @@ try {
   await indexed(live);
   pass(
       'durable original metadata restores an offline catalog without resume data or its publisher');
-  const absent = fx.feedMagnet.replace(/&s=.*$/, '&s=001122');
+  const absent = fx.postMagnet.replace(/&s=.*$/, '&s=001122');
   const absentId = (await app.command({type: 'inspect_source', uri: absent})).id;
-  await app.command({type: 'follow_feed', uri: absent, config: config()});
+  await app.command({type: 'follow_post', uri: absent, config: config()});
   await wait(
       async () => (await app.api())
-                      .feeds.find(f => f.id === absentId)
+                      .posts.find(f => f.id === absentId)
                       ?.error.includes('Waiting for a published catalog'),
       'publisher absent');
-  await app.command({type: 'unfollow_feed', id: absentId});
+  await app.deletePost('followed',absentId);
   const auxiliary = await fx.catalog(
       'Bad auxiliary hash',
       [
@@ -207,7 +208,7 @@ try {
       ],
       {prev: magnet(live.id)});
   await fx.publish(auxiliary, 4);
-  await app.command({type: 'refresh_feed', id: fx.feedId});
+  await app.command({type: 'refresh_post', id: fx.postId});
   const invalid = await indexed(auxiliary);
   assert.match(invalid.entries[0].error, /SHA-1 mismatch/);
   assert.equal(invalid.entries[1].kind, 'file');
@@ -215,27 +216,28 @@ try {
   pass(
       'absent publisher remains explicit; auxiliary corruption blocks one item without blocking other branches');
   await fx.publish(auxiliary, 99, Buffer.from('incompatible signed value'));
-  await app.command({type: 'refresh_feed', id: fx.feedId});
-  await wait(async () => (await feed()).sequence === '99', 'incompatible highwater');
-  assert.equal((await feed()).available, auxiliary.id);
-  assert.match((await feed()).error, /Unsupported/);
+  await app.command({type: 'refresh_post', id: fx.postId});
+  await wait(async () => (await post()).sequence === '99', 'incompatible highwater');
+  assert.equal((await post()).available, auxiliary.id);
+  assert.match((await post()).error, /Unsupported/);
   await app.stop();
   app = await startApp(join(root, 'app'), args);
   await indexed(auxiliary);
-  assert.equal((await feed()).sequence, '99');
-  await app.command({type: 'unfollow_feed', id: fx.feedId});
-  assert.equal((await app.api()).feeds.length, 0);
-  assert((await app.api()).transfers.length >= 3);
+  assert.equal((await post()).sequence, '99');
+  await app.deletePost('followed',fx.postId);
+  assert.equal((await app.api()).posts.length, 0);
+  await wait(async()=>!(await app.api()).cleanup.length,'post cleanup');
+  assert.equal((await app.api()).transfers.length,0);
   pass(
-      'incompatible signed highwater is durable; readable catalog retained; Unfollow preserves all authorized downloads');
+      'incompatible signed highwater is durable; readable catalog retained; Delete post collects its exclusively owned downloads');
   const state = join(root, 'app/state/feeds.json');
   await writeFile(state, 'corrupt current');
   await app.stop();
   app = await startApp(join(root, 'app'), args);
   await wait(async () => (await app.api()).ready, 'restore');
-  assert.match((await app.api()).feed_error, /recovered previous checkpoint/);
+  assert.match((await app.api()).post_error, /recovered previous checkpoint/);
   assert.equal(
-      (await app.api()).feeds.length, 0,
+      (await app.api()).posts.length, 0,
       'checkpoint recovery must preserve the completed Unfollow');
   pass('corrupt checkpoint recovers verified previous state and reports recovery');
   report.status = 'pass';
@@ -255,6 +257,6 @@ try {
   if (app) await app.stop();
   if (fx) await fx.stop();
   await mkdir('.runtime/evidence', {recursive: true});
-  await writeFile('.runtime/evidence/feeds.json', JSON.stringify(report, null, 2) + '\n');
+  await writeFile('.runtime/evidence/posts.json', JSON.stringify(report, null, 2) + '\n');
   await cleanup(root);
 }

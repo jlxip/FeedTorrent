@@ -11,8 +11,19 @@ pub async fn command(
 ) -> Response {
     let Json(command) = match payload {
         Ok(c) => c,
-        Err(_) => return api_error(StatusCode::BAD_REQUEST, "Invalid publishing request"),
+        Err(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "Invalid publishing request; reload FeedTorrent to update this client",
+            )
+        }
     };
+    if matches!(command, Command::RemovePost { .. }) {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "Reload FeedTorrent and use Delete post with a deletion preview",
+        );
+    }
     match app.publishing.call(command).await {
         Ok(value) => Json(value).into_response(),
         Err(e) => api_error(StatusCode::BAD_REQUEST, e),

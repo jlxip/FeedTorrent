@@ -13,7 +13,7 @@ async function fixture(page, count=6) {
     state:states[i%6],error:i%6===5?'Storage unavailable (EACCES)':'',warning:'',active:i%6!==2,
     verified:i%6===1||i%6===3?4294967296:1460288881,total:4294967296,progress:i%6===1||i%6===3?1:.34,
     down:2516582,up:86016,peers:12,save_path:'/Downloads/Archive',held:i%6===4,approval_size:null,
-    kind:i===1?'catalog':'',feed:null,
+    kind:i===1?'catalog':'',post:null,
     files:[{name:'archive/data.bin',length:4294967296,verified:1460288881,ready:false},{name:'archive/notes.txt',length:1200,verified:1200,ready:true}],
   }));
   const commands:any[]=[];let refuse=false;
@@ -23,7 +23,9 @@ async function fixture(page, count=6) {
   });
   await page.route('**/api/snapshot',route=>route.fulfill({json:snapshot}));
   await page.route('**/api/commands',async route=>{
-    const c=route.request().postDataJSON();commands.push(c);
+    const c=route.request().postDataJSON();if(c.type!=='read_content')commands.push(c);
+    if(c.type==='read_content'){const t=snapshot.transfers.find(t=>t.id===c.id);if(!t){await route.fulfill({status:400,json:{error:'Torrent unavailable'}});return;}await route.fulfill({json:{id:t.id,name:t.name,total:t.files.length?t.total:null,kind:'torrent',files:t.files.map((f,index)=>({...f,index})),entries:[],count:0,offset:0,body:null,body_state:t.files.length?'absent':'metadata',body_error:'',error:''}});return;}
+    if(c.type==='preview_removal'){await route.fulfill({json:{revision:'fixture-1',target:c.target,deleting:[c.target.id],shared:[],protected:[],bytes:4294967296,names:[],shared_names:[],protected_names:[],used_by:[]}});return;}
     if(c.type==='remove'&&refuse){await route.fulfill({status:503,json:{error:'Removal refused by fixture'}});return;}
     const t=snapshot.transfers.find(t=>t.id===c.id);
     if(c.type==='remove')snapshot.transfers=snapshot.transfers.filter(t=>t.id!==c.id);
@@ -74,7 +76,7 @@ test('catalogue and compact live tooltip, responsive themes and torrent states',
       await expect(page.locator('#torrent-heading')).toHaveText(t.name);
       await expect(page.locator('#library-detail .state')).toHaveText(t.state);
       await expect(page.locator('#torrent-approve')).toBeVisible({visible:t.held});
-      if(t.error)await expect(page.locator('#torrent-detail-error')).toContainText(t.error);
+      if(t.error)await expect(page.locator('#torrent-error')).toContainText(t.error);
       expect(await page.locator('#transfers-nav').getAttribute('aria-current')).toBe('page');
       await page.locator('#library-back').click();await expect(page).toHaveURL(/#\/library$/);
     }
@@ -87,8 +89,8 @@ test('catalogue and compact live tooltip, responsive themes and torrent states',
       await page.screenshot({path:info.outputPath(`detail-${width}-${theme}.png`),animations:'disabled'});
     }
     await page.evaluate(()=>{(window as any).__libraryEvents.onerror();});
-    await expect(page.locator('#library-detail .rates')).toHaveText('Server disconnected');
-    await expect(page.locator('#torrent-toggle')).toBeDisabled();await expect(page.locator('#torrent-remove')).toBeDisabled();
+    await expect(page.locator('#library-detail .content-totals .state')).toHaveText('Server disconnected');
+    await expect(page.locator('#torrent-toggle')).toBeDisabled();await expect(page.locator('#torrent-more')).toBeDisabled();
     await page.locator('#library-back').click();await help.click();
     await expect(tip).toContainText('Server disconnected');await expect(tip).not.toContainText('/s');
     expect(errors).toEqual([]);console.log(info.project.name,browser.version());
@@ -111,6 +113,7 @@ test('catalogue scroll and focus survive Back, Forward, reload and direct detail
     const direct=await context.newPage();
     await direct.addInitScript(()=>{class Events extends EventTarget{};(window as any).EventSource=Events;});
     await direct.route('**/api/snapshot',r=>r.fulfill({json:f.snapshot}));
+    await direct.route('**/api/commands',r=>{const c=r.request().postDataJSON();const t=f.snapshot.transfers.find(t=>t.id===c.id);return r.fulfill({json:{id:t.id,name:t.name,total:t.total,kind:'torrent',files:t.files.map((f,index)=>({...f,index})),entries:[],count:0,offset:0,body:null,body_state:'absent',body_error:'',error:''}});});
     await direct.goto(f.app.url+'/#/library/'+t.id);await expect(direct.locator('#torrent-heading')).toHaveText(t.name);
     await direct.locator('#library-back').click();await expect(direct).toHaveURL(/#\/library$/);await direct.close();
     await page.goto(f.app.url+'/#/library/not-registered');
@@ -126,15 +129,15 @@ test('detail retains commands, approval, file availability, removal failure and 
     const t=f.snapshot.transfers[4];await page.goto(f.app.url+'/#/library/'+t.id);
     await expect(page.locator('#torrent-approve')).toBeVisible();await page.locator('#torrent-approve').click();
     await expect(page.locator('#torrent-approve')).toBeHidden();expect(f.commands.at(-1)).toMatchObject({type:'approve_transfer',id:t.id});
-    await page.locator('#torrent-toggle').click();await expect(page.locator('#torrent-toggle')).toHaveText('Resume');
-    await page.locator('#torrent-toggle').click();await expect(page.locator('#torrent-toggle')).toHaveText('Pause');
-    const files=page.locator('#files .file');await expect(files).toHaveCount(2);
+    await page.locator('#torrent-toggle').click();await expect(page.locator('#torrent-toggle')).toHaveAccessibleName('Resume');
+    await page.locator('#torrent-toggle').click();await expect(page.locator('#torrent-toggle')).toHaveAccessibleName('Pause');
+    const files=page.locator('#library-reader .reader-row');await expect(files).toHaveCount(2);
     await expect(files.first().getByRole('button')).toBeDisabled();await expect(files.last().getByRole('button')).toBeEnabled();
     await files.last().getByRole('button').click();expect(f.commands.at(-1)).toMatchObject({type:'reveal',id:t.id,file:1});
-    await page.locator('#show-folder').click();expect(f.commands.at(-1)).toMatchObject({type:'reveal',id:t.id,file:null});
+    await expect(page.locator('#torrent-more')).toBeEnabled();await page.locator('#torrent-more').focus();await page.locator('#torrent-more').press('ArrowDown');await expect(page.locator('#torrent-more')).toHaveAttribute('aria-activedescendant','torrent-folder');t.peers++;await f.publish();await expect(page.locator('#torrent-more')).toBeFocused();await expect(page.locator('#torrent-more')).toHaveAttribute('aria-activedescendant','torrent-folder');await expect(page.locator('#torrent-menu')).toBeVisible();await page.locator('#torrent-folder').click();expect(f.commands.at(-1)).toMatchObject({type:'reveal',id:t.id,file:null});await expect(page.locator('#torrent-menu')).toBeHidden();await expect(page.locator('#torrent-more')).toBeFocused();
     // Updates preserve the actual focused file control.
     await files.last().getByRole('button').focus();t.files[0].verified++;await f.publish();await expect(files.last().getByRole('button')).toBeFocused();
-    f.refuse(true);await page.locator('#torrent-remove').click();await page.locator('#delete-files').check();
+    f.refuse(true);await page.locator('#torrent-more').click();await page.locator('#torrent-remove').click();await page.locator('#delete-files').check();
     await page.locator('#remove-form button[type=submit]').click();await expect(page.locator('#remove-error')).toContainText('Removal refused');
     await expect(page.locator('#delete-files')).toBeChecked();await expect(page).toHaveURL(new RegExp('#/library/'+t.id+'$'));
     f.refuse(false);await page.locator('#remove-form button[type=submit]').click();await expect(page).toHaveURL(/#\/library$/);
@@ -142,7 +145,7 @@ test('detail retains commands, approval, file availability, removal failure and 
     await expect(page.locator('#remove-dialog')).toBeHidden();await expect(page.locator(`[data-id="${t.id}"]`)).toHaveCount(0);
     const unknown=f.snapshot.transfers[0];unknown.files=[];unknown.total=0;
     await f.publish();await page.locator(`[data-id="${unknown.id}"] .transfer-name`).click();
-    await expect(page.locator('#files-waiting')).toBeVisible();await expect(page.locator('#files .file')).toHaveCount(0);
+    await expect(page.locator('#library-reader .content-status')).toBeVisible();await expect(page.locator('#library-reader .reader-row')).toHaveCount(0);
     f.snapshot.transfers=f.snapshot.transfers.filter(t=>t.id!==unknown.id);await f.publish();
     await expect(page.locator('#torrent-heading')).toHaveText('Torrent unavailable');
     await expect(page.locator('#torrent-toggle')).toBeHidden();await expect(page.locator('#torrent-content')).toBeHidden();

@@ -18,7 +18,7 @@ fn record(h: [u8; 20], seq: i64) -> feedtorrent_bep::bep44::MutableRecord {
         .record()
         .clone()
 }
-fn acts(m: &mut FeedManager) -> Vec<Action> {
+fn acts(m: &mut PostManager) -> Vec<Action> {
     m.acknowledge_checkpoint();
     m.drain_actions()
 }
@@ -37,8 +37,8 @@ fn torrent() -> Vec<u8> {
     v.extend_from_slice(b"ee");
     v
 }
-fn setup(mode: Mode, limit: Option<u64>) -> (FeedManager, String) {
-    let mut m = FeedManager::new();
+fn setup(mode: Mode, limit: Option<u64>) -> (PostManager, String) {
+    let mut m = PostManager::new();
     let id = m
         .follow(
             &format_magnet(&key()),
@@ -53,7 +53,7 @@ fn setup(mode: Mode, limit: Option<u64>) -> (FeedManager, String) {
     acts(&mut m);
     (m, id)
 }
-fn stage(m: &mut FeedManager, id: &str, b: &BuiltFeed, seq: i64) -> WorkId {
+fn stage(m: &mut PostManager, id: &str, b: &BuiltFeed, seq: i64) -> WorkId {
     m.receive_record(id, record(b.feed.infohash(), seq), 1)
         .unwrap();
     assert!(m.drain_actions().is_empty());
@@ -68,7 +68,7 @@ fn stage(m: &mut FeedManager, id: &str, b: &BuiltFeed, seq: i64) -> WorkId {
         })
         .unwrap()
 }
-fn metadata(m: &mut FeedManager, w: WorkId, b: &BuiltFeed, authorized: bool) {
+fn metadata(m: &mut PostManager, w: WorkId, b: &BuiltFeed, authorized: bool) {
     m.metadata(
         w,
         Description {
@@ -81,7 +81,7 @@ fn metadata(m: &mut FeedManager, w: WorkId, b: &BuiltFeed, authorized: bool) {
     )
     .unwrap();
 }
-fn ready(m: &mut FeedManager, id: &str, b: &BuiltFeed) {
+fn ready(m: &mut PostManager, id: &str, b: &BuiltFeed) {
     let h = hex(&b.feed.infohash());
     m.transfer(&h, "Seeding".into(), true);
     m.tick(2);
@@ -137,7 +137,7 @@ fn download_once_does_not_change_limit_and_suppression_is_durable() {
     assert!(!acts(&mut m)
         .iter()
         .any(|a| matches!(a, Action::Stage { .. } | Action::Approve { .. })));
-    let mut r = FeedManager::restore(&m.checkpoint().unwrap()).unwrap();
+    let mut r = PostManager::restore(&m.checkpoint().unwrap()).unwrap();
     r.start(0);
     assert!(!acts(&mut r)
         .iter()
@@ -161,7 +161,7 @@ fn highwater_survives_incompatible_update_and_restore() {
     assert_eq!(m.views()[0].sequence.as_deref(), Some("9"));
     assert_eq!(m.views()[0].available, Some(hex(&b.feed.infohash())));
     assert!(m.receive_record(&id, record([3; 20], 8), 11).is_err());
-    let mut r = FeedManager::restore(&m.checkpoint().unwrap()).unwrap();
+    let mut r = PostManager::restore(&m.checkpoint().unwrap()).unwrap();
     r.start(0);
     assert!(r.receive_record(&id, record([3; 20], 8), 1).is_err());
     assert!(r.views()[0].error.contains("Unsupported"));
@@ -212,8 +212,8 @@ fn foreign_nested_catalog_is_visible_but_not_downloaded() {
         .iter()
         .any(|a| matches!(a, Action::Stage { .. } | Action::Approve { .. })));
     let page = m.page(&id, &hex(&b.feed.infohash()), 0).unwrap();
-    assert_eq!(page.entries[0].kind, "external_feed");
-    assert!(page.entries[0].feed_magnet.is_some());
+    assert_eq!(page.entries[0].kind, "external_post");
+    assert!(page.entries[0].post_magnet.is_some());
 }
 #[test]
 fn current_catalog_does_not_fetch_history_mirror_does() {
@@ -258,6 +258,8 @@ fn duplicate_names_preserve_original_indices_and_page_bound() {
     assert_eq!(page.total, 105);
     assert_ne!(page.entries[0].index, page.entries[1].index);
     assert_eq!(page.entries[0].name, page.entries[1].name);
+    assert!(!page.entries[0].source_name.is_empty());
+    assert_eq!(page.entries[0].source_name, page.entries[0].name);
     assert_eq!(
         m.page(&id, &hex(&b.feed.infohash()), 100)
             .unwrap()
@@ -385,8 +387,8 @@ fn corrupt_checkpoint_and_signature_rejected_unfollow_cancels_actions() {
     let (mut m, id) = setup(Mode::CurrentCatalog, None);
     m.receive_record(&id, record([1; 20], 1), 1).unwrap();
     let mut state: serde_json::Value = serde_json::from_slice(&m.checkpoint().unwrap()).unwrap();
-    state["feeds"][&id]["records"][0]["signature"][0] = serde_json::json!(0);
-    assert!(FeedManager::restore(&serde_json::to_vec(&state).unwrap()).is_err());
+    state["posts"][&id]["records"][0]["signature"][0] = serde_json::json!(0);
+    assert!(PostManager::restore(&serde_json::to_vec(&state).unwrap()).is_err());
     m.unfollow(&id).unwrap();
     assert!(!acts(&mut m).iter().any(|a| matches!(
         a,
@@ -615,7 +617,7 @@ fn restored_references_are_pending_and_require_fresh_parent_validation() {
     let bytes = m.checkpoint().unwrap();
     let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(raw["references"][&id][hex(&prev)].is_object());
-    let mut r = FeedManager::restore(&bytes).unwrap();
+    let mut r = PostManager::restore(&bytes).unwrap();
     r.start(0);
     let actions = acts(&mut r);
     assert!(!actions
@@ -698,7 +700,7 @@ fn invalid_manual_decisions_do_not_poison_the_checkpoint() {
     assert!(m.suppress("../not-a-hash").is_err());
     assert!(m.approve_once("no").is_err());
     assert_eq!(m.checkpoint().unwrap(), old);
-    assert!(FeedManager::restore(&old).is_ok());
+    assert!(PostManager::restore(&old).is_ok());
 }
 
 #[test]
@@ -788,7 +790,7 @@ fn news_tracks_observed_roots_not_signatures_and_survives_restart() {
     assert_eq!(page.entries[0].detected_ms, Some(800));
     assert_eq!(page.entries[1].detected_ms, Some(1000));
     assert!(page.entries[1].read);
-    let mut restored = FeedManager::restore(&m.checkpoint().unwrap()).unwrap();
+    let mut restored = PostManager::restore(&m.checkpoint().unwrap()).unwrap();
     restored.start(0);
     restored.observe_news(2000).unwrap();
     assert_eq!(restored.news_page(0, None).unwrap().total, 2);
@@ -814,7 +816,7 @@ fn news_migration_imports_only_current_and_validates_local_references() {
     let mut legacy: serde_json::Value = serde_json::from_slice(&m.checkpoint().unwrap()).unwrap();
     legacy["version"] = 1.into();
     legacy.as_object_mut().unwrap().remove("news");
-    let mut upgraded = FeedManager::restore(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let mut upgraded = PostManager::restore(&serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert!(upgraded.dirty());
     upgraded.observe_news(456).unwrap();
     let page = upgraded.news_page(0, None).unwrap();
@@ -824,8 +826,8 @@ fn news_migration_imports_only_current_and_validates_local_references() {
     let checkpoint = upgraded.checkpoint().unwrap();
     let mut state: serde_json::Value = serde_json::from_slice(&checkpoint).unwrap();
     state["news"]["entries"][0]["catalog"] = hex(&[99; 20]).into();
-    assert!(FeedManager::restore(&serde_json::to_vec(&state).unwrap()).is_err());
-    assert!(FeedManager::restore(&checkpoint).is_ok());
+    assert!(PostManager::restore(&serde_json::to_vec(&state).unwrap()).is_err());
+    assert!(PostManager::restore(&checkpoint).is_ok());
 }
 
 #[test]

@@ -1,5 +1,5 @@
 [package]
-name = "feedtorrent-feeds"
+name = "feedtorrent-posts"
 version.workspace = true
 edition.workspace = true
 [dependencies]

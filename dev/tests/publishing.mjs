@@ -1,4 +1,4 @@
-import { decryptAge, encryptAge } from "./age-fixture.mjs";
+import { decryptVault, encryptVault } from "./key-vault-fixture.mjs";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { readFile, writeFile, stat, mkdir } from "node:fs/promises";
@@ -61,8 +61,8 @@ try {
   resources.push(app);
   const pub = (command) => app.api("/api/publishing", command);
   await pub({ action: "create_key", password: pw, confirmation: pw });
-  const { id } = await pub({ action: "create_feed", title: "Field notes" });
-  let { draft, revision } = await pub({ action: "get_feed", id });
+  const { id } = await pub({ action: "create_post", title: "Field notes" });
+  let { draft, revision } = await pub({ action: "get_post", id });
   draft.pages[0].body =
     "# Field notes\n\n<script>bad()</script>\n\n![alt](https://no.invalid/a.svg)";
   draft.pages[0].entries.push({ kind: "page", page: 2 });
@@ -91,7 +91,7 @@ try {
   const own = await wait(
     async () => {
       const s = await app.api(),
-        f = s.publishing.feeds.find((f) => f.id === id);
+        f = s.publishing.posts.find((f) => f.id === id);
       if (f?.error) throw Error(f.error);
       return f?.state === "Published" && f;
     },
@@ -101,16 +101,16 @@ try {
   let saved = JSON.parse(
     await readFile(join(root, "publisher/state/publishing/library.json")),
   );
-  assert.equal(saved.feeds[id].record.sequence, 0);
-  assert.equal(saved.feeds[id].published_revision, initialRevision);
-  assert.equal(saved.feeds[id].revision, revision);
+  assert.equal(saved.posts[id].record.sequence, 0);
+  assert.equal(saved.posts[id].published_revision, initialRevision);
+  assert.equal(saved.posts[id].revision, revision);
   assert(initialRevision < revision);
   assert.equal(
     (await stat(join(root, "publisher/state/publishing/library.json"))).mode &
       0o777,
     0o600,
   );
-  const seedBytes = decryptAge(Buffer.from(saved.vault.ciphertext), pw);
+  const seedBytes = decryptVault(saved.vault, pw);
   const independentKey = createPublicKey(
     createPrivateKey({
       key: Buffer.concat([
@@ -125,9 +125,9 @@ try {
     .subarray(-32);
   assert.equal(independentKey.toString("hex"), saved.vault.public_key);
   pass(
-    "independent Node age decoder verifies scrypt, header MAC, payload authentication and Ed25519 identity",
+    "independent Node decoder verifies Argon2id, authenticated key envelope and Ed25519 identity",
   );
-  const signed = saved.feeds[id].record;
+  const signed = saved.posts[id].record;
   const salt = Buffer.from(signed.salt),
     pk = Buffer.from(signed.key),
     target = digest(Buffer.concat([pk, salt]));
@@ -185,7 +185,7 @@ try {
   reader = await startApp(join(root, "reader"), args);
   resources.push(reader);
   await reader.command({
-    type: "follow_feed",
+    type: "follow_post",
     uri: own.magnet,
     config: {
       name: "Independent reader",
@@ -195,15 +195,15 @@ try {
   });
   await wait(
     async () => {
-      const f = (await reader.api()).feeds[0];
+      const f = (await reader.api()).posts[0];
       return f?.catalogs.some((c) => c.id === hash && c.ready);
     },
-    "feed magnet -> metadata -> catalog",
+    "post magnet -> metadata -> catalog",
     90000,
   );
   const body = await reader.command({
     type: "read_catalog_body",
-    feed: id,
+    post: id,
     catalog: hash,
   });
   const rendered = JSON.stringify(body);
@@ -212,10 +212,10 @@ try {
   assert(!rendered.includes("no.invalid"));
   assert(!rendered.includes("password"));
   pass(
-    "second native instance resolves feed magnet, downloads catalog and returns inert Markdown",
+    "second native instance resolves post magnet, downloads catalog and returns inert Markdown",
   );
   await wait(
-    async () => (await reader.api()).feeds[0]?.update_peers > 0,
+    async () => (await reader.api()).posts[0]?.update_peers > 0,
     "own publisher BEP50 discovery",
     90000,
   );
@@ -224,16 +224,16 @@ try {
     .revision;
   await pub({ action: "publish", id, revision, password: pw });
   await wait(async () => {
-    const f = (await app.api()).publishing.feeds[0];
+    const f = (await app.api()).publishing.posts[0];
     if (f.error) throw Error(f.error);
     return f.state === "Published" && f.sequence === "1";
   }, "nested revision");
   saved = JSON.parse(
     await readFile(join(root, "publisher/state/publishing/library.json")),
   );
-  assert.equal(saved.feeds[id].history.length, 4);
+  assert.equal(saved.posts[id].history.length, 4);
   const next = Buffer.from(
-    bencode.decode(Buffer.from(saved.feeds[id].record.value)).ih,
+    bencode.decode(Buffer.from(saved.posts[id].record.value)).ih,
   ).toString("hex");
   assert.notEqual(next, hash);
   assert(
@@ -243,7 +243,7 @@ try {
   );
   await wait(
     async () => {
-      const f = (await reader.api()).feeds[0];
+      const f = (await reader.api()).posts[0];
       return f?.head === next && f.available === next;
     },
     "reader update",
@@ -254,7 +254,7 @@ try {
   );
   await pub({ action: "publish", id, revision, password: "wrong" });
   await wait(async () => {
-    const f = (await app.api()).publishing.feeds[0];
+    const f = (await app.api()).publishing.posts[0];
     return !f.operation && /password/i.test(f.error);
   }, "incorrect password");
   for (const full of [false, true]) {
@@ -281,13 +281,13 @@ try {
     });
     assert.equal(result.status, 200, await result.text());
     await wait(
-      async () => (await restored.api()).publishing.feeds.length === 1,
-      "restored feed",
+      async () => (await restored.api()).publishing.posts.length === 1,
+      "restored post",
     );
-    const f = (await restored.api()).publishing.feeds[0];
+    const f = (await restored.api()).publishing.posts[0];
     assert.equal(f.active, false);
     const restoredDraft = await restored.api("/api/publishing", {
-      action: "get_feed",
+      action: "get_post",
       id,
     });
     assert.equal(restoredDraft.draft.pages.length, full ? 2 : 1);
@@ -309,7 +309,7 @@ try {
     await readFile(join(root, "publisher/state/publishing/library.json")),
   );
   restoredLibrary.vault.ciphertext = Array.from(
-    encryptAge(seedBytes, "new test password"),
+    encryptVault(seedBytes, "new test password", restoredLibrary.vault.public_key),
   );
   seedBytes.fill(0);
   await writeFile(
@@ -324,7 +324,7 @@ try {
       "Paused",
     "durable own pause",
   );
-  const after = await app.api("/api/publishing", { action: "get_feed", id });
+  const after = await app.api("/api/publishing", { action: "get_post", id });
   assert.equal(after.draft.pages[1].body, draft.pages[1].body);
   await wait(
     async () =>
@@ -339,11 +339,11 @@ try {
     password: "new test password",
   });
   await wait(async () => {
-    const f = (await app.api()).publishing.feeds[0];
+    const f = (await app.api()).publishing.posts[0];
     return f.state === "Published" && f.sequence === "2";
-  }, "Rust decrypts independent Node age key");
+  }, "Rust decrypts independent Node Argon2id key");
   pass(
-    "independent Node age encryption is accepted by Rust; password change, durable drafts, restart, paused old seed and secret-free snapshots/logs",
+    "independent Node Argon2id encryption is accepted by Rust; password change, durable drafts, restart, paused old seed and secret-free snapshots/logs",
   );
   report.status = "passed";
 } finally {

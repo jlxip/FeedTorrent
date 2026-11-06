@@ -1,6 +1,8 @@
-import { markdown, type MarkdownNode } from "./markdown.js";
+import {ContentReader,ContentPage,torrentRoute,type ContentHost} from './content.js';
+import type {MarkdownNode} from "./markdown.js";
+import {ReaderHistory,type ReaderEntry} from "./reader.js";
 import type { Snapshot } from "./types.js";
-export interface OwnFeed {
+export interface OwnPost {
   id: string;
   title: string;
   magnet: string;
@@ -18,7 +20,7 @@ export interface OwnFeed {
 export interface PublishingState {
   has_key: boolean;
   public_key: string;
-  feeds: OwnFeed[];
+  posts: OwnPost[];
   error: string;
 }
 type Entry =
@@ -73,16 +75,31 @@ export class PublishingUI {
   private state: Snapshot | null = null;
   private connected = false;
   private sessions = new Map<string, Session>();
+  private removing=new Set<string>();
+  private epochs=new Map<string,number>();
   private id = "";
   private current = 0;
   private trail: number[] = [];
   private reading = false;
   private loading = "";
-  private nav = "";
+  private ownIdentity=$("own-heading").parentElement!;
+  private ownHeadingRow=this.ownIdentity.parentElement!;
+  private reader=new ContentReader($("own-preview"),'own-reader');
+  private content:ContentPage;
+  private position=new ReaderHistory($("own-preview"),'ownReader',$("own-heading"));
+  private readRoute='';
+  private torrentIds=new WeakMap<number[],string>();
+  private metadataKey='';
+  private bodyCache=new Map<string,MarkdownNode>();
+  private bodyRequest='';
+  private adding=new Set<number[]>();
   constructor(
     private link: (uri: string) => void,
-    private addTorrent: (data: number[]) => Promise<void>,
+    private addTorrent: (data: number[],id:string,post:string) => Promise<void>,
+    private transfer:(id:string)=>void,
+    private host:ContentHost,
   ) {
+    this.content=new ContentPage(this.reader,host);
     $("own-create").onclick = () => {
       $("own-key-fields").hidden = !!this.state?.publishing.has_key;
       $("own-create-error").textContent = "";
@@ -102,7 +119,7 @@ export class PublishingUI {
             confirmation: $<HTMLInputElement>("own-key-confirm").value,
           });
         const result = await api({
-          action: "create_feed",
+          action: "create_post",
           title: $<HTMLInputElement>("own-create-title").value,
         });
         $<HTMLFormElement>("own-create-form").reset();
@@ -169,13 +186,12 @@ export class PublishingUI {
       }
     };
     $("own-toggle").onclick = () => {
-      this.reading = !this.reading;
-      this.draw();
+      location.hash=this.reading?`#/own/${this.id}`:this.readHref(this.current);
     };
     $("own-copy").onclick = async () => {
       try {
-        await navigator.clipboard.writeText(this.feed()?.magnet || "");
-        $("own-status").textContent = "Feed magnet copied";
+        await navigator.clipboard.writeText(this.post()?.magnet || "");
+        $("own-status").textContent = "Post magnet copied";
       } catch (e) {
         this.error(e);
       }
@@ -207,13 +223,13 @@ export class PublishingUI {
           revision: s.revision,
           password: $<HTMLInputElement>("own-publish-password").value,
         });
-        const feed = this.feed();
-        if (feed) {
-          feed.operation = result.operation;
-          feed.pending_revision = s.revision;
-          feed.phase = "Queued";
-          feed.state = "Queued";
-          feed.error = "";
+        const post = this.post();
+        if (post) {
+          post.operation = result.operation;
+          post.pending_revision = s.revision;
+          post.phase = "Queued";
+          post.state = "Queued";
+          post.error = "";
           this.render(this.state, this.connected);
         }
         $<HTMLDialogElement>("own-publish-dialog").close();
@@ -261,8 +277,13 @@ export class PublishingUI {
         this.clearSecrets("publishing-keys-dialog");
       }
     };
+    let changingPassword=false;
     $("own-password-form").onsubmit = async (e) => {
       e.preventDefault();
+      if(changingPassword)return;changingPassword=true;
+      const submit=$("own-password-form").querySelector<HTMLButtonElement>("button")!;submit.disabled=true;
+      $("own-password-error").textContent="";$("own-keys-status").textContent="";
+      for(const input of $("own-password-form").querySelectorAll("[aria-invalid]"))input.removeAttribute("aria-invalid");
       try {
         await api({
           action: "change_password",
@@ -277,6 +298,7 @@ export class PublishingUI {
         if (/confirm|match/i.test(String(e)) && $<HTMLInputElement>("own-new-password").value !== $<HTMLInputElement>("own-confirm-password").value) $("own-confirm-password").setAttribute("aria-invalid", "true");
       } finally {
         this.clearSecrets("publishing-keys-dialog");
+        changingPassword=false;submit.disabled=false;
       }
     };
     for (const id of [
@@ -292,14 +314,40 @@ export class PublishingUI {
       this.render(this.state, this.connected);
     });
   }
+  private forget(id:string){
+    const session=this.sessions.get(id);if(session?.timer)clearTimeout(session.timer);
+    this.sessions.delete(id);this.epochs.set(id,(this.epochs.get(id)||0)+1);
+    if(this.loading===id)this.loading='';
+  }
+  async removePost(id:string,remove:()=>Promise<unknown>){
+    if(!this.connected||!this.state?.ready)throw Error('Server disconnected');
+    if(this.removing.has(id))throw Error('Post removal already running');
+    this.removing.add(id);
+    const session=this.sessions.get(id);if(session?.timer){clearTimeout(session.timer);session.timer=null;}
+    if(this.id===id)$('own-view').inert=true;
+    let removed=false;
+    try{
+      // Finish a request already sent; queued saves observe the removal guard.
+      await session?.queue.catch(()=>{});
+      if(!this.connected)throw Error('Server disconnected');
+      await remove();removed=true;this.forget(id);
+    }finally{
+      this.removing.delete(id);
+      if(!removed){
+        if(this.id===id)$('own-view').inert=false;
+        if(this.connected&&session&&this.sessions.get(id)===session&&session.edits!==session.saved)
+          void this.flush(id).catch(()=>{});
+      }
+    }
+  }
   private clearSecrets(id: string) {
     for (const input of $(id).querySelectorAll<HTMLInputElement>(
       "input[type=password]",
     ))
       input.value = "";
   }
-  private feed() {
-    return this.state?.publishing.feeds.find((f) => f.id === this.id);
+  private post() {
+    return this.state?.publishing.posts.find((f) => f.id === this.id);
   }
   private session() {
     return this.sessions.get(this.id);
@@ -313,7 +361,7 @@ export class PublishingUI {
   }
   private changed() {
     const s = this.session();
-    if (!s) return;
+    if (!s||this.removing.has(this.id)) return;
     s.edits++;
     s.error = "";
     this.indicator();
@@ -332,7 +380,7 @@ export class PublishingUI {
     s.queue = s.queue
       .catch(() => {})
       .then(async () => {
-        if (s.saved === s.edits) return;
+        if (s.saved === s.edits||this.removing.has(id)||this.sessions.get(id)!==s) return;
         const edits = s.edits,
           draft = structuredClone(s.draft);
         try {
@@ -342,15 +390,18 @@ export class PublishingUI {
             revision: s.revision,
             draft,
           });
+          if(this.sessions.get(id)!==s)return;
           s.revision = value.revision;
           s.saved = edits;
           s.error = "";
-          if (this.id === id)
+          if(this.id===id&&this.reading)this.drawReading();
+          if (this.id === id&&!this.removing.has(id))
             $("own-draft-status").textContent =
               s.saved === s.edits ? "Draft saved" : "Saving…";
         } catch (e) {
+          if(this.sessions.get(id)!==s)return;
           s.error = String(e);
-          if (this.id === id) {
+          if (this.id === id&&!this.removing.has(id)) {
             this.error(e);
             $("own-draft-status").textContent = "Not saved";
           }
@@ -360,6 +411,7 @@ export class PublishingUI {
     await s.queue;
   }
   private openPage(page: number) {
+    if(this.reading){location.hash=this.readHref(page);return;}
     this.current = page;
     this.trail.push(page);
     this.draw();
@@ -383,7 +435,7 @@ export class PublishingUI {
           : this.reading
             ? button(
                 name,
-                () => void this.addTorrent(e.data).catch((e) => this.error(e)),
+                () => void this.downloadOwn(e),
                 "link",
               )
             : element("span", name);
@@ -437,16 +489,15 @@ export class PublishingUI {
     }
   }
   private draw() {
-    const s = this.session(),
-      p = this.page();
-    if (!s || !p) return;
-    $("own-editor").hidden = this.reading;
-    $("own-preview").hidden = !this.reading;
-    $("own-toggle").textContent = this.reading ? "Edit" : "Read";
-    $("own-new-page").hidden = this.reading;
-    $("own-add-torrent").hidden = this.reading;
-    $<HTMLInputElement>("own-title").value = p.title;
-    $<HTMLTextAreaElement>("own-body").value = p.body;
+    const s=this.session(),p=this.page();
+    $("own-editor").hidden=this.reading;$("own-preview").hidden=!this.reading;
+    $("own-contents-heading").hidden=this.reading;$("own-entries").hidden=this.reading;$("own-editor-actions").hidden=this.reading;
+    $("own-toggle").textContent=this.reading?'Edit':'Public view';
+    $("own-new-page").hidden=this.reading;$("own-add-torrent").hidden=this.reading;
+    if(this.reading){$("own-breadcrumb").hidden=true;this.drawReading();return;}
+    this.reader.header.restoreIdentity();this.ownHeadingRow.prepend(this.ownIdentity);this.content.leave();
+    if(!s||!p)return;
+    $<HTMLInputElement>("own-title").value=p.title;$<HTMLTextAreaElement>("own-body").value=p.body;
     const crumbs = $("own-breadcrumb");
     crumbs.hidden = this.trail.length < 2;
     crumbs.replaceChildren();
@@ -475,74 +526,93 @@ export class PublishingUI {
       list.append(item);
     });
     this.drawEntries();
-    if (this.reading) {
-      const id = this.id,
-        page = this.current,
-        body = p.body;
-      $("own-preview").replaceChildren();
-      void api({ action: "preview", body })
-        .then((value: { body: MarkdownNode }) => {
-          if (this.id !== id || this.current !== page || !this.reading) return;
-          $("own-preview").replaceChildren(
-            markdown(value.body, (target) => {
-              if (target.startsWith("magnet:")) return () => this.link(target);
-              let name: string;
-              try {
-                name = decodeURIComponent(target);
-              } catch {
-                return null;
-              }
-              const entry = p.entries.find(
-                (e) =>
-                  (e.kind === "torrent"
-                    ? e.name
-                    : s.draft.pages.find((p) => p.id === e.page)?.title +
-                      ".torrent") === name,
-              );
-              if (entry?.kind === "page")
-                return () => this.openPage(entry.page);
-              if (entry?.kind === "torrent")
-                return () =>
-                  void this.addTorrent(entry.data).catch((e) => this.error(e));
-              return null;
-            }),
-          );
-        })
-        .catch((e) => this.error(e));
+  }
+  private readHref(page:number){return `#/own/${this.id}/read/${page}`;}
+  private readPage(){
+    const value=location.hash.split('/')[4],id=value===undefined?this.session()?.draft.root:value&&/^\d+$/.test(value)?Number(value):NaN;
+    this.current=Number.isSafeInteger(id)&&this.session()?.draft.pages.some(p=>p.id===id)?id!:0;
+    if(value===undefined&&this.current){history.replaceState(history.state,'',this.readHref(this.current));this.readRoute=location.hash;this.position.enter();}
+  }
+  private rememberIds(value:any){
+    const s=this.session();if(!s)return;
+    for(const meta of value.torrent_ids||[]){
+      const local=s.draft.pages.find(p=>p.id===meta.page)?.entries[meta.index];
+      const remote=value.draft.pages.find((p:Page)=>p.id===meta.page)?.entries[meta.index];
+      if(local?.kind==='torrent'&&remote?.kind==='torrent'&&local.data.length===remote.data.length&&local.data.every((v,i)=>v===remote.data[i]))this.torrentIds.set(local.data,meta.infohash);
     }
   }
+  private drawReading(){
+    const s=this.session(),p=this.page();if(!s)return;
+    this.reader.header.adopt(this.ownIdentity);
+    if(!p){this.content.leave();this.reader.header.update({title:'Page unavailable',connected:this.connected,noTorrent:true});this.reader.content('missing',null);this.reader.entries([],false);this.reader.breadcrumbs([{name:this.post()?.title||'Post',href:this.readHref(s.draft.root)},{name:'Page unavailable',href:location.hash}]);return;}
+    const find=(id:number,path:number[]):number[]|null=>{if(id===p.id)return [...path,id];for(const e of s.draft.pages.find(p=>p.id===id)?.entries||[])if(e.kind==='page'){const found=find(e.page,[...path,id]);if(found)return found;}return null;};
+    this.trail=find(s.draft.root,[])||[p.id];
+    const trail=this.trail.map(id=>({name:s.draft.pages.find(p=>p.id===id)?.title||'Page',href:this.readHref(id)}));
+    const key=`${this.id}/${s.revision}/${s.edits}`;
+    if(this.connected&&s.edits===s.saved&&this.metadataKey!==key){
+      this.metadataKey=key;const id=this.id;
+      void api({action:'get_post',id}).then(value=>{if(id===this.id){this.rememberIds(value);if(this.reading)this.drawReading();}}).catch(e=>{if(id===this.id)this.error(e);this.metadataKey='';});
+    }
+    const nested=torrentRoute();
+    if(nested){
+      const parts=location.hash.split('/'),rootId=parts[6];
+      const entry=p.entries.find((e):e is Extract<Entry,{kind:'torrent'}>=>e.kind==='torrent'&&this.torrentIds.get(e.data)===rootId);
+      if(!entry){this.content.leave();this.reader.header.update({title:'Torrent unavailable',connected:this.connected,noTorrent:true});this.reader.content('unavailable',null);this.reader.entries([],false);this.reader.breadcrumbs([...trail,{name:'Torrent unavailable',href:location.hash}]);return;}
+      const crumbs=[...trail];for(let i=6;i<parts.length-1;i++)if(/^[0-9a-f]{40}$/.test(parts[i]))crumbs.push({name:this.state?.transfers.find(t=>t.id===parts[i])?.name||'Catalog',href:parts.slice(0,i+1).join('/')});
+      this.content.render({id:nested.id,parent:nested.id===rootId?undefined:nested.parent,state:this.state,connected:this.connected,crumbs,position:this.position,source:this.post()?.title,signature:`${s.revision}/${s.edits}/${s.saved}`,
+        load:(offset)=>nested.id!==rootId?this.host.call({type:'read_content',id:nested.id,parent:nested.parent,offset},false):this.state?.transfers.some(t=>t.id===nested.id)?this.host.call({type:'read_content',id:nested.id,offset},false):api({action:'inspect_entry',id:this.id,page:p.id,infohash:nested.id}),
+        download:nested.id===rootId?()=>this.downloadOwn(entry):undefined});return;
+    }
+    this.content.leave();this.reader.breadcrumbs(trail);this.reader.header.update({title:p.title||'Page',id:this.id,connected:this.connected,noTorrent:true,source:'Current draft'});
+    const tree=this.bodyCache.get(p.body)||null;
+    this.reader.content(`${this.id}/${p.id}`,tree,target=>{
+      if(target.startsWith('magnet:'))return ()=>this.link(target);
+      let name:string;try{name=decodeURIComponent(target).replace(/^\.\//,'');}catch{return null;}
+      const entry=p.entries.find(e=>(e.kind==='torrent'?e.name:s.draft.pages.find(p=>p.id===e.page)?.title+'.torrent')===name);
+      if(entry?.kind==='page')return ()=>this.openPage(entry.page);
+      if(entry?.kind==='torrent')return ()=>{const id=this.torrentIds.get(entry.data);if(id&&this.state?.transfers.some(t=>t.id===id))location.hash=this.readHref(p.id)+'/torrent/'+id;else void this.downloadOwn(entry);};
+      return null;
+    });
+    const entries:ReaderEntry[]=p.entries.map((e,index)=>{
+      if(e.kind==='page'){const page=s.draft.pages.find(p=>p.id===e.page);return {key:String(index),name:page?.title||'Page unavailable',kind:'page',href:page?this.readHref(e.page):undefined};}
+      const id=this.torrentIds.get(e.data),t=this.state?.transfers.find(t=>t.id===id);
+      return {key:String(index),name:e.name,kind:'torrent',size:t?.total,href:id?this.readHref(p.id)+'/torrent/'+id:undefined,label:t?undefined:'Download',disabled:!id,actionDisabled:!this.connected||!id||this.adding.has(e.data),action:()=>void this.downloadOwn(e)};
+    });
+    this.reader.entries(entries,!!tree||!p.body);
+    this.position.patch({trail});
+    if(tree||!p.body)this.position.restore();
+    if(p.body&&!tree&&this.connected&&this.bodyRequest!==p.body){
+      const body=p.body,route=location.hash;this.bodyRequest=body;
+      void api({action:'preview',body}).then((value:{body:MarkdownNode})=>{this.bodyCache.set(body,value.body);if(location.hash===route&&this.reading&&this.page()?.body===body)this.drawReading();}).catch(e=>{if(location.hash===route)this.error(e);}).finally(()=>{if(this.bodyRequest===body)this.bodyRequest='';});
+    }
+
+  }
+  private async downloadOwn(entry:Extract<Entry,{kind:'torrent'}>){
+    const id=this.torrentIds.get(entry.data),route=location.hash;if(!id||!this.connected||this.adding.has(entry.data))return;
+    if(this.state?.transfers.some(t=>t.id===id))return;
+    this.adding.add(entry.data);this.drawReading();
+    try{await this.addTorrent(entry.data,id,this.id);}catch(e){if(location.hash===route)this.error(e);}
+    finally{this.adding.delete(entry.data);if(location.hash===route)this.drawReading();}
+  }
+
   render(state: Snapshot | null, connected: boolean) {
     this.state = state;
     this.connected = connected;
+    if(state){
+      for(const id of this.sessions.keys())if(!state.publishing.posts.some(f=>f.id===id))this.forget(id);
+      if(this.loading&&!state.publishing.posts.some(f=>f.id===this.loading))this.forget(this.loading);
+    }
     const route = location.hash.split("/"),
       active = route[1] === "own";
     $("own-view").hidden = !active;
     if (active) {
       $("transfer-view").hidden = true;
-      $("feed-view").hidden = true;
+      $("post-view").hidden = true;
     }
     for (const id of ["own-create", "publishing-keys-open"])
       $<HTMLButtonElement>(id).disabled = !connected || !state?.ready;
-    const feeds = state?.publishing?.feeds || [],
-      nav = JSON.stringify(feeds.map((f) => [f.id, f.title]));
-    if (nav !== this.nav) {
-      this.nav = nav;
-      $("own-nav").replaceChildren();
-      for (const feed of feeds) {
-        const a = element("a", "") as HTMLAnchorElement;
-        a.append(element("span", feed.title));
-        a.href = `#/own/${feed.id}`;
-        const item = element("li", "");
-        item.append(a);
-        $("own-nav").append(item);
-      }
-    }
-    for (const a of $("own-nav").querySelectorAll("a"))
-      a.setAttribute(
-        "aria-current",
-        active && a.getAttribute("href") === location.hash ? "page" : "false",
-      );
     if (!active) {
+      this.content.leave();this.position.leave();this.readRoute="";
       $("own-publication-help").hidden = true;
       this.id = "";
       return;
@@ -555,8 +625,19 @@ export class PublishingUI {
       this.current = 0;
       this.reading = false;
     }
-    const f = this.feed();
-    $("own-heading").textContent = f?.title || "Own feed";
+    this.reading=route[3]==='read';if(!this.reading)this.position.leave();
+    const routeChanged=this.readRoute!==location.hash;this.readRoute=location.hash;
+    if(this.reading){this.position.enter();if(this.session())this.readPage();}
+    const f = this.post();
+    $('own-view').inert=this.removing.has(id);
+    $('own-view').toggleAttribute('data-unavailable',!f);
+    $('own-unavailable').hidden=!!f;
+    if(!f){
+      this.content.leave();this.position.leave();
+      $('own-unavailable').querySelector('h3')!.textContent=state?'Post unavailable':'Loading…';
+      return;
+    }
+    $("own-heading").textContent = f?.title || "Own post";
     this.indicator();
     $("own-publish").toggleAttribute(
       "disabled",
@@ -578,8 +659,10 @@ export class PublishingUI {
           : "");
     if (!session && id && this.loading !== id) {
       this.loading = id;
-      void api({ action: "get_feed", id })
+      const epoch=this.epochs.get(id)||0;
+      void api({ action: "get_post", id })
         .then((value) => {
+          if((this.epochs.get(id)||0)!==epoch||!this.state?.publishing.posts.some(f=>f.id===id))return;
           this.sessions.set(id, {
             draft: value.draft,
             revision: value.revision,
@@ -592,18 +675,20 @@ export class PublishingUI {
           if (this.id === id) {
             this.current = value.draft.root;
             this.trail = [this.current];
+            this.rememberIds(value);if(this.reading)this.readPage();
             this.draw();
           }
         })
-        .catch((e) => this.error(e))
+        .catch((e) => {if(this.id===id&&(this.epochs.get(id)||0)===epoch&&this.post())this.error(e);})
         .finally(() => {
-          this.loading = "";
+          if(this.loading===id&&(this.epochs.get(id)||0)===epoch)this.loading = "";
         });
-    } else if (session && !this.current) {
+    } else if (session && !this.current && !this.reading) {
       this.current = session.draft.root;
       this.trail = [this.current];
       this.draw();
     }
+    if(session&&(this.reading||routeChanged))this.draw();
     if (
       session &&
       f &&
@@ -615,7 +700,7 @@ export class PublishingUI {
     }
   }
   private indicator() {
-    const f = this.feed(), session = this.session();
+    const f = this.post(), session = this.session();
     const indicator = $("own-indicator");
     const problem = session?.error || this.state?.publishing.error || "";
     const dirty = !!session && (session.edits !== session.saved || session.revision > (f?.published_revision || 0));
@@ -647,7 +732,7 @@ export class PublishingUI {
     if ($("own-status").textContent !== label) $("own-status").textContent = label;
   }
   private async publicationAction(action: "retry_publication" | "cancel_publication") {
-    const f = this.feed();
+    const f = this.post();
     if (!this.connected || f?.operation == null) return;
     const id = f.id, operation = f.operation;
     try {

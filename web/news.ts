@@ -34,7 +34,7 @@ export class NewsUI {
       if (this.active && link) this.save(link.id||undefined);
     }, true);
   }
-  private key(e: NewsEntry) {return `${e.feed}:${e.sequence}`;}
+  private key(e: NewsEntry) {return `${e.post}:${e.sequence}`;}
   private save(chosen?:string) {
     if (!this.active) return;
     const focus = chosen || (document.activeElement as HTMLElement|null)?.id || null;
@@ -51,8 +51,8 @@ export class NewsUI {
     if (!active && this.active) {this.request++;this.busy=false;}
     this.active=active;
     $("news-view").hidden=!active;
-    $("news-feed-error").hidden=!state?.feed_error;
-    $("news-feed-error").firstElementChild!.textContent=state?.feed_error||"";
+    $("news-post-error").hidden=!state?.post_error;
+    $("news-post-error").firstElementChild!.textContent=state?.post_error||"";
     $("new-nav").setAttribute("aria-current",active?'page':'false');
     $("new-count").textContent=String(state?.news_unread||0);
     $("new-count").hidden=!state?.news_unread;
@@ -65,7 +65,7 @@ export class NewsUI {
     }
     $("news-refresh").toggleAttribute("disabled",!connected||!state?.ready||this.busy);
     $("news-status").textContent=!connected?'Server disconnected':!state?.ready?'Starting…':this.busy&&!this.page?'Loading…':'';
-    const signature=JSON.stringify([state?.news_revision,state?.feeds.map(f=>[f.id,f.name])]);
+    const signature=JSON.stringify([state?.news_revision,state?.posts.map(f=>[f.id,f.name])]);
     if (connected&&state?.ready&&!this.busy&&signature!==this.signature) {
       this.signature=signature;void this.load(false,entering?history.state?.news:undefined);
     }
@@ -115,8 +115,8 @@ export class NewsUI {
       if(!row) {
         row=node('article','','news-row');row.setAttribute('role','listitem');row.dataset.update=key;
         const a=document.createElement('a');a.className='btn news-title';a.dataset.variant='link';a.id=`news-open-${key}`;
-        a.href=`#/feeds/${entry.feed}/${entry.catalog}/${entry.sequence}`;
-        const feed=node('span','','news-feed muted');
+        a.href=`#/posts/${entry.post}/${entry.catalog}/${entry.sequence}`;
+        const post=node('span','','news-post muted');
         const date=node('time','','news-date muted');
         const status=node('span','','news-availability muted');
         const badge=node('span','','badge');badge.dataset.variant='secondary';
@@ -127,19 +127,19 @@ export class NewsUI {
           try {
             const current=this.page?.entries.find(e=>this.key(e)===key);if(!current)return;
             const read=!current.read;
-            await this.call({type:'set_update_read',feed:current.feed,sequence:current.sequence,read});
+            await this.call({type:'set_update_read',post:current.post,sequence:current.sequence,read});
             current.read=read;this.error('');
           } catch(e){this.error(String(e));}
           finally {this.pending.delete(key);this.draw();}
         };
-        row.append(a,feed,date,status,badge,toggle);this.rows.set(key,row);$("news-list").append(row);
+        row.append(a,post,date,status,badge,toggle);this.rows.set(key,row);$("news-list").append(row);
       }
       const at=$("news-list").children.item(position++);
       if(at!==row)$("news-list").insertBefore(row,at);
-      const f=this.state?.feeds.find(f=>f.id===entry.feed);
+      const f=this.state?.posts.find(f=>f.id===entry.post);
       const c=f?.catalogs.find(c=>c.id===entry.catalog);
       row.querySelector('.news-title')!.textContent=c?.name||entry.name;
-      row.querySelector('.news-feed')!.textContent=f?.name||entry.feed_name;
+      row.querySelector('.news-post')!.textContent=f?.name||entry.post_name;
       row.dataset.read=String(entry.read);
       const date=row.querySelector('time')!;
       if(entry.detected_ms!==null && Number.isFinite(new Date(entry.detected_ms).getTime())) {

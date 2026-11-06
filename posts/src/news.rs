@@ -1,11 +1,11 @@
 use super::*;
 
-impl FeedManager {
+impl PostManager {
     pub(super) fn initialize_news(&mut self, legacy: bool) -> Result<()> {
         if legacy {
             self.state.news = NewsState::default();
             // Existing history is a baseline, not a stream of new posts.
-            for (id, s) in self.state.feeds.clone() {
+            for (id, s) in self.state.posts.clone() {
                 if let Some(r) = s.records.last() {
                     self.state.news.observed.insert(id.clone(), r.sequence);
                     if s.followed {
@@ -25,9 +25,9 @@ impl FeedManager {
         for n in &self.state.news.entries {
             let s = self
                 .state
-                .feeds
-                .get(&n.feed)
-                .ok_or_else(|| err("Unknown news feed"))?;
+                .posts
+                .get(&n.post)
+                .ok_or_else(|| err("Unknown news post"))?;
             let record = s
                 .records
                 .iter()
@@ -38,7 +38,7 @@ impl FeedManager {
             if hex(&h) != n.catalog
                 || n.order <= last
                 || n.order > self.state.news.next_order
-                || !identities.insert((n.feed.clone(), n.sequence))
+                || !identities.insert((n.post.clone(), n.sequence))
             {
                 return Err(err("Invalid news identity or order"));
             }
@@ -47,7 +47,7 @@ impl FeedManager {
                 .state
                 .news
                 .observed
-                .get(&n.feed)
+                .get(&n.post)
                 .is_none_or(|s| *s < n.sequence)
             {
                 return Err(err("News entry exceeds its observed sequence"));
@@ -56,7 +56,7 @@ impl FeedManager {
         for (id, seq) in &self.state.news.observed {
             if !self
                 .state
-                .feeds
+                .posts
                 .get(id)
                 .is_some_and(|s| s.records.iter().any(|r| r.sequence == *seq))
             {
@@ -67,7 +67,7 @@ impl FeedManager {
     }
     fn push_news(
         &mut self,
-        feed: &str,
+        post: &str,
         sequence: i64,
         catalog: String,
         detected_ms: Option<u64>,
@@ -79,7 +79,7 @@ impl FeedManager {
             .checked_add(1)
             .ok_or_else(|| err("News order exhausted"))?;
         self.state.news.entries.push(NewsRecord {
-            feed: feed.into(),
+            post: post.into(),
             sequence,
             catalog,
             detected_ms,
@@ -102,7 +102,7 @@ impl FeedManager {
                 self.dirty = true;
             }
         }
-        for (id, s) in self.state.feeds.clone() {
+        for (id, s) in self.state.posts.clone() {
             if !s.followed {
                 continue;
             }
@@ -131,7 +131,7 @@ impl FeedManager {
                 self.dirty = true;
             }
             // A formerly unfollowed legacy subscription has no initial entry.
-            if !self.state.news.entries.iter().any(|n| n.feed == id) {
+            if !self.state.news.entries.iter().any(|n| n.post == id) {
                 if let Some(r) = s.records.last() {
                     if let Ok(h) = bep46::decode_payload(r.verify(&key)?.value()) {
                         self.push_news(&id, r.sequence, hex(&h), Some(wall_ms))?;
@@ -149,7 +149,7 @@ impl FeedManager {
             .news
             .entries
             .iter()
-            .filter(|n| !n.read && self.followed(&n.feed))
+            .filter(|n| !n.read && self.followed(&n.post))
             .count()
     }
     /// An anchor freezes membership while paging; later posts stay outside it.
@@ -164,21 +164,21 @@ impl FeedManager {
             .entries
             .iter()
             .rev()
-            .filter(|n| n.order <= anchor && self.followed(&n.feed))
+            .filter(|n| n.order <= anchor && self.followed(&n.post))
             .collect();
-        let feeds = self.views();
+        let posts = self.views();
         let entries = rows
             .iter()
             .skip(offset)
             .take(100)
             .map(|n| {
-                let f = feeds.iter().find(|f| f.id == n.feed).unwrap();
+                let f = posts.iter().find(|f| f.id == n.post).unwrap();
                 let c = f.catalogs.iter().find(|c| c.id == n.catalog);
                 NewsEntry {
-                    feed: n.feed.clone(),
+                    post: n.post.clone(),
                     sequence: n.sequence.to_string(),
                     catalog: n.catalog.clone(),
-                    feed_name: f.name.clone(),
+                    post_name: f.name.clone(),
                     name: c
                         .map(|c| c.name.clone())
                         .filter(|n| !n.is_empty())
@@ -201,9 +201,9 @@ impl FeedManager {
         })
     }
     /// Mutates local state only. The host must persist before confirming success.
-    pub fn set_news_read(&mut self, feed: &str, sequence: &str, read: bool) -> Result<bool> {
-        if !self.followed(feed) {
-            return Err(err("Feed not followed"));
+    pub fn set_news_read(&mut self, post: &str, sequence: &str, read: bool) -> Result<bool> {
+        if !self.followed(post) {
+            return Err(err("Post not followed"));
         }
         let seq = sequence
             .parse::<i64>()
@@ -213,7 +213,7 @@ impl FeedManager {
             .news
             .entries
             .iter_mut()
-            .find(|n| n.feed == feed && n.sequence == seq)
+            .find(|n| n.post == post && n.sequence == seq)
             .ok_or_else(|| err("News entry not found"))?;
         let old = n.read;
         if old != read {
@@ -224,7 +224,7 @@ impl FeedManager {
     }
     pub fn news_for_catalog(
         &self,
-        feed: &str,
+        post: &str,
         catalog: &str,
         sequence: Option<&str>,
     ) -> Option<String> {
@@ -235,7 +235,7 @@ impl FeedManager {
             .iter()
             .rev()
             .find(|n| {
-                n.feed == feed
+                n.post == post
                     && n.catalog == catalog
                     && sequence.is_none_or(|s| n.sequence.to_string() == s)
             })

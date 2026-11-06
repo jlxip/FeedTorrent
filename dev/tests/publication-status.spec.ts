@@ -29,8 +29,8 @@ test("publication indicator, signed retry, snapshots, cancellation and keyboard 
     app = await startApp(join(root, "app"), ["--dht-bootstrap", `127.0.0.1:${nodes[0].address().port}`]);
     const pub = (command: unknown) => app.api("/api/publishing", command);
     await pub({action:"create_key", password, confirmation:password});
-    const {id} = await pub({action:"create_feed", title:"Status test"});
-    let {draft, revision} = await pub({action:"get_feed", id});
+    const {id} = await pub({action:"create_post", title:"Status test"});
+    let {draft, revision} = await pub({action:"get_post", id});
     draft.pages[0].body = "This snapshot is published.";
     revision = (await pub({action:"save_draft", id, revision, draft})).revision;
     const external: string[] = [];
@@ -59,8 +59,8 @@ test("publication indicator, signed retry, snapshots, cancellation and keyboard 
     await expect(page.locator("#own-cancel")).toBeVisible();
     await expect(page.locator("#own-retry")).toBeVisible({timeout:90000});
     const before = JSON.parse(await readFile(join(root,"app/state/publishing/library.json"), "utf8"));
-    const operation = before.feeds[id].pending.id;
-    expect(before.feeds[id].pending.signed).toEqual(before.feeds[id].record);
+    const operation = before.posts[id].pending.id;
+    expect(before.posts[id].pending.signed).toEqual(before.posts[id].record);
     expect(JSON.stringify(before)).not.toContain(password);
     await indicator.focus();
     await expect(tooltip).toContainText("Retrying");
@@ -74,15 +74,21 @@ test("publication indicator, signed retry, snapshots, cancellation and keyboard 
     await expect(page.locator("#own-draft-status")).toContainText("Draft saved");
     rejectPuts = false;
     await page.locator("#own-retry").click();
-    await expect.poll(async () => (await app.api()).publishing.feeds[0].state).toBe("Published");
+    await expect.poll(async () => (await app.api()).publishing.posts[0].state).toBe("Published");
     await expect(indicator).toHaveAttribute("data-state", "draft");
     const after = JSON.parse(await readFile(join(root,"app/state/publishing/library.json"), "utf8"));
-    expect(after.feeds[id].record).toEqual(before.feeds[id].record);
-    expect(after.feeds[id].published_revision).toBe(revision);
-    expect(after.feeds[id].revision).toBeGreaterThan(revision);
-    expect(after.feeds[id].pending).toBeNull();
+    expect(after.posts[id].record).toEqual(before.posts[id].record);
+    expect(after.posts[id].published_revision).toBe(revision);
+    expect(after.posts[id].revision).toBeGreaterThan(revision);
+    expect(after.posts[id].pending).toBeNull();
     await expect(secondTab.locator("#own-indicator")).toHaveAttribute("data-state", "draft");
+    // Library renders its catalogue when opened; inspect the registered seeds
+    // there, then return to the same durable publishing draft.
+    await page.locator("#transfers-nav").click();
     await expect(page.locator("#transfers article")).toHaveCount((await app.api()).transfers.length);
+    await page.locator(`#post-tree a[data-kind=own][data-post="${id}"]`).click();
+    await expect(page.locator("#own-preview")).toBeVisible();await page.locator("#own-toggle").click();
+    await expect(page.locator("#own-body")).toHaveValue("Edits remain unpublished.");
     // A later publication includes the edits, and only then turns the light green.
     await page.locator("#own-publish").click();
     await page.locator("#own-publish-password").fill(password);
@@ -105,7 +111,7 @@ test("publication indicator, signed retry, snapshots, cancellation and keyboard 
     await expect(page.locator("#own-error")).toBeHidden();
     expect((await app.api()).transfers.map((t: any) => t.id).sort()).toEqual(beforeIncorrect);
     await expect(page.locator("#own-publish")).toBeEnabled();
-    // Nested pages share the feed's indicator, and Cancel only stops publication.
+    // Nested pages share the post's indicator, and Cancel only stops publication.
     await page.locator("#own-new-page").click();
     await expect(page.locator("#own-breadcrumb")).toBeVisible();
     await page.locator("#own-body").fill("Nested content");
@@ -118,7 +124,7 @@ test("publication indicator, signed retry, snapshots, cancellation and keyboard 
     await expect(indicator).toHaveAttribute("data-state", "draft");
     await indicator.focus();
     await expect(tooltip).toContainText("Publication canceled");
-    const canceled = (await app.api()).publishing.feeds[0];
+    const canceled = (await app.api()).publishing.posts[0];
     expect(canceled.operation).toBeNull();
     await expect(page.locator("#own-publish")).toBeEnabled();
     await expect(page.locator("#own-cancel")).toBeHidden();
