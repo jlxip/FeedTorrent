@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 import assert from "node:assert/strict";
 import { runBep46 } from "./bep46.mjs";
 import { runBep49 } from "./bep49.mjs";
@@ -127,5 +128,5 @@ finally {
   for(const peer of peers.reverse())try{await peer.stop()}catch(e){report.errors.push(e.stack);process.exitCode=1}
   for(const n of nodes)try{await new Promise(r=>n.destroy(r))}catch{}
   if(root)await cleanup(root,tr,ref,reader);
-  report.status=report.errors.length?"fail":"pass";await mkdir(".runtime/evidence",{recursive:true});await writeFile(".runtime/evidence/bep44.json",JSON.stringify(report,null,2)+"\n");
+  report.status=report.errors.length?"fail":"pass";await mkdir(evidencePath(),{recursive:true});await writeFile(evidencePath("bep44.json"),JSON.stringify(report,null,2)+"\n");
 }

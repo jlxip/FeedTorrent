@@ -4,8 +4,8 @@
   "version": "1.0.0-dev",
   "type": "module",
   "scripts": {
-    "build": "make -f ../Makefile build",
-    "test": "make -f ../Makefile test"
+    "build": "cd .. && make build",
+    "test": "cd .. && make test"
   },
   "devDependencies": {
     "@noble/hashes": "2.0.1",

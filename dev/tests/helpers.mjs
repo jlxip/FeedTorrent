@@ -1,3 +1,4 @@
+import {runRoot} from './runtime.mjs';
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
@@ -24,8 +25,8 @@ export async function wait(fn, label = "condition", timeout = 60000) {
   throw Error("Timed out: " + label);
 }
 export async function temporary() {
-  await mkdir(".runtime", { recursive: true });
-  return mkdtemp(resolve(".runtime/native-"));
+  await mkdir(join(runRoot,"data"), { recursive: true });
+  return mkdtemp(join(runRoot,"data/native-"));
 }
 export async function startApp(root, extra = [], options = {}) {
   await mkdir(root, { recursive: true });

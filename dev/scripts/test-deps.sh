@@ -6,7 +6,8 @@ if [ "$(uname -s)" = OpenBSD ]; then
   # npm ships source for these bindings, but no OpenBSD prebuilt binaries.
   node_prefix=${NODE_PREFIX:-$(node -p 'require("node:path").dirname(require("node:path").dirname(process.execPath))')}
   if ! node -e 'require("./dev/node_modules/utp-native")' >/dev/null 2>&1; then
-    (cd dev && MAKE=gmake npm_config_nodedir="$node_prefix" npm_config_build_from_source=true npm rebuild utp-native)
+    node_gyp=$(node -p 'require.resolve("node-gyp/bin/node-gyp.js", { paths: [require("node:path").dirname(require("node:fs").realpathSync(process.argv[1]))] })' "$(command -v npm)")
+    (cd dev/node_modules/utp-native && node "$node_gyp" configure --nodedir="$node_prefix" -- -f ninja && ninja -C build/Release -j "${NATIVE_JOBS:-2}")
   fi
   if [ ! -f dev/node_modules/node-datachannel/build/Release/node_datachannel.node ]; then
     npm --prefix "$root/.tools/test-addon" install --ignore-scripts --no-save --no-package-lock --no-audit --no-fund node-addon-api@7.1.1

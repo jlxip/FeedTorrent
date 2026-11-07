@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 import { WirePeer,signed as signNodeRecord,jsonRecord } from "../fixtures/bep50-node.mjs";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -165,7 +166,7 @@ export async function runBep49({ client, root, native, pass: outerPass }) {
   finally {
     for (const resource of resources.reverse()) try { await resource.stop(); } catch (error) { report.errors.push(error.stack); }
     report.status = report.errors.length ? "fail" : "pass";
-    await mkdir(".runtime/evidence", { recursive: true }); await writeFile(".runtime/evidence/bep49.json", JSON.stringify(report, null, 2) + "\n");
+    await mkdir(evidencePath(), { recursive: true }); await writeFile(evidencePath("bep49.json"), JSON.stringify(report, null, 2) + "\n");
     if (report.errors.length) process.exitCode = 1;
   }
 }

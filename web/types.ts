@@ -57,6 +57,7 @@ export interface Snapshot {
 }
 export interface ContentFile extends TorrentFile {index:number;}
 export interface ContentData {
+  created_at?:number|null;updated_at?:number|null;
   id:string;name?:string;total:number|null;kind:string;files:ContentFile[];entries:PostEntry[];
   count:number;offset:number;body:import('./markdown.js').MarkdownNode|null;
   body_state:'metadata'|'absent'|'pending'|'ready'|'error';body_error:string;error:string;
@@ -145,6 +146,7 @@ export interface PostEntry {
   files: {name: string; length: number}[]
 }
 export interface CatalogPage {
+  created_at?:number|null;updated_at?:number|null;
   catalog: Catalog;
   entries: PostEntry[];
   offset: number;

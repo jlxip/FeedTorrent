@@ -1,6 +1,7 @@
+import {evidencePath} from './runtime.mjs';
 import assert from "node:assert/strict";
 import { mkdir, writeFile, readFile, cp, rm, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, resolve, relative } from "node:path";
 import { homedir } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
@@ -96,16 +97,16 @@ try {
   await app.stop();
   app = undefined;
   pass("one-time v1 migration and preservation of absolute custom folders");
-  execFileSync(
-    "git",
-    ["check-ignore", "--quiet", "--no-index", "downloads/probe"],
-    { cwd: repo },
-  );
   const sandbox = join(root, "clean");
   await mkdir(sandbox);
+  await cp(join(repo,".gitignore"),join(sandbox,".gitignore"));
+  execFileSync("git",["init","--quiet"],{cwd:sandbox});
+  execFileSync("git",["-c","core.excludesFile=/dev/null","check-ignore","--quiet","--no-index","downloads/probe"],{cwd:sandbox});
   await cp(join(repo, "Makefile"), join(sandbox, "Makefile"));
-  await mkdir(join(sandbox, "dev"));
-  await cp(join(repo, "dev/build.mk"), join(sandbox, "dev/build.mk"));
+  await mkdir(join(sandbox, "app"));
+  await mkdir(join(sandbox, "web"));
+  for (const file of ["Cargo.toml", "app/Cargo.toml", "web/tsconfig.json"]) await writeFile(join(sandbox,file), "{}\n");
+  await writeFile(join(sandbox,"app/Cargo.toml"), '[package]\nname = "feedtorrent"\n');
   for (const p of [
     "downloads",
     "web/dist",
@@ -118,7 +119,7 @@ try {
     await mkdir(join(sandbox, p), { recursive: true });
     await writeFile(join(sandbox, p, "keep"), "fixture");
   }
-  execFileSync("make", ["-f", join(sandbox, "Makefile"), "clean"], { cwd: a });
+  execFileSync("make", ["clean"], { cwd: sandbox });
   for (const p of ["downloads", "dist/pkg", ".tools/native", "dev/node_modules", ".runtime/state"])
     assert.equal(await readFile(join(sandbox, p, "keep"), "utf8"), "fixture");
   for (const p of ["target", "web/dist"])
@@ -133,6 +134,8 @@ try {
     "--isolated",
     "--data-dir",
     runState,
+    "--download-dir",
+    relative(repo, join(root, "make-downloads")),
     "--peer-port",
     "0",
     "--http-port",
@@ -142,8 +145,8 @@ try {
     .join(" ");
   const child = spawn(
     "make",
-    ["-f", join(repo, "Makefile"), "run", `ARGS=${args}`],
-    { cwd: a, detached: true, stdio: ["ignore", "pipe", "pipe"] },
+    ["run", `ARGS=${args}`],
+    { cwd: repo, detached: true, stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";
   child.stdout.on("data", (b) => (log += b));
@@ -173,9 +176,9 @@ try {
     const state = await (
       await fetch(url + "/api/snapshot", { headers })
     ).json();
-    assert.equal(state.transfers[0].save_path, join(a, "downloads", id));
+    assert.equal(state.transfers[0].save_path, join(root, "make-downloads", id));
     pass(
-      "make -f from another CWD builds in repo and runs in the caller directory",
+      "make run from the repo uses explicit isolated state and relative download paths",
     );
   } finally {
     const exited = once(child, "exit");
@@ -204,9 +207,9 @@ try {
   process.exitCode = 1;
 } finally {
   if (root) await cleanup(root, app);
-  await mkdir(".runtime/evidence", { recursive: true });
+  await mkdir(evidencePath(), { recursive: true });
   await writeFile(
-    ".runtime/evidence/open-cwd.json",
+    evidencePath("open-cwd.json"),
     JSON.stringify(report, null, 2),
   );
 }

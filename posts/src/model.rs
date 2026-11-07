@@ -188,6 +188,18 @@ pub enum Action {
         post: String,
         key: MutableKey,
     },
+    /// Refresh the latest signed record before renewing it in Mainline DHT.
+    RenewalLookup {
+        work: WorkId,
+        post: String,
+        key: MutableKey,
+    },
+    /// Public signed bytes, released only after the checkpoint barrier.
+    RenewalPut {
+        work: WorkId,
+        post: String,
+        record: MutableRecord,
+    },
     Stage {
         work: WorkId,
         post: String,
@@ -207,6 +219,25 @@ pub enum Action {
         post: String,
         id: String,
     },
+}
+/// A completed put must confirm this exact target and at least one accepting node.
+#[derive(Clone, Debug)]
+pub struct RenewalConfirmation {
+    pub target: [u8; 20],
+    pub acknowledged_nodes: u32,
+}
+#[derive(Clone, Debug)]
+pub enum RenewalError {
+    Conflict,
+    Failed(String),
+}
+impl std::fmt::Display for RenewalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict => f.write_str("conflicting DHT record"),
+            Self::Failed(s) => f.write_str(s),
+        }
+    }
 }
 /// Advisory notifications; snapshots and checkpoints remain authoritative.
 /// The queue is bounded to the most recent 128 notifications.

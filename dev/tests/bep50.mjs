@@ -1,3 +1,4 @@
+import {runRoot,evidencePath} from './runtime.mjs';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
@@ -8,7 +9,7 @@ import dgram from 'node:dgram';
 import {WirePeer,Router,signed,jsonRecord,target,hex,valid} from '../fixtures/bep50-node.mjs';
 import bencode from 'bencode';
 const wait=async(f,name,ms=15000)=>{const until=Date.now()+ms;while(Date.now()<until){const r=await f();if(r)return r;await new Promise(r=>setTimeout(r,30))}throw Error('Timeout: '+name)};
-const runtime=resolve('.runtime');await mkdir(runtime,{recursive:true});const root=await mkdtemp(join(runtime,'bep50-'));
+const runtime=join(runRoot,'data');await mkdir(runtime,{recursive:true});const root=await mkdtemp(join(runtime,'bep50-'));
 const peers=[],wires=[],routers=[];const report={time:new Date().toISOString(),checks:[]};
 const pass=s=>{report.checks.push(s);console.log('PASS',s)};
 async function native(name,bootstrap=null,port=0,family="udp4"){
@@ -84,5 +85,5 @@ try{
 finally{
  for(const p of peers.reverse())try{await p.stop()}catch(e){console.error(e);process.exitCode=1}
  for(const w of wires)await w.close();for(const r of routers)await r.close();await rm(root,{recursive:true,force:true});
- await mkdir(join(runtime,'evidence'),{recursive:true});await writeFile(join(runtime,'evidence/bep50-summary.json'),JSON.stringify(report,null,2)+'\n');
+ await mkdir(evidencePath(),{recursive:true});await writeFile(evidencePath('bep50-summary.json'),JSON.stringify(report,null,2)+'\n');
 }

@@ -309,6 +309,7 @@ export class PostsUI {
       download:!t&&f&&this.catalogId?()=>this.host.call({type:'open_catalog',post:f.id,id:this.catalogId}):undefined,
       approval:approval?.state==='Awaiting approval'?{id:approval.id,ready:!!this.state?.transfers.find(t=>t.id===approval.id)?.files.length}:undefined});
     this.reader.breadcrumbs(this.trail,href=>{const index=this.trail.findIndex(c=>c.href===href);if(index>=0)this.pendingTrail=this.trail.slice(0,index+1);});
+    this.reader.dates(page);
     this.reader.content(`${this.postId}/${this.catalogId}`,this.body,target=>{
       if(target.startsWith('magnet:'))return ()=>{if(target.includes('urn:btpk:'))this.follow(target);else void this.run({type:'add_magnet',uri:target});};
       return ()=>void this.relative(target);

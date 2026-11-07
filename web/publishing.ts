@@ -9,6 +9,8 @@ export interface OwnPost {
   revision: number;
   published_revision: number;
   sequence: string | null;
+  published_sequence: string | null;
+  pending_sequence: string | null;
   state: string;
   error: string;
   active: boolean;
@@ -90,6 +92,8 @@ export class PublishingUI {
   private readRoute='';
   private torrentIds=new WeakMap<number[],string>();
   private metadataKey='';
+  private publishOrigin:{id:string;page:number;route:string}|null=null;
+  private publishedDates=new Map<string,{dates:Record<string,{created_at:number|null;updated_at:number}|null>;differs:boolean}>();
   private bodyCache=new Map<string,MarkdownNode>();
   private bodyRequest='';
   private adding=new Set<number[]>();
@@ -199,8 +203,11 @@ export class PublishingUI {
     $("own-retry").onclick = () => void this.publicationAction("retry_publication");
     $("own-cancel").onclick = () => void this.publicationAction("cancel_publication");
     $("own-publish").onclick = async () => {
+      const origin={id:this.id,page:this.current,route:location.hash};
+      this.publishOrigin=origin;
       try {
-        await this.flush();
+        await this.flush(origin.id);
+        if(this.publishOrigin!==origin||location.hash!==origin.route||this.id!==origin.id||this.current!==origin.page||!this.post())return;
         $("own-publish-error").textContent = "";
         $("own-publish-password").removeAttribute("aria-invalid");
         $<HTMLDialogElement>("own-publish-dialog").showModal();
@@ -213,31 +220,39 @@ export class PublishingUI {
       e.preventDefault();
       const submit = $<HTMLButtonElement>("own-publish-submit");
       submit.disabled = true;
+      const origin=this.publishOrigin;
       try {
-        await this.flush();
-        const s = this.session();
+        if(!origin)return;
+        await this.flush(origin.id);
+        if(this.publishOrigin!==origin||!$<HTMLDialogElement>("own-publish-dialog").open||location.hash!==origin.route)return;
+        const s = this.sessions.get(origin.id),previous=this.post();
         if (!s) return;
+        const revision=s.revision;
         const result = await api({
           action: "publish",
-          id: this.id,
-          revision: s.revision,
+          id: origin.id,
+          revision,
           password: $<HTMLInputElement>("own-publish-password").value,
         });
-        const post = this.post();
-        if (post) {
+        const post = this.state?.publishing.posts.find(p=>p.id===origin.id);
+        // Do not overwrite a newer SSE snapshot received before this response.
+        if (post && post===previous) {
           post.operation = result.operation;
-          post.pending_revision = s.revision;
+          post.pending_sequence = null;
+          post.pending_revision = revision;
           post.phase = "Queued";
           post.state = "Queued";
           post.error = "";
           this.render(this.state, this.connected);
         }
-        $<HTMLDialogElement>("own-publish-dialog").close();
+        const show=this.publishOrigin===origin&&this.id===origin.id&&this.current===origin.page&&location.hash===origin.route&&post;
+        if(this.publishOrigin===origin)$<HTMLDialogElement>("own-publish-dialog").close();
+        if(show)location.hash=`#/own/${origin.id}/read/${origin.page}`;
       } catch (e) {
-        $("own-publish-error").textContent = String(e);
+        if(this.publishOrigin===origin)$("own-publish-error").textContent = String(e);
       } finally {
         submit.disabled = false;
-        this.clearSecrets("own-publish-dialog");
+        if(this.publishOrigin===origin)this.clearSecrets("own-publish-dialog");
       }
     };
     $("publishing-keys-open").onclick = () => {
@@ -306,8 +321,14 @@ export class PublishingUI {
       "own-publish-dialog",
       "publishing-keys-dialog",
     ])
-      $(id).addEventListener("close", () => this.clearSecrets(id));
+      $(id).addEventListener("close", () => {
+        this.clearSecrets(id);
+        if(id==='own-publish-dialog')this.publishOrigin=null;
+      });
     window.addEventListener("hashchange", () => {
+      if(this.publishOrigin&&location.hash!==this.publishOrigin.route){
+        this.publishOrigin=null;$<HTMLDialogElement>('own-publish-dialog').close();
+      }
       const old = this.id;
       if (this.sessions.get(old)?.edits !== this.sessions.get(old)?.saved)
         void this.flush(old).catch(() => {});
@@ -316,7 +337,7 @@ export class PublishingUI {
   }
   private forget(id:string){
     const session=this.sessions.get(id);if(session?.timer)clearTimeout(session.timer);
-    this.sessions.delete(id);this.epochs.set(id,(this.epochs.get(id)||0)+1);
+    this.sessions.delete(id);this.publishedDates.delete(id);this.epochs.set(id,(this.epochs.get(id)||0)+1);
     if(this.loading===id)this.loading='';
   }
   async removePost(id:string,remove:()=>Promise<unknown>){
@@ -493,9 +514,22 @@ export class PublishingUI {
     $("own-editor").hidden=this.reading;$("own-preview").hidden=!this.reading;
     $("own-contents-heading").hidden=this.reading;$("own-entries").hidden=this.reading;$("own-editor-actions").hidden=this.reading;
     $("own-toggle").textContent=this.reading?'Edit':'Public view';
+    const actions=this.reading?$('own-top-actions'):$('own-publish').parentElement!;
+    const before=this.reading?$('own-toggle'):$('own-publish');
+    for(const id of ['own-retry','own-cancel']){const control=$(id);if(control.parentElement!==actions)actions.insertBefore(control,before);}
     $("own-new-page").hidden=this.reading;$("own-add-torrent").hidden=this.reading;
+    const header=this.reader.header,topActions=$('own-top-actions');
+    const target=this.reading?header.identity:this.ownHeadingRow;
+    if(this.ownIdentity.parentElement!==target){
+      const focused=document.activeElement instanceof HTMLElement&&
+        (this.ownIdentity.contains(document.activeElement)||topActions.contains(document.activeElement))?document.activeElement:null;
+      if(this.reading){header.adopt(this.ownIdentity);header.identity.append(topActions);}
+      else{header.restoreIdentity();this.ownHeadingRow.prepend(this.ownIdentity);this.ownHeadingRow.append(topActions);}
+      this.ownHeadingRow.hidden=this.reading;
+      focused?.focus({preventScroll:true});
+    }
     if(this.reading){$("own-breadcrumb").hidden=true;this.drawReading();return;}
-    this.reader.header.restoreIdentity();this.ownHeadingRow.prepend(this.ownIdentity);this.content.leave();
+    this.content.leave();
     if(!s||!p)return;
     $<HTMLInputElement>("own-title").value=p.title;$<HTMLTextAreaElement>("own-body").value=p.body;
     const crumbs = $("own-breadcrumb");
@@ -535,6 +569,7 @@ export class PublishingUI {
   }
   private rememberIds(value:any){
     const s=this.session();if(!s)return;
+    this.publishedDates.set(this.id,{dates:value.published_dates||{},differs:!!value.draft_differs});
     for(const meta of value.torrent_ids||[]){
       const local=s.draft.pages.find(p=>p.id===meta.page)?.entries[meta.index];
       const remote=value.draft.pages.find((p:Page)=>p.id===meta.page)?.entries[meta.index];
@@ -543,12 +578,11 @@ export class PublishingUI {
   }
   private drawReading(){
     const s=this.session(),p=this.page();if(!s)return;
-    this.reader.header.adopt(this.ownIdentity);
-    if(!p){this.content.leave();this.reader.header.update({title:'Page unavailable',connected:this.connected,noTorrent:true});this.reader.content('missing',null);this.reader.entries([],false);this.reader.breadcrumbs([{name:this.post()?.title||'Post',href:this.readHref(s.draft.root)},{name:'Page unavailable',href:location.hash}]);return;}
+    if(!p){this.content.leave();this.reader.header.update({title:'Page unavailable',connected:this.connected,noTorrent:true});this.reader.dates(null);this.reader.content('missing',null);this.reader.entries([],false);this.reader.breadcrumbs([{name:this.post()?.title||'Post',href:this.readHref(s.draft.root)},{name:'Page unavailable',href:location.hash}]);return;}
     const find=(id:number,path:number[]):number[]|null=>{if(id===p.id)return [...path,id];for(const e of s.draft.pages.find(p=>p.id===id)?.entries||[])if(e.kind==='page'){const found=find(e.page,[...path,id]);if(found)return found;}return null;};
     this.trail=find(s.draft.root,[])||[p.id];
     const trail=this.trail.map(id=>({name:s.draft.pages.find(p=>p.id===id)?.title||'Page',href:this.readHref(id)}));
-    const key=`${this.id}/${s.revision}/${s.edits}`;
+    const key=`${this.id}/${s.revision}/${s.edits}/${this.post()?.published_revision}`;
     if(this.connected&&s.edits===s.saved&&this.metadataKey!==key){
       this.metadataKey=key;const id=this.id;
       void api({action:'get_post',id}).then(value=>{if(id===this.id){this.rememberIds(value);if(this.reading)this.drawReading();}}).catch(e=>{if(id===this.id)this.error(e);this.metadataKey='';});
@@ -557,13 +591,15 @@ export class PublishingUI {
     if(nested){
       const parts=location.hash.split('/'),rootId=parts[6];
       const entry=p.entries.find((e):e is Extract<Entry,{kind:'torrent'}>=>e.kind==='torrent'&&this.torrentIds.get(e.data)===rootId);
-      if(!entry){this.content.leave();this.reader.header.update({title:'Torrent unavailable',connected:this.connected,noTorrent:true});this.reader.content('unavailable',null);this.reader.entries([],false);this.reader.breadcrumbs([...trail,{name:'Torrent unavailable',href:location.hash}]);return;}
+      if(!entry){this.content.leave();this.reader.header.update({title:'Torrent unavailable',connected:this.connected,noTorrent:true});this.reader.dates(null);this.reader.content('unavailable',null);this.reader.entries([],false);this.reader.breadcrumbs([...trail,{name:'Torrent unavailable',href:location.hash}]);return;}
       const crumbs=[...trail];for(let i=6;i<parts.length-1;i++)if(/^[0-9a-f]{40}$/.test(parts[i]))crumbs.push({name:this.state?.transfers.find(t=>t.id===parts[i])?.name||'Catalog',href:parts.slice(0,i+1).join('/')});
       this.content.render({id:nested.id,parent:nested.id===rootId?undefined:nested.parent,state:this.state,connected:this.connected,crumbs,position:this.position,source:this.post()?.title,signature:`${s.revision}/${s.edits}/${s.saved}`,
         load:(offset)=>nested.id!==rootId?this.host.call({type:'read_content',id:nested.id,parent:nested.parent,offset},false):this.state?.transfers.some(t=>t.id===nested.id)?this.host.call({type:'read_content',id:nested.id,offset},false):api({action:'inspect_entry',id:this.id,page:p.id,infohash:nested.id}),
         download:nested.id===rootId?()=>this.downloadOwn(entry):undefined});return;
     }
     this.content.leave();this.reader.breadcrumbs(trail);this.reader.header.update({title:p.title||'Page',id:this.id,connected:this.connected,noTorrent:true,source:'Current draft'});
+    const published=this.publishedDates.get(this.id),hasPublished=!!published&&Object.hasOwn(published.dates,String(p.id));
+    this.reader.dates(hasPublished?{...published!.dates[p.id],last_published:published!.differs||s.edits!==s.saved}:null);
     const tree=this.bodyCache.get(p.body)||null;
     this.reader.content(`${this.id}/${p.id}`,tree,target=>{
       if(target.startsWith('magnet:'))return ()=>this.link(target);
@@ -714,16 +750,19 @@ export class PublishingUI {
     } else if (f?.operation != null) {
       color = "pending";
       label = f.phase || f.state;
+    } else if (f?.state === "Canceled") {
+      label = "Publication canceled";
     } else if (f && f.published_revision > 0 && f.published_revision === f.revision && !dirty) {
       color = "published";
       label = "Published";
-    } else if (f?.state === "Canceled") {
-      label = "Publication canceled";
     } else if (f && (f.published_revision > 0 || dirty)) {
       label = "Unpublished changes";
     }
-    if (f?.pending_revision != null) details.push(`Publishing draft revision ${f.pending_revision}`);
-    if (f?.published_revision) details.push(`Published draft revision ${f.published_revision}`);
+    if(f?.pending_sequence!=null)details.push(`Publishing Version ${f.pending_sequence}`);
+    else if(f?.operation==null&&f?.sequence!=null&&f.sequence!==f.published_sequence)
+      details.push(`Signed Version ${f.sequence}`);
+    if(f?.published_sequence!=null)details.push(`Published Version ${f.published_sequence}`);
+    else if(f?.published_revision)details.push('Published Version unknown');
     if (f?.next_retry_at != null) details.push(`Next retry: ${new Date(f.next_retry_at).toLocaleTimeString()}`);
     if (problem || f?.error) details.push(problem || f!.error);
     indicator.dataset.state = color;

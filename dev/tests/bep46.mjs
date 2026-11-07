@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 // Runs inside the existing isolated DHT harness; never controls the review server.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -96,8 +97,8 @@ export async function runBep46({ client, routing, root, put, freshGet, pass: out
   finally {
     for (const resource of resources.reverse()) try { await resource.stop(); } catch (error) { report.errors.push(error.stack); }
     report.status = report.errors.length ? "fail" : "pass";
-    await mkdir(".runtime/evidence", { recursive: true });
-    await writeFile(".runtime/evidence/bep46.json", JSON.stringify(report, null, 2) + "\n");
+    await mkdir(evidencePath(), { recursive: true });
+    await writeFile(evidencePath("bep46.json"), JSON.stringify(report, null, 2) + "\n");
     if (report.errors.length && !process.exitCode) process.exitCode = 1;
   }
 }

@@ -228,7 +228,6 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .reader-body a {text-decoration:underline;text-underline-offset:3px;}
 #own-preview {margin-block:0;}
 #own-view:has(#own-preview:not([hidden])) #own-heading {font-size:20px;}
-#own-view:has(#own-preview:not([hidden])) > .list-heading:first-child {margin-bottom:28px;}
 
 /* Navigation data and drag targets are application behavior; Basecoat owns
    sidebar, buttons, dropdown menus, native selects and dialog surfaces. */
@@ -297,7 +296,12 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .library-back {margin-bottom:8px;}
 #post-view>.post-heading {justify-content:flex-end;margin-bottom:8px;}
 #post-approve {justify-self:start;margin:4px 0 0;}
-#own-view:has(#own-preview:not([hidden]))>.list-heading {justify-content:flex-end;margin-bottom:8px;}
+/* Own-post actions share the identity row; nested torrent activity stays below. */
+#own-preview .content-heading {display:flex;flex-direction:column;align-items:stretch;gap:12px;}
+#own-preview .content-identity {display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;}
+#own-preview .own-heading-group {flex:1 1 240px;}
+#own-preview .own-actions {flex:0 1 auto;max-width:100%;}
+#own-preview .reader-breadcrumb ol {overflow-wrap:anywhere;}
 @media(max-width:767px){
  .content-heading {grid-template-columns:minmax(0,1fr);gap:6px;margin-bottom:12px;}
  .content-identity h2 {font-size:16px;}
@@ -322,3 +326,7 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .cleanup-status section > div {display:flex;align-items:center;gap:12px;justify-content:space-between;}
 
 #post-remove-description {max-height:35vh;overflow:auto;overflow-wrap:anywhere;}
+
+.reader-dates {display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;max-width:720px;margin:8px 0 16px;color:var(--muted-foreground);font-size:12px;line-height:1.6;}
+.reader-dates>span {display:inline-flex;flex-wrap:wrap;gap:4px;}
+.reader-dates .badge {font-size:11px;white-space:normal;}

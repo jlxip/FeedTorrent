@@ -32,3 +32,23 @@ fn unsupported_sources_are_rejected() {
     assert!(inspect(TorrentSource::Magnet("magnet:?xt=urn:btpk:abcd")).is_err());
     assert!(inspect(TorrentSource::Torrent(b"bad bencode")).is_err());
 }
+
+#[test]
+fn outer_creation_dates_distinguish_epoch_missing_and_invalid_values() {
+    let info = b"4:infod6:lengthi1e4:name1:x12:piece lengthi16384e6:pieces20:00000000000000000000e";
+    for (field, expected) in [
+        ("", None),
+        ("13:creation datei0e", Some(0)),
+        ("13:creation datei1793921539e", Some(1793921539)),
+        ("13:creation datei-1e", None),
+        ("13:creation datei253402300800e", None),
+        ("13:creation date3:bad", None),
+    ] {
+        let mut torrent = b"d".to_vec();
+        torrent.extend(field.as_bytes());
+        torrent.extend(info);
+        torrent.push(b'e');
+        let d = LibtorrentBackend::describe_torrent(&torrent).unwrap();
+        assert_eq!(d.creation_date, expected, "{field}");
+    }
+}

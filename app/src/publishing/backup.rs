@@ -18,6 +18,7 @@ pub(super) fn export(dir: &Path, lib: &Library, full: bool) -> Result<PathBuf> {
         for f in library.posts.values_mut() {
             f.draft = Draft::new(f.title.clone());
             f.pages.clear();
+            f.published = None;
             f.history.clear();
         }
     }
@@ -51,7 +52,16 @@ pub(super) fn export(dir: &Path, lib: &Library, full: bool) -> Result<PathBuf> {
             let hashes: BTreeSet<_> = lib
                 .posts
                 .values()
-                .flat_map(|f| f.history.iter().chain(f.pages.values().map(|p| &p.hash)))
+                .flat_map(|f| {
+                    f.history
+                        .iter()
+                        .chain(f.pages.values().map(|p| &p.hash))
+                        .chain(
+                            f.published
+                                .iter()
+                                .flat_map(|p| p.pages.values().map(|p| &p.hash)),
+                        )
+                })
                 .collect();
             for hash in hashes {
                 let bytes = read(&package_path(dir, hash)?)?;
@@ -164,12 +174,22 @@ pub(super) fn import(
             continue;
         }
         if manifest.full {
-            for hash in f.history.iter().chain(f.pages.values().map(|p| &p.hash)) {
+            for hash in f
+                .history
+                .iter()
+                .chain(f.pages.values().map(|p| &p.hash))
+                .chain(
+                    f.published
+                        .iter()
+                        .flat_map(|p| p.pages.values().map(|p| &p.hash)),
+                )
+            {
                 if !entries.contains_key(&format!("catalogs/{hash}.json")) {
                     bail!("Backup is missing a catalog")
                 }
             }
         }
+        recover_published_sequence(&mut f)?;
         f.pending = None;
         f.active = false;
         f.state = "Restored; publishing disabled".into();

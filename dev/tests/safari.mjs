@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -129,9 +130,9 @@ try {
     } catch {}
   if (driver) driver.kill();
   if (root) await cleanup(root, tr, ref, app);
-  await mkdir(".runtime/evidence", { recursive: true });
+  await mkdir(evidencePath(), { recursive: true });
   await writeFile(
-    ".runtime/evidence/native-safari.json",
+    evidencePath("native-safari.json"),
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

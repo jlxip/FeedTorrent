@@ -1285,7 +1285,7 @@ async fn main() -> Result<()> {
                         Command::NewsPage{offset,anchor}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.news_page(offset,anchor.as_deref()).map_err(Into::into)).and_then(|p|serde_json::to_value(p).map_err(Into::into)),
                         Command::ReadContent{id,parent,offset}=>engine.read_content(&id,parent.as_deref(),offset),
                         Command::ReadCatalogBody{post,catalog}=>engine.catalog_body(&post,&catalog).map(|p|serde_json::json!({"path":p})),
-                        Command::CatalogPage{post,catalog,offset}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.page(&post,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total})),
+                        Command::CatalogPage{post,catalog,offset}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.page(&post,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total,"created_at":engine.catalog_dates(&p.catalog.id).and_then(|d|d.created_at),"updated_at":engine.catalog_dates(&p.catalog.id).map(|d|d.updated_at)})),
                         c=>engine.apply(c).map(|()|serde_json::json!({"ok":true})),
                     }.map_err(|e|format!("{e:#}"));
                     if let Err(e) = engine.refresh() {

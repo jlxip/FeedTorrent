@@ -32,5 +32,6 @@ pub use model::*;
 #[cfg(test)]
 mod tests;
 
+pub mod dates;
 pub mod markdown;
 pub mod publishing;

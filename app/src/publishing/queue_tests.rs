@@ -42,6 +42,8 @@ fn fixture(count: usize) -> (PathBuf, Library, Vec<String>) {
                 draft,
                 revision: 1,
                 published_revision: 0,
+                published_sequence: None,
+                published: None,
                 changed_at_us: 0,
                 signed_revision: 0,
                 pages: BTreeMap::new(),
@@ -681,3 +683,171 @@ fn removed_posts_are_absent_from_new_backups_and_old_backups_restore_explicitly(
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn readers_keep_confirmed_dates_through_signed_retries_cancellation_and_backups() {
+    let (dir, lib, ids) = fixture(1);
+    let mut m = manager(&dir, lib);
+    let id = &ids[0];
+    let operation = enqueue(&mut m, id);
+    let prepared = m.lib.posts[id]
+        .pending
+        .as_ref()
+        .unwrap()
+        .prepared_at
+        .unwrap();
+    let key = bep46::parse_magnet(&m.lib.posts[id].magnet).unwrap();
+    let first = m.lib.posts[id]
+        .draft
+        .build(&key, &BTreeMap::new(), prepared)
+        .unwrap();
+    let pages = |built: &feedtorrent_posts::publishing::Publication| {
+        built
+            .pages
+            .iter()
+            .map(|(&id, p)| {
+                (
+                    id,
+                    PageRef {
+                        fingerprint: p.fingerprint.clone(),
+                        hash: hex(&Feed::from_metainfo(&p.metainfo).unwrap().infohash()),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let sign = |root, seq| {
+        SignedRecord::from_record(
+            TorrentPointer::sign(
+                &Bep44Signer::from_seed(&key_seed()),
+                root,
+                seq,
+                key.salt().to_vec(),
+            )
+            .unwrap()
+            .record(),
+        )
+    };
+    for c in &first.catalogs {
+        store_package(&m.dir, c).unwrap();
+    }
+    running(&mut m, id, operation);
+    m.signed(
+        id,
+        operation,
+        sign(first.root, 0),
+        pages(&first),
+        vec![hex(&first.root)],
+    )
+    .unwrap();
+    let get = |m: &mut Manager| m.command(Command::GetPost { id: id.clone() }).unwrap();
+    assert_eq!(get(&mut m)["published_dates"], serde_json::json!({}));
+    m.finished(id.clone(), operation, Ok(1));
+    let dates = get(&mut m)["published_dates"].clone();
+    assert_eq!(dates["1"]["created_at"], prepared);
+    assert_eq!(dates["1"]["updated_at"], prepared);
+    assert_eq!(get(&mut m)["draft_differs"], false);
+    let original = m.lib.posts[id].draft.clone();
+    let mut draft = original.clone();
+    draft.pages[0].body = "second published snapshot".into();
+    m.command(Command::SaveDraft {
+        id: id.clone(),
+        revision: 1,
+        draft: draft.clone(),
+    })
+    .unwrap();
+    let second_operation = enqueue(&mut m, id);
+    let second_clock = m.lib.posts[id].pending.as_ref().unwrap().prepared_at;
+    let second = draft.build(&key, &first.pages, prepared + 100).unwrap();
+    for c in &second.catalogs {
+        store_package(&m.dir, c).unwrap();
+    }
+    running(&mut m, id, second_operation);
+    m.signed(
+        id,
+        second_operation,
+        sign(second.root, 1),
+        pages(&second),
+        vec![hex(&second.root)],
+    )
+    .unwrap();
+    assert_eq!(get(&mut m)["published_dates"], dates);
+    assert_eq!(get(&mut m)["draft_differs"], true);
+    m.finished(
+        id.clone(),
+        second_operation,
+        Err(PublicationFailure {
+            message: "temporary DHT failure".into(),
+            transient: true,
+        }),
+    );
+    assert_eq!(
+        m.lib.posts[id].pending.as_ref().unwrap().prepared_at,
+        second_clock
+    );
+    let loaded = load(&m.dir).unwrap();
+    assert_eq!(
+        reader_dates(&m.dir, &loaded.posts[id])["published_dates"],
+        dates
+    );
+    m.command(Command::CancelPublication {
+        id: id.clone(),
+        operation: second_operation,
+    })
+    .unwrap();
+    assert_eq!(get(&mut m)["published_dates"], dates);
+    // Returning to identical content removes the annotation, even at a newer draft revision.
+    m.command(Command::SaveDraft {
+        id: id.clone(),
+        revision: 2,
+        draft: original,
+    })
+    .unwrap();
+    assert_eq!(get(&mut m)["draft_differs"], false);
+    let before = fs::read(package_path(&m.dir, &hex(&first.root)).unwrap()).unwrap();
+    for full in [false, true] {
+        let archive = backup::export(&m.dir, &m.lib, full).unwrap();
+        let restored_dir = dir.join(if full { "full" } else { "minimal" });
+        fs::create_dir_all(restored_dir.join("catalogs")).unwrap();
+        let restored = backup::import(
+            &restored_dir,
+            &Library::default(),
+            &fs::read(archive).unwrap(),
+            &Password(PASSWORD.into()),
+        )
+        .unwrap();
+        if full {
+            assert_eq!(
+                reader_dates(&restored_dir, &restored.posts[id])["published_dates"],
+                dates
+            );
+            assert_eq!(
+                fs::read(package_path(&restored_dir, &hex(&first.root)).unwrap()).unwrap(),
+                before
+            );
+        } else {
+            assert!(restored.posts[id].published.is_none());
+            assert!(confirmed(&restored.posts[id]).is_none());
+        }
+    }
+    // Acknowledging the signed version advances only the published dates.
+    m.command(Command::SaveDraft {
+        id: id.clone(),
+        revision: 3,
+        draft,
+    })
+    .unwrap();
+    let op = enqueue(&mut m, id);
+    running(&mut m, id, op);
+    m.signed(id, op, sign(second.root, 1), pages(&second), vec![])
+        .unwrap();
+    m.finished(id.clone(), op, Ok(2));
+    let now = get(&mut m);
+    assert_eq!(now["published_dates"]["1"]["created_at"], prepared);
+    assert_eq!(now["published_dates"]["1"]["updated_at"], prepared + 100);
+    assert_eq!(now["draft_differs"], false);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[path = "version_tests.rs"]
+mod version_tests;

@@ -1,3 +1,4 @@
+import {runRoot} from './runtime.mjs';
 // Isolate Gecko application bookkeeping from the user's macOS-protected Firefox data.
 // https://github.com/microsoft/playwright/issues/42768
 import { firefox } from "@playwright/test";
@@ -15,7 +16,7 @@ export function firefoxOptions() {
   if (process.platform !== "darwin") return {};
   const binary = firefox.executablePath(),
     resources = resolve(dirname(binary), "../Resources"),
-    root = resolve(".runtime/firefox-app");
+    root = join(runRoot, `firefox-${process.pid}`);
   mkdirSync(root, { recursive: true });
   for (const name of readdirSync(join(resources, "browser"))) {
     const target = join(root, name);
@@ -28,7 +29,7 @@ export function firefoxOptions() {
     .replace("RemotingName=firefox-default", "RemotingName=feedtorrent-tests");
   writeFileSync(join(root, "application.ini"), ini);
   const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'",
-    wrapper = resolve(".runtime/firefox-launch");
+    wrapper = join(root, "launch");
   writeFileSync(
     wrapper,
     `#!/bin/sh\nexec ${quote(binary)} -app ${quote(join(root, "application.ini"))} "$@"\n`.replaceAll(

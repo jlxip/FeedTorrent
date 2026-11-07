@@ -2,6 +2,7 @@ use super::{error, ffi, LibtorrentBackend};
 use feedtorrent_bep::{AddTransfer, BackendFile, Result, TorrentSource};
 #[derive(Clone, Debug)]
 pub struct TorrentDescription {
+    pub creation_date: Option<u64>,
     pub id: String,
     pub name: String,
     pub total: u64,
@@ -11,6 +12,10 @@ pub struct TorrentDescription {
 }
 fn convert(d: ffi::NativeDescription) -> TorrentDescription {
     TorrentDescription {
+        creation_date: (d.has_creation_date
+            && d.creation_date >= 0
+            && d.creation_date <= 253_402_300_799)
+            .then_some(d.creation_date as u64),
         id: d.id,
         name: d.name,
         total: d.total,

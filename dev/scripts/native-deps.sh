@@ -1,6 +1,15 @@
 #!/bin/sh
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+source="$root/backends/libtorrent/vendor/libtorrent"
+case "${1:-}" in ''|--verify-source) ;; *) echo 'Unexpected native-deps argument' >&2; exit 1;; esac
+if [ ! -e "$source/.git" ]; then git -C "$root" submodule update --init backends/libtorrent/vendor/libtorrent; fi
+test "$(git -C "$source" rev-parse HEAD)" = 6da363d2994f17c0b3c0450d124cf73a31a73847 || { echo 'Unexpected libtorrent revision' >&2; exit 1; }
+git -C "$source" diff --exit-code HEAD
+if [ ! -e "$source/deps/try_signal/.git" ]; then git -C "$source" submodule update --init deps/try_signal; fi
+[ "${1:-}" != --verify-source ] || exit 0
+jobs=${NATIVE_JOBS:-6}
+if [ "$(uname -s)" = OpenBSD ]; then jobs=${NATIVE_JOBS:-2}; fi
 set -- cmake -S "$root/backends/libtorrent/vendor/libtorrent" \
   -B "$root/.tools/libtorrent-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_STANDARD=17 -DCMAKE_INSTALL_PREFIX="$root/.tools/native" \
@@ -18,5 +27,5 @@ if [ "$(uname -s)" = OpenBSD ]; then
   set -- "$@" "-DCMAKE_PROJECT_libtorrent_INCLUDE=$root/dev/cmake/openbsd.cmake"
 fi
 "$@"
-cmake --build "$root/.tools/libtorrent-build" -j "${NATIVE_JOBS:-6}"
+cmake --build "$root/.tools/libtorrent-build" -j "$jobs"
 cmake --install "$root/.tools/libtorrent-build"

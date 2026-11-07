@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 import assert from 'node:assert/strict';
 import {mkdir, readFile, rm, stat, utimes, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -256,7 +257,10 @@ try {
 } finally {
   if (app) await app.stop();
   if (fx) await fx.stop();
-  await mkdir('.runtime/evidence', {recursive: true});
-  await writeFile('.runtime/evidence/posts.json', JSON.stringify(report, null, 2) + '\n');
+  await mkdir(evidencePath(), {recursive: true});
+  await writeFile(evidencePath("posts.json"), JSON.stringify(report, null, 2) + '\n');
   await cleanup(root);
 }
+
+// Keep the independent author-offline renewal regression in the native suite.
+if (!process.exitCode) await import('./post-renewal.mjs');

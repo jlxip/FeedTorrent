@@ -6,6 +6,12 @@ use feedtorrent_bep::TorrentMetadataBackend;
 use feedtorrent_posts::EntryView;
 use serde_json::{json, Value};
 
+fn dates_file(name: &str, title: &str) -> bool {
+    name == "metadata/dates.json"
+        || name
+            .strip_prefix(title)
+            .is_some_and(|s| s == "/metadata/dates.json")
+}
 fn body_file(name: &str, title: &str) -> bool {
     name == "metadata/body.md"
         || name
@@ -24,19 +30,27 @@ pub(super) fn preview(data: &[u8]) -> Result<Value> {
         d.error
     };
     let has_body = d.files.iter().any(|f| body_file(&f.name, &d.name));
-    let files: Vec<_> = d.files.iter().enumerate().filter(|(_, f)| !body_file(&f.name, &d.name))
+    let files: Vec<_> = d.files.iter().enumerate().filter(|(_, f)| !(body_file(&f.name, &d.name) || item.is_feed() && dates_file(&f.name,&d.name)))
         .map(|(index,f)| json!({"index":index,"name":f.name,"length":f.length,"verified":0,"ready":false})).collect();
     Ok(
         json!({"id":d.id,"name":d.name,"total":d.total,"kind":if item.is_feed(){"catalog"}else{"torrent"},
-        "files":files,"entries":[],"count":0,"offset":0,"body":null,
+        "created_at":if item.is_feed(){None}else{d.creation_date},"updated_at":null,"files":files,"entries":[],"count":0,"offset":0,"body":null,
         "body_state":if has_body{"pending"}else{"absent"},"body_error":"","error":error}),
     )
 }
 
 impl Engine {
     fn content_entry_data(&self, catalog: &str, entry: &FeedEntry) -> Result<Vec<u8>> {
-        if entry.length() > 8 * 1024 * 1024 {
-            bail!("Torrent metadata exceeds 8 MiB")
+        self.content_entry_data_limited(catalog, entry, 8 * 1024 * 1024)
+    }
+    fn content_entry_data_limited(
+        &self,
+        catalog: &str,
+        entry: &FeedEntry,
+        limit: usize,
+    ) -> Result<Vec<u8>> {
+        if entry.length() > limit as u64 {
+            bail!("Content metadata exceeds limit")
         }
         let t = self
             .view
@@ -52,7 +66,11 @@ impl Engine {
             bail!("Content metadata is not downloaded and verified")
         }
         let path = self.verified_path(catalog, &file.name)?;
-        let data = read_limited(&path)?;
+        use std::io::Read;
+        let mut data = Vec::new();
+        File::open(&path)?
+            .take(limit as u64 + 1)
+            .read_to_end(&mut data)?;
         if data.len() as u64 != entry.length()
             || entry.check_sha1(std::io::Cursor::new(&data))? == Some(false)
         {
@@ -61,6 +79,22 @@ impl Engine {
         Ok(data)
     }
 
+    pub(super) fn catalog_dates(&self, id: &str) -> Option<feedtorrent_posts::dates::Dates> {
+        let info = self.native.info_bytes(id).ok()??;
+        let catalog = Feed::from_info(&info).ok()?;
+        let mut entries = catalog
+            .entries()
+            .iter()
+            .filter(|e| e.path() == ["metadata", "dates.json"]);
+        let entry = entries.next()?;
+        if entries.next().is_some() {
+            return None;
+        }
+        let data = self
+            .content_entry_data_limited(id, entry, feedtorrent_posts::dates::MAX_BYTES)
+            .ok()?;
+        feedtorrent_posts::dates::Dates::parse(&data)
+    }
     pub(super) fn content_reference(&self, parent: &str, id: &str) -> Result<Value> {
         self.record(parent)?;
         let info = self
@@ -198,12 +232,23 @@ impl Engine {
         };
         let info = self.native.info_bytes(id)?;
         let catalog = info.as_deref().and_then(|info| Feed::from_info(info).ok());
+        let dates = catalog.as_ref().and_then(|_| self.catalog_dates(id));
+        value["created_at"] = if catalog.is_some() {
+            json!(dates.and_then(|d| d.created_at))
+        } else {
+            json!(self
+                .native
+                .description(id)
+                .ok()
+                .and_then(|d| d.creation_date))
+        };
+        value["updated_at"] = json!(dates.map(|d| d.updated_at));
         value["kind"] = json!(if catalog.is_some() {
             "catalog"
         } else {
             "torrent"
         });
-        value["files"]=json!(t.files.iter().enumerate().filter(|(_,f)|!body_file(&f.name,&t.name)).map(|(index,f)|json!({"index":index,"name":f.name,"length":f.length,"verified":f.verified,"ready":f.ready})).collect::<Vec<_>>());
+        value["files"]=json!(t.files.iter().enumerate().filter(|(_,f)|!(body_file(&f.name,&t.name) || catalog.is_some() && dates_file(&f.name,&t.name))).map(|(index,f)|json!({"index":index,"name":f.name,"length":f.length,"verified":f.verified,"ready":f.ready})).collect::<Vec<_>>());
         if let Some(catalog) = catalog.as_ref() {
             let items: Vec<_> = catalog.items().collect();
             value["count"] = json!(items.len());

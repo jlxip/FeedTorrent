@@ -1,3 +1,5 @@
+import {publicationFlow} from './publication-flow.mjs';
+import {evidencePath} from './runtime.mjs';
 import { decryptVault, encryptVault } from "./key-vault-fixture.mjs";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -102,6 +104,8 @@ try {
     await readFile(join(root, "publisher/state/publishing/library.json")),
   );
   assert.equal(saved.posts[id].record.sequence, 0);
+  assert.equal(saved.posts[id].published_sequence,0);
+  assert.equal(own.published_sequence,'0');assert.equal(own.pending_sequence,null);assert.equal(own.sequence,'0');
   assert.equal(saved.posts[id].published_revision, initialRevision);
   assert.equal(saved.posts[id].revision, revision);
   assert(initialRevision < revision);
@@ -158,6 +162,14 @@ try {
   );
   const metainfo = Buffer.from(pkg.metainfo),
     decoded = bencode.decode(metainfo);
+  const declared = JSON.parse(Buffer.from(pkg.files.find(([p])=>p.join('/')==='metadata/dates.json')[1]));
+  assert.equal(declared.created_at,declared.updated_at);
+  assert.equal(decoded['creation date'],declared.updated_at);
+  assert(declared.updated_at > Date.now()/1000-300 && declared.updated_at <= Date.now()/1000);
+  const ownDates = await pub({action:'get_post',id});
+  assert.deepEqual(ownDates.published_dates['1'],declared);
+  assert.equal(ownDates.draft_differs,true);
+
   assert(decoded.info.bep49);
   assert.equal(digest(bencode.encode(decoded.info)).toString("hex"), hash);
   const independent = await reference();
@@ -182,6 +194,20 @@ try {
   pass(
     "WebTorrent downloads generated catalogs byte-for-byte; canonical metainfo and independent Ed25519 checks",
   );
+  // A fresh, independent Node reader derives identity and content only from the post magnet.
+  const magnetReader = await reference({dht:{bootstrap:nodes.map(n=>({host:'127.0.0.1',port:n.address().port}))}});
+  resources.push(magnetReader);
+  await wait(()=>magnetReader.client.dht.nodes.toArray().length>0,'magnet reader routing');
+  const uri = new URL(own.magnet), keyFromMagnet = Buffer.from(uri.searchParams.get('xs').slice('urn:btpk:'.length),'hex'), saltFromMagnet=Buffer.from(uri.searchParams.get('s')||'','hex');
+  const found=await new Promise((yes,no)=>magnetReader.client.dht.get(digest(Buffer.concat([keyFromMagnet,saltFromMagnet])),{salt:saltFromMagnet,verify:check},(e,v)=>e?no(e):yes(v)));
+  assert(found);assert.deepEqual(Buffer.from(found.k),keyFromMagnet);
+  const readHash=Buffer.from(found.v.ih).toString('hex');
+  const magnetTorrent=magnetReader.client.add('magnet:?xt=urn:btih:'+readHash,{path:join(root,'magnet-reader')});
+  await wait(()=>magnetTorrent.done,'independent magnet-only catalog and dates',90000);
+  assert.equal(digest(magnetTorrent.infoBuffer).toString('hex'),hash);
+  const datesFile=magnetTorrent.files.find(f=>f.path.endsWith('/metadata/dates.json'));
+  assert(datesFile);assert.deepEqual(JSON.parse(Buffer.from(await datesFile.arrayBuffer())),declared);
+  pass('independent Node reader resolves only post magnet via DHT and downloads verified dates without tracker/manual peer');
   reader = await startApp(join(root, "reader"), args);
   resources.push(reader);
   await reader.command({
@@ -201,6 +227,10 @@ try {
     "post magnet -> metadata -> catalog",
     90000,
   );
+  const datePage=await reader.command({type:'catalog_page',post:id,catalog:hash,offset:0});
+  assert.equal(datePage.created_at,declared.created_at);assert.equal(datePage.updated_at,declared.updated_at);
+  const content=await reader.command({type:'read_content',id:hash,offset:0});
+  assert.equal(content.created_at,declared.created_at);assert.equal(content.updated_at,declared.updated_at);
   const body = await reader.command({
     type: "read_catalog_body",
     post: id,
@@ -286,11 +316,17 @@ try {
     );
     const f = (await restored.api()).publishing.posts[0];
     assert.equal(f.active, false);
+    assert.equal(f.published_sequence,'1');assert.equal(f.pending_sequence,null);
     const restoredDraft = await restored.api("/api/publishing", {
       action: "get_post",
       id,
     });
     assert.equal(restoredDraft.draft.pages.length, full ? 2 : 1);
+    if(full){
+      assert.deepEqual(restoredDraft.published_dates,(await pub({action:'get_post',id})).published_dates);
+      assert.deepEqual(await readFile(join(root,'full-restore/state/publishing/catalogs',hash+'.json')),await readFile(join(root,'publisher/state/publishing/catalogs',hash+'.json')));
+    }else assert.deepEqual(restoredDraft.published_dates,{});
+
   }
   pass(
     "minimal and complete backups import with encrypted seed and plaintext catalogs; imported publishing stays disabled",
@@ -332,6 +368,7 @@ try {
       own.magnet.match(/btpk:([a-f0-9]+)/)[1],
     "restored public key snapshot",
   );
+  const beforeRepublish=await readFile(join(root,"publisher/state/publishing/catalogs",next+".json"));
   await app.api("/api/publishing", {
     action: "publish",
     id,
@@ -345,13 +382,22 @@ try {
   pass(
     "independent Node Argon2id encryption is accepted by Rust; password change, durable drafts, restart, paused old seed and secret-free snapshots/logs",
   );
+  const unchanged=await app.api('/api/publishing',{action:'get_post',id});
+  assert.deepEqual(unchanged.published_dates,after.published_dates);
+  const version=(await app.api()).publishing.posts[0];assert.equal(version.published_sequence,'2');assert.equal(version.pending_sequence,null);assert.equal(version.sequence,'2');
+  assert.deepEqual(await readFile(join(root,'publisher/state/publishing/catalogs',next+'.json')),beforeRepublish);
+  const finalLibrary=JSON.parse(await readFile(join(root,'publisher/state/publishing/library.json')));
+  assert.equal(Buffer.from(bencode.decode(Buffer.from(finalLibrary.posts[id].record.value)).ih).toString('hex'),next);
+  assert.equal(finalLibrary.posts[id].history.length,4);
+  pass('unchanged republish after restart preserves every catalog byte, hash and declared date');
+  await publicationFlow();
   report.status = "passed";
 } finally {
   for (const n of nodes) await new Promise((r) => n.destroy(r));
   await cleanup(root, ...resources);
-  await mkdir(".runtime/evidence", { recursive: true });
+  await mkdir(evidencePath(), { recursive: true });
   await writeFile(
-    ".runtime/evidence/publishing.json",
+    evidencePath("publishing.json"),
     JSON.stringify(report, null, 2),
   );
 }

@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
@@ -71,6 +72,6 @@ fn main() {
   console.error(error); process.exitCode = 1;
 } finally {
   await rm(root, { recursive: true, force: true });
-  await mkdir(join(runtime, "evidence"), { recursive: true });
-  await writeFile(join(runtime, "evidence/bep-consumer.json"), JSON.stringify(report, null, 2) + "\n");
+  await mkdir(evidencePath(), { recursive: true });
+  await writeFile(evidencePath("bep-consumer.json"), JSON.stringify(report, null, 2) + "\n");
 }

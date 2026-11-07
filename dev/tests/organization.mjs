@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 import assert from 'node:assert/strict';
 import {generateKeyPairSync} from 'node:crypto';
 import {join} from 'node:path';
@@ -31,6 +32,6 @@ try{
   pass('archived post keeps network updates and New posts');
   const before=await app.api();await app.stop();app=await startApp(join(root,'app'),args);const restored=await app.api();
   assert.deepEqual(restored.organization,before.organization);pass('restart preserves archive, order and version baselines without another bump');
-  await mkdir('.runtime/evidence',{recursive:true});
-  await writeFile('.runtime/evidence/organization.json',JSON.stringify({checks,status:'PASS'},null,2));
+  await mkdir(evidencePath(),{recursive:true});
+  await writeFile(evidencePath("organization.json"),JSON.stringify({checks,status:'PASS'},null,2));
 }finally{await cleanup(root,app,fx);}

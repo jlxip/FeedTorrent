@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 import bencode from "bencode";
 import { createHash } from "node:crypto";
 import { test, expect } from "@playwright/test";
@@ -119,7 +120,7 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
     await page.screenshot({
-      path: ".runtime/evidence/publishing-editor-" + info.project.name + ".png",
+      path: evidencePath("publishing-editor-") + info.project.name + ".png",
       fullPage: true,
     });
     await page.setViewportSize({ width: 320, height: 900 });

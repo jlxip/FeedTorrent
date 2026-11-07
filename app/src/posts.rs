@@ -24,6 +24,7 @@ pub(super) struct PostHost {
     udp: Option<UdpPubSub>,
     pending: BTreeMap<WorkId, Pending>,
     lookups: BTreeMap<u64, WorkId>,
+    renewals: BTreeMap<u64, (WorkId, bool)>,
     start: Instant,
     disabled: bool,
     recovered: bool,
@@ -152,6 +153,7 @@ impl PostHost {
             udp,
             pending: BTreeMap::new(),
             lookups: BTreeMap::new(),
+            renewals: BTreeMap::new(),
             start: Instant::now(),
             disabled,
             recovered,
@@ -237,6 +239,44 @@ impl PostHost {
                 .as_mut()
                 .is_some_and(|bridge| bridge.event(&event, self))
             {
+                continue;
+            }
+            if let Some((work, put)) = self.renewals.remove(&event.id.0) {
+                use feedtorrent_posts::{RenewalConfirmation, RenewalError};
+                let result = event.result.map_err(|e| {
+                    if e == feedtorrent_bep::bep44::DhtError::Conflict {
+                        RenewalError::Conflict
+                    } else {
+                        RenewalError::Failed(e.to_string())
+                    }
+                });
+                if put {
+                    self.manager.renewal_result(
+                        work,
+                        result.and_then(|r| match r {
+                            DhtOutcome::Stored {
+                                target,
+                                acknowledged_nodes,
+                            } => Ok(RenewalConfirmation {
+                                target,
+                                acknowledged_nodes,
+                            }),
+                            _ => Err(RenewalError::Failed("Unexpected DHT confirmation".into())),
+                        }),
+                        now,
+                    );
+                } else {
+                    self.manager.renewal_lookup_result(
+                        work,
+                        result.and_then(|r| match r {
+                            DhtOutcome::Mutable(r) => Ok(r),
+                            _ => Err(RenewalError::Failed(
+                                "Unexpected DHT lookup response".into(),
+                            )),
+                        }),
+                        now,
+                    );
+                }
                 continue;
             }
             if let Some(work) = self.lookups.remove(&event.id.0) {
@@ -380,7 +420,57 @@ impl PostHost {
                     }
                     Ok(())
                 }
+                Action::RenewalLookup { work, key, .. } => {
+                    if !self.manager.work_is_current(work) {
+                        continue;
+                    }
+                    // Canceled native requests can still be on the wire. Count
+                    // them until their terminal event, even after Unfollow.
+                    if self.renewals.len() >= 4 {
+                        self.manager.fail(work, "DHT renewal is busy".into());
+                        continue;
+                    }
+                    match e.native.start_dht(
+                        DhtRequest::GetMutable(key),
+                        DhtOptions {
+                            timeout: Duration::from_secs(120),
+                        },
+                    ) {
+                        Ok(id) => {
+                            self.renewals.insert(id.0, (work, false));
+                        }
+                        Err(error) => self.manager.fail(work, error.to_string()),
+                    }
+                    Ok(())
+                }
+                Action::RenewalPut { work, .. } => {
+                    let Some(record) = self.manager.renewal_record(work) else {
+                        self.manager.cancel(work);
+                        continue;
+                    };
+                    // Canceled native requests can still be on the wire. Count
+                    // them until their terminal event, even after Unfollow.
+                    if self.renewals.len() >= 4 {
+                        self.manager.fail(work, "DHT renewal is busy".into());
+                        continue;
+                    }
+                    match e.native.start_dht(
+                        DhtRequest::PutMutable(record),
+                        DhtOptions {
+                            timeout: Duration::from_secs(180),
+                        },
+                    ) {
+                        Ok(id) => {
+                            self.renewals.insert(id.0, (work, true));
+                        }
+                        Err(error) => self.manager.fail(work, error.to_string()),
+                    }
+                    Ok(())
+                }
                 Action::Lookup { work, post: _, key } => {
+                    if !self.manager.work_is_current(work) {
+                        continue;
+                    }
                     match e
                         .native
                         .start_dht(DhtRequest::GetMutable(key), DhtOptions::default())

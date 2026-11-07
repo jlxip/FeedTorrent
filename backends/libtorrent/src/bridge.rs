@@ -8,6 +8,8 @@ pub mod ffi {
         padding: bool,
     }
     struct NativeDescription {
+        has_creation_date: bool,
+        creation_date: i64,
         id: String,
         name: String,
         total: u64,

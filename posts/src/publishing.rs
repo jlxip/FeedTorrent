@@ -4,6 +4,7 @@ use feedtorrent_bep::{bep44::MutableKey, bep49::*};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     io::Cursor,
 };
@@ -34,6 +35,9 @@ pub enum Entry {
 pub struct Previous {
     pub fingerprint: String,
     pub metainfo: Vec<u8>,
+    /// Read only from a verified previous package; absent for legacy catalogs.
+    #[serde(default)]
+    pub dates: Option<crate::dates::Dates>,
 }
 #[derive(Clone, Debug)]
 pub struct Payload {
@@ -143,18 +147,39 @@ impl Draft {
         &self,
         key: &MutableKey,
         previous: &BTreeMap<u64, Previous>,
+        prepared_at: u64,
     ) -> Result<Publication> {
-        self.build_with_previous_root(key, previous, None)
+        self.build_with_previous_root(key, previous, None, prepared_at)
     }
-    /// A restored signer may know the last root without retaining its metadata.
+    /// Build a real publication with one host-supplied, durable operation time.
     pub fn build_with_previous_root(
         &self,
         key: &MutableKey,
         previous: &BTreeMap<u64, Previous>,
         previous_root: Option<[u8; 20]>,
+        prepared_at: u64,
+    ) -> Result<Publication> {
+        crate::dates::Dates::new(None, prepared_at)?;
+        self.construct(key, previous, previous_root, Some(prepared_at))
+    }
+    /// Virtual comparison only; never assigns publication dates to a draft.
+    pub fn preview(
+        &self,
+        key: &MutableKey,
+        previous: &BTreeMap<u64, Previous>,
+    ) -> Result<Publication> {
+        self.construct(key, previous, None, None)
+    }
+    fn construct(
+        &self,
+        key: &MutableKey,
+        previous: &BTreeMap<u64, Previous>,
+        previous_root: Option<[u8; 20]>,
+        prepared_at: Option<u64>,
     ) -> Result<Publication> {
         self.validate()?;
         struct Builder<'a> {
+            prepared_at: Option<u64>,
             previous_root: Option<[u8; 20]>,
             draft: &'a Draft,
             key: &'a MutableKey,
@@ -196,7 +221,9 @@ impl Draft {
                     let base = name;
                     let mut name = base.clone();
                     let mut suffix = index + 1;
-                    while files.iter().any(|f: &Payload| f.path == vec![name.clone()]) {
+                    while name == "metadata"
+                        || files.iter().any(|f: &Payload| f.path == vec![name.clone()])
+                    {
                         name = format!("{suffix}-{base}");
                         suffix += 1;
                     }
@@ -231,7 +258,42 @@ impl Draft {
                     self.out.pages.insert(id, old.clone());
                     return Ok(old.metainfo.clone());
                 }
+                let dates = if let Some(time) = self.prepared_at {
+                    let prior = if id == self.draft.root {
+                        if let Some(root) = self.previous_root {
+                            self.previous.values().find(|old| {
+                                Feed::from_metainfo(&old.metainfo)
+                                    .is_ok_and(|f| f.infohash() == root)
+                            })
+                        } else {
+                            self.previous.get(&id)
+                        }
+                    } else {
+                        self.previous.get(&id)
+                    };
+                    let has_previous =
+                        prior.is_some() || (id == self.draft.root && self.previous_root.is_some());
+                    let created = if has_previous {
+                        prior.and_then(|p| p.dates).and_then(|d| d.created_at)
+                    } else {
+                        Some(time)
+                    };
+                    let dates = crate::dates::Dates::new(created, time)?;
+                    files.push(Payload {
+                        path: vec!["metadata".into(), "dates.json".into()],
+                        data: serde_json::to_vec(&dates).map_err(err)?,
+                    });
+                    Some(dates)
+                } else {
+                    None
+                };
                 let mut b = FeedBuilder::new(&p.title);
+                if let Some(d) = dates {
+                    b.outer.insert(
+                        Cow::Borrowed(b"creation date"),
+                        OuterValue::Integer(d.updated_at as i64),
+                    );
+                }
                 if id == self.draft.root {
                     b.fields.source = Some(self.key.clone())
                 }
@@ -240,7 +302,7 @@ impl Draft {
                         Feed::from_metainfo(&old.metainfo).map_err(err)?.infohash(),
                     ))
                 }
-                if id == self.draft.root && b.fields.previous.is_none() {
+                if id == self.draft.root && self.previous_root.is_some() {
                     b.fields.previous = self.previous_root.map(TorrentLink::new);
                 }
                 b.entries = files
@@ -254,6 +316,7 @@ impl Draft {
                     Previous {
                         fingerprint: fingerprint.clone(),
                         metainfo: meta.clone(),
+                        dates,
                     },
                 );
                 self.out.catalogs.push(BuiltCatalog {
@@ -266,6 +329,7 @@ impl Draft {
             }
         }
         let mut b = Builder {
+            prepared_at,
             previous_root,
             draft: self,
             key,
@@ -356,13 +420,13 @@ mod tests {
             body: "hello".into(),
             entries: vec![],
         });
-        let a = d.build(&key, &BTreeMap::new()).unwrap();
+        let a = d.build(&key, &BTreeMap::new(), 1_700_000_000).unwrap();
         assert_eq!(a.catalogs.len(), 2);
-        let b = d.build(&key, &a.pages).unwrap();
+        let b = d.build(&key, &a.pages, 1_700_000_100).unwrap();
         assert_eq!(a.root, b.root);
         assert!(b.catalogs.is_empty());
         d.pages[1].body = "updated".into();
-        let c = d.build(&key, &a.pages).unwrap();
+        let c = d.build(&key, &a.pages, 1_700_000_100).unwrap();
         assert_ne!(a.root, c.root);
         assert_eq!(c.catalogs.len(), 2);
         let root = Feed::from_metainfo(&c.pages[&1].metainfo).unwrap();
@@ -421,7 +485,7 @@ mod tests {
                 data: a.metainfo,
             },
         ];
-        let built = d.build(&key, &BTreeMap::new()).unwrap();
+        let built = d.build(&key, &BTreeMap::new(), 1_700_000_000).unwrap();
         let package = &built.catalogs[0];
         let files: Vec<_> = package
             .files
@@ -443,7 +507,7 @@ mod tests {
         let mut d = Draft::new("restored".into());
         d.pages[0].body = "Recovered text".into();
         let built = d
-            .build_with_previous_root(&key, &BTreeMap::new(), Some([42; 20]))
+            .build_with_previous_root(&key, &BTreeMap::new(), Some([42; 20]), 1_700_000_000)
             .unwrap();
         let root = Feed::from_metainfo(&built.catalogs[0].metainfo).unwrap();
         assert_eq!(
@@ -452,7 +516,11 @@ mod tests {
         );
         let other =
             MutableKey::new(Bep44Signer::from_seed(&[10; 32]).public_key(), vec![3]).unwrap();
-        let changed = d.build(&other, &built.pages).unwrap();
+        let changed = d.build(&other, &built.pages, 1_700_000_100).unwrap();
         assert_ne!(built.root, changed.root);
     }
 }
+
+#[cfg(test)]
+#[path = "publishing_dates_tests.rs"]
+mod dates_tests;

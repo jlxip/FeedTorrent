@@ -8,6 +8,9 @@ use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, VecDeque};
 #[path = "news.rs"]
 mod news;
+#[path = "renewal.rs"]
+mod renewal;
+use renewal::Renewal;
 const MAX_WORK: usize = 32;
 #[derive(Clone)]
 struct Visit {
@@ -47,6 +50,8 @@ impl Visit {
 #[derive(Clone)]
 enum Work {
     Lookup(String),
+    RenewalLookup(String),
+    RenewalPut(String, MutableRecord),
     Stage(String, String, Role),
     Read(String, String, usize),
     Approve(String, String),
@@ -64,6 +69,7 @@ struct Runtime {
 #[derive(Clone)]
 pub struct PostManager {
     state: Checkpoint,
+    renewals: BTreeMap<String, Renewal>,
     visits: BTreeMap<(String, String), Visit>,
     runtime: BTreeMap<String, Runtime>,
     pending: BTreeMap<WorkId, Work>,
@@ -86,6 +92,7 @@ impl PostManager {
     pub fn new() -> Self {
         Self {
             state: Checkpoint::default(),
+            renewals: BTreeMap::new(),
             visits: BTreeMap::new(),
             runtime: BTreeMap::new(),
             pending: BTreeMap::new(),
@@ -317,6 +324,9 @@ impl PostManager {
                         known: self.known(&id).ok().flatten(),
                     });
                 }
+                if self.known(&id).ok().flatten().is_some() {
+                    self.renewals.insert(id.clone(), Renewal::due(now));
+                }
                 let records = self.state.posts[&id].records.clone();
                 for r in records {
                     if let Ok(record) = r.verify(&self.key(&id).unwrap()) {
@@ -347,6 +357,11 @@ impl PostManager {
         s.followed = true;
         s.config = config;
         self.runtime.entry(id.clone()).or_default().next_check = now;
+        if self.known(&id)?.is_some() {
+            self.renewals
+                .entry(id.clone())
+                .or_insert_with(|| Renewal::due(now));
+        }
         self.dirty = true;
         self.out.push_back(Action::Watch {
             post: id.clone(),
@@ -370,6 +385,10 @@ impl PostManager {
     pub fn unfollow(&mut self, id: &str) -> Result<()> {
         let key = self.key(id)?;
         self.state.posts.get_mut(id).unwrap().followed = false;
+        self.renewals.remove(id);
+        if let Some(r) = self.runtime.get_mut(id) {
+            r.checking = false;
+        }
         self.dirty = true;
         self.out.retain(|a| action_post(a) != id);
         self.pending.retain(|_, w| work_post(w) != id);
@@ -442,6 +461,9 @@ impl PostManager {
                 record: r.clone(),
             });
         }
+        self.renewals
+            .entry(id.into())
+            .or_insert_with(|| Renewal::due(now));
         self.remember_pointer(id, r);
         self.tick(now);
         Ok(())
@@ -790,12 +812,20 @@ impl PostManager {
         }
     }
     pub fn fail(&mut self, work: WorkId, message: String) {
+        if let Some(Work::RenewalLookup(post) | Work::RenewalPut(post, _)) =
+            self.pending.get(&work).cloned()
+        {
+            self.pending.remove(&work);
+            self.renewal_failed(&post, message, self.now);
+            return;
+        }
         if let Some(w) = self.pending.remove(&work) {
             self.event(Event::WorkFailed {
                 work,
                 message: message.clone(),
             });
             match w {
+                Work::RenewalLookup(_) | Work::RenewalPut(_, _) => unreachable!(),
                 Work::Lookup(post) => {
                     let r = self.runtime.entry(post).or_default();
                     r.checking = false;
@@ -1036,12 +1066,16 @@ impl PostManager {
     }
     pub fn tick(&mut self, now: u64) {
         self.now = self.now.max(now);
+        self.schedule_renewals();
         for post in self.state.posts.keys().cloned().collect::<Vec<_>>() {
             if !self.state.posts[&post].followed {
                 continue;
             }
             let r = self.runtime.entry(post.clone()).or_default();
-            if !r.checking && r.next_check <= self.now {
+            if !r.checking
+                && r.next_check <= self.now
+                && !self.renewals.get(&post).is_some_and(|r| r.active)
+            {
                 if let Some(work) = self.new_work(Work::Lookup(post.clone())) {
                     let key = self.key(&post).unwrap();
                     let r = self.runtime.get_mut(&post).unwrap();
@@ -1193,6 +1227,15 @@ impl PostManager {
                 Work::Read(f, h, i) => {
                     if let Some(v) = self.visits.get_mut(&(f, h)) {
                         v.reads.remove(&i);
+                    }
+                }
+                Work::RenewalLookup(f) | Work::RenewalPut(f, _) => {
+                    if let Some(r) = self.renewals.get_mut(&f) {
+                        r.active = false;
+                        r.ready = false;
+                    }
+                    if let Some(r) = self.runtime.get_mut(&f) {
+                        r.checking = false;
                     }
                 }
                 Work::Lookup(f) => {
@@ -1437,6 +1480,8 @@ fn action_post(a: &Action) -> &str {
         | Action::Watch { post, .. }
         | Action::Unwatch { post, .. }
         | Action::Lookup { post, .. }
+        | Action::RenewalLookup { post, .. }
+        | Action::RenewalPut { post, .. }
         | Action::Stage { post, .. }
         | Action::Read { post, .. }
         | Action::Approve { post, .. } => post,
@@ -1444,6 +1489,11 @@ fn action_post(a: &Action) -> &str {
 }
 fn work_post(w: &Work) -> &str {
     match w {
-        Work::Lookup(f) | Work::Stage(f, _, _) | Work::Read(f, _, _) | Work::Approve(f, _) => f,
+        Work::Lookup(f)
+        | Work::RenewalLookup(f)
+        | Work::RenewalPut(f, _)
+        | Work::Stage(f, _, _)
+        | Work::Read(f, _, _)
+        | Work::Approve(f, _) => f,
     }
 }

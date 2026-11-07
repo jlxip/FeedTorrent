@@ -32,6 +32,14 @@ namespace lt = libtorrent;
 namespace fs = std::filesystem;
 namespace ft {
 static std::string str(rust::Str s) { return std::string(s); }
+static std::pair<bool, std::int64_t> creation_date(rust::Slice<const std::uint8_t> data) {
+  lt::error_code ec;
+  auto root = lt::bdecode(lt::span<char const>(reinterpret_cast<char const *>(data.data()), static_cast<int>(data.size())), ec);
+  if (ec || root.type() != lt::bdecode_node::dict_t) return {false, 0};
+  auto date = root.dict_find("creation date");
+  if (date.type() != lt::bdecode_node::int_t) return {false, 0};
+  return {true, date.int_value()};
+}
 static std::string hash(lt::info_hash_t const &h) {
   if (!h.has_v1())
     throw std::runtime_error(
@@ -137,6 +145,7 @@ struct Session::Impl {
   fs::path dir;
   std::unique_ptr<lt::session> session;
   std::map<std::string, lt::torrent_handle> handles;
+  std::map<std::string, std::pair<bool, std::int64_t>> dates;
   std::map<std::string, std::string> errors, warnings;
   std::set<std::string> metadata_guard, approval_guard, pending;
   std::string warning;
@@ -383,6 +392,7 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
   }
   auto h = impl->session->add_torrent(std::move(p));
   impl->handles[key] = h;
+  impl->dates[key] = magnet ? std::make_pair(false, std::int64_t(0)) : creation_date(bytes);
   if (active)
     h.resume();
 }
@@ -413,6 +423,7 @@ void Session::remove(rust::Str id) {
     throw std::runtime_error(
         "Timed out detaching transfer; files were preserved");
   impl->handles.erase(key);
+  impl->dates.erase(key);
   impl->metadata_guard.erase(key);
   impl->approval_guard.erase(key);
   impl->errors.erase(key);
@@ -676,7 +687,10 @@ NativeDescription describe_torrent(rust::Slice<const std::uint8_t> data) {
   if (data.size()>8*1024*1024) throw std::runtime_error("Torrent metadata exceeds 8 MiB");
   auto p=lt::load_torrent_buffer(lt::span<char const>(reinterpret_cast<char const *>(data.data()),static_cast<int>(data.size())));
   if (!p.ti) throw std::runtime_error("Missing torrent metadata");
-  return describe(*p.ti);
+  auto out = describe(*p.ti);
+  auto date = creation_date(data);
+  out.has_creation_date = date.first; out.creation_date = date.second;
+  return out;
 }
 NativeDescription Session::description(rust::Str id) const {
   if (impl->stopped) throw std::runtime_error("Backend closed");
@@ -684,7 +698,10 @@ NativeDescription Session::description(rust::Str id) const {
   if(it==impl->handles.end()) throw std::runtime_error("Unknown transfer");
   auto ti=it->second.torrent_file();
   if(!ti) throw std::runtime_error("Metadata unavailable");
-  return describe(*ti);
+  auto out = describe(*ti);
+  auto date = impl->dates.at(str(id));
+  out.has_creation_date = date.first; out.creation_date = date.second;
+  return out;
 }
 NativeFile Session::file_at(rust::Str id,std::uint32_t index) const {
   if (impl->stopped) throw std::runtime_error("Backend closed");

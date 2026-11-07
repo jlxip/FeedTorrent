@@ -1,4 +1,5 @@
 import {markdown, type MarkdownNode} from './markdown.js';
+export interface ReaderDates {created_at?:number|null;updated_at?:number|null;last_published?:boolean;}
 export type Crumb={name:string;href:string};
 export interface ReaderEntry {
   key:string; name:string; kind:string; size?:number|null; href?:string;
@@ -54,6 +55,7 @@ export class ReaderHistory {
 }
 export class Reader {
   readonly body=node('div','','reader-body');
+  private dateRow=node('div','','reader-dates');
   readonly crumbs=node('nav','','breadcrumb reader-breadcrumb');
   private contents=node('section','','reader-contents');
   private list=node('div','','reader-entries');
@@ -63,7 +65,7 @@ export class Reader {
     this.crumbs.setAttribute('aria-label','Page');
     this.contents.append(node('h3','Contents'),this.list);
     const header=node('header');header.append(node('h3','No items'));this.empty.append(header);this.empty.setAttribute('role','status');
-    root.classList.add('reader');root.append(this.crumbs,this.body,this.contents,this.empty);
+    root.classList.add('reader');root.append(this.crumbs,this.dateRow,this.body,this.contents,this.empty);this.dateRow.hidden=true;
   }
   breadcrumbs(crumbs:Crumb[],prepare?:(href:string)=>boolean|void){
     const signature=JSON.stringify(crumbs);if(this.crumbs.dataset.signature===signature)return;
@@ -73,6 +75,25 @@ export class Reader {
       const li=node('li');if(i===crumbs.length-1){const s=node('span',c.name);s.setAttribute('aria-current','page');li.append(s);}
       else{const a=document.createElement('a');a.id=`${this.prefix}-crumb-${i}`;a.href=c.href;a.textContent=c.name;a.onclick=e=>{if(plainClick(e)&&prepare?.(c.href)===true)e.preventDefault();};li.append(a);}ol.append(li);
     });this.crumbs.append(ol);
+  }
+  dates(value:ReaderDates|null|undefined){
+    // These are author-declared dates; formatting always uses the reader's local zone.
+    const valid=(n:number|null|undefined)=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=0&&n<=253402300799;
+    const created=valid(value?.created_at)?value!.created_at!:null,updated=valid(value?.updated_at)?value!.updated_at!:null;
+    const formatter=new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'});
+    const signature=JSON.stringify([created,updated,!!value?.last_published,Intl.DateTimeFormat().resolvedOptions().timeZone]);
+    this.root.insertBefore(this.dateRow,this.body);
+    if(this.dateRow.dataset.signature===signature)return;this.dateRow.dataset.signature=signature;
+    this.dateRow.replaceChildren();this.dateRow.hidden=created===null&&updated===null&&!value?.last_published;
+    const field=(label:string,seconds:number|null)=>{const group=node('span');group.append(node('span',label+' '));
+      if(seconds===null)group.append(node('span','unknown'));
+      else {const time=document.createElement('time');time.dateTime=new Date(seconds*1000).toISOString();time.textContent=formatter.format(new Date(seconds*1000));group.append(time);}
+      this.dateRow.append(group);
+    };
+    if(!this.dateRow.hidden){field('Created',created);
+      if(updated!==null||value?.last_published){const dot=node('span','·');dot.setAttribute('aria-hidden','true');this.dateRow.append(dot);field('Updated',updated);}
+      if(value?.last_published){const badge=node('span','Last published version','badge');badge.dataset.variant='secondary';this.dateRow.append(badge);}
+    }
   }
   content(key:string,tree:MarkdownNode|null,relative?:(target:string)=>(()=>void)|null){
     const signature=JSON.stringify([key,tree]);if(signature===this.bodySignature)return;

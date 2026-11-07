@@ -24,6 +24,8 @@ pub(super) struct Pending {
     pub retry_at: Option<u64>,
     pub signed: Option<SignedRecord>,
     pub pages: BTreeMap<u64, PageRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_at: Option<u64>,
 }
 impl Pending {
     pub fn validate(&self, f: &Owned, next: u64, used: &mut BTreeSet<u64>) -> Result<()> {
@@ -31,6 +33,12 @@ impl Pending {
             bail!("Invalid publication operation or revision")
         }
         self.draft.validate()?;
+        if self
+            .prepared_at
+            .is_some_and(|t| t > feedtorrent_posts::dates::MAX_TIMESTAMP)
+        {
+            bail!("Invalid publication preparation time")
+        }
         if !matches!(
             self.phase.as_str(),
             "Queued"
@@ -219,6 +227,7 @@ fn allocate(lib: &mut Library) -> Result<u64> {
 }
 fn pending(f: &Owned, id: u64, signed: bool) -> Pending {
     Pending {
+        prepared_at: Some(now_ms() / 1000),
         id,
         revision: if signed {
             f.signed_revision
@@ -242,6 +251,7 @@ fn recover(lib: &mut Library) -> Result<bool> {
     lib.version = 2;
     let mut next = lib.next_operation;
     for f in lib.posts.values_mut() {
+        changed |= recover_published_sequence(f)?;
         if old
             && f.pending.is_none()
             && f.state == "Publication pending"
@@ -412,6 +422,8 @@ impl Manager {
                     draft: d,
                     revision: 1,
                     published_revision: 0,
+                    published_sequence: None,
+                    published: None,
                     changed_at_us: crate::organization::now_us(),
                     signed_revision: 0,
                     pages: BTreeMap::new(),
@@ -475,9 +487,11 @@ impl Manager {
             }
             Command::GetPost { id } => {
                 let f = lib.posts.get(&id).context("Own post not found")?;
-                Ok(
-                    serde_json::json!({"draft":f.draft,"revision":f.revision,"torrent_ids":reader_torrent_ids(&f.draft)}),
-                )
+                let mut value = reader_dates(dir, f);
+                value["draft"] = serde_json::json!(f.draft);
+                value["revision"] = serde_json::json!(f.revision);
+                value["torrent_ids"] = serde_json::json!(reader_torrent_ids(&f.draft));
+                Ok(value)
             }
             Command::SaveDraft {
                 id,
@@ -629,6 +643,9 @@ impl Manager {
         }
         let mut c = self.lib.clone();
         let f = c.posts.get_mut(id).unwrap();
+        if f.published.is_none() {
+            f.published = confirmed(f);
+        }
         let p = f.pending.as_mut().unwrap();
         let key = bep46::parse_magnet(&f.magnet)?;
         let verified = record.verify(&key)?;
@@ -678,6 +695,27 @@ impl Manager {
         let p = f.pending.as_mut().unwrap();
         match result {
             Ok(_) => {
+                if let Some(record) = &p.signed {
+                    f.published_sequence = Some(record.sequence);
+                }
+                // Only an acknowledged operation becomes the reader's publication.
+                if let Some(record) = &p.signed {
+                    if let Ok(key) = bep46::parse_magnet(&f.magnet) {
+                        if let Some(pointer) = record
+                            .verify(&key)
+                            .ok()
+                            .and_then(|r| TorrentPointer::from_record(&key, r).ok())
+                        {
+                            let root = hex(&pointer.infohash());
+                            if p.pages.values().any(|page| page.hash == root) {
+                                f.published = Some(Published {
+                                    root,
+                                    pages: p.pages.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
                 f.published_revision = p.revision;
                 f.pending = None;
                 f.state = "Published".into();

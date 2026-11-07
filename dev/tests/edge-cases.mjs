@@ -1,3 +1,4 @@
+import {evidencePath} from './runtime.mjs';
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import {
@@ -248,8 +249,8 @@ for (const [name, run] of [
   }
 }
 report.status = report.errors.length ? "fail" : "pass";
-await mkdir(".runtime/evidence", { recursive: true });
+await mkdir(evidencePath(), { recursive: true });
 await writeFile(
-  ".runtime/evidence/native-edges.json",
+  evidencePath("native-edges.json"),
   JSON.stringify(report, null, 2),
 );

@@ -152,6 +152,7 @@ export class ContentPage {
     const download=d&&(!d.error)&&(o.download||d.source||d.source_uri)?()=>o.download?o.download(d):this.download(o.id,d.source?{type:'add_torrent',data:d.source}:{type:'add_magnet',uri:d.source_uri!},o.parent||o.id):undefined;
     this.reader.header.update({title,id:o.id,t,connected:o.connected,total:d?.total,error:this.error||d?.error,source:o.source,download,action:c=>this.host.call(c),remove:()=>this.host.remove(o.id),pin:this.host.pin,protectedNames:t?.protected_by?.map(id=>o.state?.transfers.find(t=>t.id===id)?.name||'catalog'),warning:d?.body_error});
     this.reader.breadcrumbs([...o.crumbs,{name:title,href:location.hash}],href=>o.position?.back(href));
+    this.reader.dates(d);
     this.reader.content(`${o.id}/${d?.body_state}`,d?.body||null,target=>()=>void this.relative(target));
     this.status.hidden=false;this.status.textContent=this.loading&&!d?'Loading…':!o.connected?'Server disconnected':d?.body_state==='metadata'?'Waiting for metadata.':d?.body_state==='pending'?'Markdown is not downloaded and verified.':'';this.status.hidden=!this.status.textContent;
     const entries:ReaderEntry[]=d?.kind==='catalog'&&t?(d.entries||[]).map(e=>{

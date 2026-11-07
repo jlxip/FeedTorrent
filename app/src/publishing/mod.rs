@@ -46,6 +46,8 @@ pub struct OwnView {
     pub published_revision: u64,
     pub changed_at_us: u64,
     pub sequence: Option<String>,
+    pub published_sequence: Option<String>,
+    pub pending_sequence: Option<String>,
     pub state: String,
     pub error: String,
     pub active: bool,
@@ -80,6 +82,10 @@ struct Owned {
     draft: Draft,
     revision: u64,
     published_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    published_sequence: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    published: Option<Published>,
     #[serde(default)]
     changed_at_us: u64,
     #[serde(default)]
@@ -92,6 +98,78 @@ struct Owned {
     error: String,
     #[serde(default)]
     pending: Option<queue::Pending>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Published {
+    root: String,
+    pages: BTreeMap<u64, PageRef>,
+}
+// Recover only a locally acknowledged legacy record, before any state reset.
+// Neither draft revision equality nor an identical catalog hash proves that
+// a newer signed record was acknowledged.
+fn recover_published_sequence(f: &mut Owned) -> Result<bool> {
+    if f.published_sequence.is_none()
+        && f.state == "Published"
+        && f.pending.is_none()
+        && f.published_revision > 0
+        && f.signed_revision == f.published_revision
+    {
+        if let Some(record) = &f.record {
+            let key = bep46::parse_magnet(&f.magnet)?;
+            TorrentPointer::from_record(&key, record.verify(&key)?)?;
+            if record.sequence >= 0 {
+                f.published_sequence = Some(record.sequence);
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+fn confirmed(f: &Owned) -> Option<Published> {
+    f.published.clone().or_else(|| {
+        if f.published_revision == 0 || f.signed_revision != f.published_revision {
+            return None;
+        }
+        let key = bep46::parse_magnet(&f.magnet).ok()?;
+        let record = f.record.as_ref()?.verify(&key).ok()?;
+        let pointer = TorrentPointer::from_record(&key, record).ok()?;
+        let root = hex(&pointer.infohash());
+        if !f.pages.values().any(|p| p.hash == root) {
+            return None;
+        }
+        Some(Published {
+            root,
+            pages: f.pages.clone(),
+        })
+    })
+}
+fn reader_dates(dir: &Path, f: &Owned) -> serde_json::Value {
+    let Some(published) = confirmed(f) else {
+        return serde_json::json!({"published_dates":{},"draft_differs":false});
+    };
+    let mut previous = BTreeMap::new();
+    let mut dates = BTreeMap::new();
+    for (&id, page) in &published.pages {
+        let pack = package(dir, &page.hash).ok();
+        let date = pack.as_ref().and_then(package_dates);
+        dates.insert(id, date);
+        if let Some(pack) = pack {
+            previous.insert(
+                id,
+                Previous {
+                    fingerprint: page.fingerprint.clone(),
+                    metainfo: pack.metainfo,
+                    dates: date,
+                },
+            );
+        }
+    }
+    let matches = bep46::parse_magnet(&f.magnet)
+        .ok()
+        .and_then(|key| f.draft.preview(&key, &previous).ok())
+        .is_some_and(|built| hex(&built.root) == published.root);
+    serde_json::json!({"published_dates":dates,"draft_differs":!matches})
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -351,6 +429,22 @@ fn validate(lib: &Library) -> Result<()> {
         if let Some(r) = &f.record {
             TorrentPointer::from_record(&key, r.verify(&key)?)?;
         }
+        if let Some(sequence) = f.published_sequence {
+            if sequence < 0
+                || f.published_revision == 0
+                || f.record.as_ref().is_none_or(|r| sequence > r.sequence)
+            {
+                bail!("Invalid confirmed publication sequence")
+            }
+        }
+        if let Some(p) = &f.published {
+            if !valid_id(&p.root)
+                || !p.pages.values().any(|page| page.hash == p.root)
+                || p.pages.values().any(|page| !valid_id(&page.hash))
+            {
+                bail!("Invalid confirmed publication references")
+            }
+        }
         for hash in f.history.iter().chain(f.pages.values().map(|p| &p.hash)) {
             if !valid_id(hash) {
                 bail!("Invalid catalog hash")
@@ -370,6 +464,9 @@ fn view(lib: &Library, error: String) -> View {
                 .cloned()
                 .chain(p.pages.values().map(|p| p.hash.clone()))
                 .collect();
+            if let Some(p) = &p.published {
+                hashes.extend(p.pages.values().map(|p| p.hash.clone()));
+            }
             if let Some(p) = &p.pending {
                 hashes.extend(p.pages.values().map(|p| p.hash.clone()));
             }
@@ -411,6 +508,12 @@ fn view(lib: &Library, error: String) -> View {
                 published_revision: f.published_revision,
                 changed_at_us: f.changed_at_us,
                 sequence: f.record.as_ref().map(|r| r.sequence.to_string()),
+                published_sequence: f.published_sequence.map(|n| n.to_string()),
+                pending_sequence: f
+                    .pending
+                    .as_ref()
+                    .and_then(|p| p.signed.as_ref())
+                    .map(|r| r.sequence.to_string()),
                 state: f.state.clone(),
                 error: f.error.clone(),
                 active: f.active,
@@ -459,6 +562,17 @@ fn package(dir: &Path, hash: &str) -> Result<Package> {
         bail!("Saved catalog identity mismatch")
     };
     Ok(p)
+}
+fn package_dates(pack: &Package) -> Option<feedtorrent_posts::dates::Dates> {
+    let entries: Vec<_> = pack
+        .files
+        .iter()
+        .filter(|(path, _)| path == &["metadata", "dates.json"])
+        .collect();
+    if entries.len() != 1 {
+        return None;
+    }
+    feedtorrent_posts::dates::Dates::parse(&entries[0].1)
 }
 fn store_package(dir: &Path, c: &BuiltCatalog) -> Result<String> {
     let id = hex(&Feed::from_metainfo(&c.metainfo)?.infohash());
@@ -520,11 +634,14 @@ fn publish(
             .pages
             .iter()
             .map(|(id, p)| {
+                let pack = package(dir, &p.hash)?;
+                let dates = package_dates(&pack);
                 Ok((
                     *id,
                     Previous {
                         fingerprint: p.fingerprint.clone(),
-                        metainfo: package(dir, &p.hash)?.metainfo,
+                        metainfo: pack.metainfo,
+                        dates,
                     },
                 ))
             })
@@ -533,9 +650,14 @@ fn publish(
             .as_ref()
             .map(|r| TorrentPointer::from_record(&key, r.clone()).map(|p| p.infohash()))
             .transpose()?;
-        let built = pending
-            .draft
-            .build_with_previous_root(&key, &previous, previous_root)?;
+        let built = pending.draft.build_with_previous_root(
+            &key,
+            &previous,
+            previous_root,
+            pending
+                .prepared_at
+                .context("Publication has no preparation time")?,
+        )?;
         work.check()?;
         for c in &built.catalogs {
             work.check()?;
