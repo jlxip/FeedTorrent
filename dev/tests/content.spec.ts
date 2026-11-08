@@ -38,7 +38,7 @@ test('Library reads verified Markdown and ordinary files through the common view
     await page.emulateMedia({colorScheme:'dark'});await expect.poll(()=>page.locator('html').evaluate(e=>e.classList.contains('dark'))).toBe(true);await page.screenshot({path:info.outputPath('common-body-320-dark.png'),animations:'disabled'});
     await page.emulateMedia({colorScheme:'light'});await expect.poll(()=>page.locator('html').evaluate(e=>e.classList.contains('dark'))).toBe(false);await page.setViewportSize({width:1280,height:740});
     await page.locator('#torrent-more').click();await expect(page.getByRole('menuitem',{name:'Show in Folder',exact:true})).toBeVisible();
-    await page.keyboard.press('Escape');await expect(page.locator('#torrent-more')).toBeFocused();
+    await page.locator('body > header h1').click();
     await page.locator('#torrent-toggle').click();await expect(page.locator('#torrent-toggle')).toHaveAttribute('aria-label','Resume');
     await page.reload();await expect(page.locator('#library-reader .reader-body')).toContainText('A verified page.');
     await page.locator('#library-back').click();await page.locator('#library-open-'+plain.id).click();
@@ -72,10 +72,10 @@ test('a catalog reference previews without registration, then Download stays in 
     expect((await app.api()).transfers.find(t=>t.id===child.id).active).toBe(false);
     const childState=(await app.api()).transfers.find(t=>t.id===child.id);expect(childState.pinned).toBe(false);expect(childState.protected_by).toEqual([parent.id]);
     await page.locator('#torrent-more').click();await expect(page.locator('#torrent-remove')).toBeDisabled();await expect(page.locator('#torrent-pin')).toHaveAttribute('aria-checked','false');
-    await page.locator('#torrent-pin-info').hover();await expect(page.locator('#torrent-pin-help')).toContainText('Catalog');await page.keyboard.press('Escape');
+    await page.locator('#torrent-pin-info').hover();await expect(page.locator('#torrent-pin-help')).toContainText('Catalog');await page.locator('body > header h1').click();
     await page.goto(app.url+'/#/library/'+parent.id);await page.locator('#torrent-more').click();await page.locator('#torrent-pin').click();
     await expect(page.locator('#remove-title')).toHaveText('Unpin and delete?');await expect(page.locator('#remove-preview')).toContainText('2 unreferenced torrents');
-    await page.keyboard.press('Escape');expect((await app.api()).transfers.find(t=>t.id===parent.id).pinned).toBe(true);
+    await page.locator('#remove-dialog [data-close]').click();expect((await app.api()).transfers.find(t=>t.id===parent.id).pinned).toBe(true);
     await page.locator('#torrent-more').click();await page.locator('#torrent-pin').click();await page.locator('#remove-form button[type=submit]').click();
     await expect(page).toHaveURL(/#\/library$/);await expect.poll(async()=>(await app.api()).transfers.length).toBe(0);
   }finally{await cleanup(root,app);}

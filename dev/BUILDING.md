@@ -20,6 +20,21 @@ make test
 
 The development toolchain is pinned in `rust-toolchain.toml`.
 
+## Ubuntu 24.04 x86_64
+
+Install Rust 1.95.0 through rustup, Node 24/npm, and the native tools:
+
+```sh
+sudo apt-get install build-essential cmake ninja-build pkg-config libboost-dev libssl-dev python3
+make
+```
+
+For the full checks, install the WASM target and Rust clippy/rustfmt, and install
+Playwright's Chrome, Firefox and WebKit browsers. `dev/ci/prepare.sh` installs
+system packages on disposable CI machines; `dev/ci/run.sh` builds the application,
+runs the full host-supported checks and packages the result. Linux's ENOSPC test
+injects a write error into one private fixture inode, then verifies resumed exact bytes.
+
 ## OpenBSD
 
 Use packages matching the installed OpenBSD release:
@@ -39,10 +54,14 @@ Chrome, Firefox and WebKit projects on a supported browser host. The full
 `check` and `test` targets include those checks on macOS; on OpenBSD they
 select `check-native` and `test-native`, respectively.
 
-Native key-migration tests also require Python 3 and a `cryptography` build
-with working Argon2id and scrypt KDFs. The LibreSSL-backed OpenBSD package
-does not supply those algorithms; use an isolated Python environment linked
-to OpenSSL instead (validated with cryptography 50.0.0 and OpenSSL 3.5.6).
+OpenBSD's Clippy 1.98 adds the style-only `chunks_exact_to_as_chunks` suggestion
+after the pinned Rust 1.95 baseline. The Clippy entry point excludes that one
+lint specifically on OpenBSD/Clippy 1.98, preserving the frozen BEP sources.
+All other warnings remain errors; other hosts/tool versions retain strict
+defaults. This policy is shared by `make check`, CI and the commit hook.
+
+The key-vault tests verify the current FTKV format independently with Node.
+Python's standard library is used by build-tool tests and native addon preparation.
 The native client itself does not require Python.
 
 The first OpenBSD native test run builds the independent Node uTP and WebRTC
@@ -57,7 +76,10 @@ No third-party sources are modified.
 The key-vault reference uses the pinned test-only `@noble/hashes` 2.0.1
 Argon2id implementation when Node lacks `crypto.argon2Sync` (including Node 22).
 
-The disk-error test fills a private HFS+ image on macOS. On OpenBSD it injects
+The disk-error test fills a private HFS+ image on macOS. After its clients stop,
+cleanup allows up to five ordinary detach attempts, one second apart, only for
+EBUSY (exit 16). Persistent or other detach errors still fail the suite; no test
+assertion is retried and the volume is never forcibly detached. On OpenBSD it injects
 `ENOSPC` into positional writes to one selected fixture inode after two MiB,
 then removes the fault and verifies the exact resumed download. This needs no
 privileged mount and never fills the server filesystem.
@@ -90,6 +112,58 @@ test recipes does not invalidate the web or libtorrent build.
 `make clean` removes the Rust build and generated web assets. It preserves
 native dependencies, Node packages, downloads and application state.
 
+## CI packages and releases
+
+GitHub Actions builds macOS ARM64 (`macos-15`), Linux x86_64 (`ubuntu-24.04`)
+and OpenBSD 8.0 amd64 (a real VM hosted on Ubuntu). Each push to `main`, each
+`v*` tag and each manual workflow run executes the full applicable checks.
+The VM runs fixtures as an unprivileged user; its Python reference is built
+against a separate OpenSSL and does not require a private prebuilt wheel.
+Only download caches are reused; application/native outputs are built fresh.
+The test-only node-datachannel prebuild download is verbose and gets at most
+three attempts, five seconds apart. Exhaustion fails preparation; this does not
+retry or replace any validation suite.
+
+Successful jobs upload packages and SHA-256 checksums as Actions artifacts
+for 14 days. Only a pushed `v*` tag publishes a Release, after all three targets
+pass. Releases are assembled as drafts, uploaded completely, then published.
+A hyphen in the tag marks a prerelease. A manual run never publishes a release,
+even when launched on a tag. Published releases are not replaced by a rerun.
+
+Each `feedtorrent-<tag-or-commit>-<platform>-<arch>.tar.gz` contains the executable,
+licenses, `THIRD_PARTY.json` and `BUILD-INFO.json`. Platform names are `macos`,
+`linux` and `openbsd-8.0`; architecture names are `arm64` and `amd64`.
+The build info records source and executable hashes, dirty state, tag/commit,
+tool versions and inspected runtime libraries. The executable's existing
+internal development version is independent of the release tag.
+
+```sh
+# Linux; use `shasum -a 256 -c` on macOS or `sha256 -C` on OpenBSD.
+sha256sum -c feedtorrent-<version>-linux-amd64.tar.gz.sha256
+tar -xzf feedtorrent-<version>-linux-amd64.tar.gz
+./feedtorrent-<version>-linux-amd64/feedtorrent --no-open
+```
+
+macOS packages require macOS 15 or later and contain no Homebrew runtime links.
+They are not Developer ID signed or notarized. Linux is validated on Ubuntu
+24.04 x86_64 and uses its standard C/C++ runtime; compatibility with older
+glibc distributions is not claimed. Both incorporate libtorrent/OpenSSL
+statically. OpenBSD packages require OpenBSD 8.0 amd64 and its base libraries,
+including LibreSSL. No Node, Rust, Python, Boost or source checkout is needed
+to run these packages. A browser is needed only on the machine viewing the UI;
+`xdg-utils` remains optional for automatic desktop opening on Unix.
+
+The packager audits dynamic libraries and starts an extracted executable from
+a separate directory with isolated state, testing HTML, embedded assets, API
+and orderly shutdown. No automatic deployment or user-data migration occurs.
+
+Enable the versioned commit hook with `git config core.hooksPath .githooks`.
+It refuses unstaged changes or untracked sources and runs `make check test`
+against the sources to be committed. After checking the selected index, it clears
+Git's repository-local environment so submodule and fixture Git commands discover
+their own repositories. Install the documented test dependencies first. Commit,
+push and release-tag creation remain manual user operations.
+
 
 ## Validation by impact
 
@@ -101,9 +175,9 @@ not an automatic source-change selector.
 | Change | Closing validation |
 |---|---|
 | Documentation only | Affected documentation checks |
-| Local presentation/interaction | `check-web`, build, affected UI in Chrome/Firefox/WebKit; mobile/keyboard when relevant |
+| Local presentation/interaction | `check-web`, build, affected UI in Chrome/Firefox/WebKit; mobile when relevant |
 | Publishing, versions, own dates, backups/recovery | Rust checks/workspace, `publishing key-vault retention`, affected UI; same native block on OpenBSD |
-| Keys/cryptography | Rust checks/workspace, `key-vault publishing`, Python interoperability, affected UI; native block on OpenBSD |
+| Keys/cryptography | Rust checks/workspace, `key-vault publishing`, independent Node interoperability, affected UI; native block on OpenBSD |
 | Following/renewal | Rust checks/workspace, `posts`, affected UI; add `organization` for ordering and `retention` for ownership/removal; native block on OpenBSD |
 | Organization | Rust checks/workspace, `organization`, affected UI; native block on OpenBSD |
 | Removal/references | Rust checks/workspace, `retention publishing posts`, affected UI; native block on OpenBSD |
@@ -116,6 +190,10 @@ Restarting the local review server alone does not constitute a distributable rel
 During implementation run focused tests; after a fix repeat the invalidated blocks.
 Reserve an applicable full run for the stable result. Earlier results only support
 unchanged areas with unchanged relevant inputs/environment; they are not a cached PASS.
+
+Keyboard navigation, key shortcuts and focus assertions are deliberately excluded
+from this project's UI tests. Mixed workflows use pointer or touch actions while
+retaining their functional, persistence and error checks.
 
 ### Focused commands
 
@@ -186,28 +264,29 @@ unchanged. Controlled responses apply only at test boundaries.
 
 ## Reusable OpenBSD validation environment
 
-Piensa uses a managed `~/.cache/feedtorrent-validation` directory, separate from the
-user's clone and real application data. It owns verified private package tools, a Python
-reference environment, a pinned pristine vendor checkout, a stable source mirror,
-Cargo/native/Node caches, and disposable `runs/`. This is shared validation infrastructure,
+The optional controller manages `~/.cache/feedtorrent-validation` on an OpenBSD
+validation host, separate from the user's clone and application data. It owns verified
+package tools, a pinned pristine vendor checkout, a stable source mirror, Cargo/native/Node
+caches, and disposable `runs/`. This is shared validation infrastructure,
 not a per-task temporary environment to delete after each change.
 
 The bootstrap supports OpenBSD 8.0 amd64 with a checked package manifest. It performs
 no global package installation. Other OS releases/architectures fail explicitly until
-the manifest is updated and verified. The existing cryptography wheel is a shared input.
+the manifest is updated and verified. Python uses the installed interpreter and its
+standard library; no private wheel or Python environment is required.
 
 ```sh
-# Feed the versioned script directly; no stale installed controller is needed.
-ssh piensa python3 - prepare < dev/scripts/openbsd-validation.py
+# Use a disposable test host. Feed the versioned script directly.
+ssh openbsd-test python3 - prepare < dev/scripts/openbsd-validation.py
 # Create .runtime/source.tar.gz from regular source files returned by:
 # git ls-files --cached --others --exclude-standard -z
 # Include current unstaged/untracked sources; exclude missing/deleted files,
 # build/cache/data directories and the separately managed vendor checkout.
-scp .runtime/source.tar.gz piensa:.cache/feedtorrent-validation/incoming.tar.gz
-ssh piensa python3 - sync .cache/feedtorrent-validation/incoming.tar.gz < dev/scripts/openbsd-validation.py
-ssh piensa python3 - exec make build test-deps < dev/scripts/openbsd-validation.py
-ssh piensa python3 - exec cargo check --locked --workspace --all-targets < dev/scripts/openbsd-validation.py
-ssh piensa python3 - exec make test-native < dev/scripts/openbsd-validation.py
+scp .runtime/source.tar.gz openbsd-test:.cache/feedtorrent-validation/incoming.tar.gz
+ssh openbsd-test python3 - sync .cache/feedtorrent-validation/incoming.tar.gz < dev/scripts/openbsd-validation.py
+ssh openbsd-test python3 - exec make build test-deps < dev/scripts/openbsd-validation.py
+ssh openbsd-test python3 - exec cargo check --locked --workspace --all-targets < dev/scripts/openbsd-validation.py
+ssh openbsd-test python3 - exec make test-native < dev/scripts/openbsd-validation.py
 ```
 
 Use `test-integration NATIVE_SUITES=...` for a selected integration block instead of the

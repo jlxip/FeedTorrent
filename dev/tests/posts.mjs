@@ -60,6 +60,21 @@ try {
   assert.equal(fx.head.requests, 0);
   pass(
       'real DHT → BEP46 → BEP9/10; metadata hold survives restart and Resume without a single payload request');
+  const removedCatalog = await app.command({type:'preview_removal',target:{kind:'torrent',id:t.id,delete_files:true}});
+  await app.command({type:'remove',id:t.id,delete_files:true,revision:removedCatalog.revision});
+  await wait(async()=>!(await app.api()).transfers.some(x=>x.id===t.id)&&!(await app.api()).cleanup.length,'removed catalog');
+  await app.command({type:'open_catalog',post:fx.postId,id:t.id});
+  await wait(async()=>(await app.api()).transfers.some(x=>x.id===t.id&&x.state==='Awaiting approval'&&x.held),'Download retries removed catalog');
+  await app.command({type:'pause',id:t.id});
+  await app.deletePost('followed',fx.postId);
+  await wait(async()=>!(await app.api()).transfers.length&&!(await app.api()).cleanup.length,'delete paused post');
+  await app.stop();
+  app = await startApp(join(root, 'app'), args);
+  await app.command({type:'follow_post',uri:fx.postMagnet,config:config('current_catalog',1)});
+  t = await wait(async()=>(await app.api()).transfers.find(x=>x.id===fx.head.id&&x.state==='Awaiting approval'&&x.held),'refollow retries removed head');
+  assert.equal(fx.head.requests,0);
+  assert.equal(fx.contentRequests,0);
+  pass('Download after Remove and refollow after deleting a paused post restore metadata without bypassing the size limit, including restart');
   await app.stop();
   await rm(t.save_path, {recursive: true, force: true});
   await writeFile(t.save_path, 'blocked directory');

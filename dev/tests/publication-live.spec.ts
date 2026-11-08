@@ -14,7 +14,7 @@ test('real Publish acceptance opens the same page and confirmed DHT publication 
   await page.locator('#own-publish').click();await page.locator('#own-publish-password').fill(password);await page.locator('#own-publish-submit').click();
   await expect(page).toHaveURL(new RegExp('#/own/'+id+'/read/1$'));await expect(page.locator('#own-preview')).toContainText('Live body');await expect(page.locator('#own-publish-password')).toHaveValue('');
   await wait(async()=> (await app.api()).publishing.posts.find(p=>p.id===id)?.published_sequence==='0','live browser DHT ACK',90000);
-  for(const tab of[page,second]){await expect(tab.locator('#own-indicator')).toHaveAttribute('data-state','published');await tab.locator('#own-indicator').focus();await expect(tab.locator('#own-publication-help')).toContainText('Published Version 0');}
+  for(const tab of[page,second]){await expect(tab.locator('#own-indicator')).toHaveAttribute('data-state','published');await tab.locator('#own-indicator').hover();await expect(tab.locator('#own-publication-help')).toContainText('Published Version 0');}
   await page.locator('#transfers-nav').click();await expect(page.locator('#transfers article')).toHaveCount((await app.api()).transfers.length);await page.locator(`#post-tree a[data-post="${id}"]`).click();await expect(page.locator('#own-preview')).toContainText('Live body');
   expect(external).toEqual([]);await second.close();
  }finally{await cleanup(root,app);if(network)await network.stop();}

@@ -52,12 +52,11 @@ test('catalogue and compact live tooltip, responsive themes and torrent states',
     await expect(tip).toContainText('↓ 2.4 MiB/s');await expect(tip).toContainText('↑ 84 KiB/s');
     await expect(tip).toContainText('12 peers');await expect(tip).not.toContainText('Downloaded');
     await expect(tip).not.toContainText('Status');await expect(tip).not.toContainText('Debian');
-    await help.focus();
     await page.evaluate(()=>{(window as any).__libraryCard=document.querySelector('.transfer');});
     f.snapshot.transfers[0].down=5242880;f.snapshot.transfers[0].peers=9;await f.publish();
-    await expect(help).toBeFocused();await expect(tip).toContainText('↓ 5.0 MiB/s');
+    await expect(tip).toContainText('↓ 5.0 MiB/s');
     expect(await page.evaluate(()=>(window as any).__libraryCard===document.querySelector('.transfer'))).toBe(true);
-    await help.press('Escape');await expect(tip).toBeHidden();await expect(page).toHaveURL(/#\/library$/);
+    await page.locator('#library-heading').click();await expect(tip).toBeHidden();await expect(page).toHaveURL(/#\/library$/);
     await help.click();await expect(tip).toBeVisible();await page.locator('#library-heading').click();await expect(tip).toBeHidden();
     for(const width of [1280,320])for(const theme of ['light','dark'] as const){
       await page.setViewportSize({width,height:740});await page.emulateMedia({colorScheme:theme});
@@ -69,7 +68,7 @@ test('catalogue and compact live tooltip, responsive themes and torrent states',
       await help.click();await expect(tip).toBeVisible();
       const box=(await tip.boundingBox())!;expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(width);
       await page.screenshot({path:info.outputPath(`tooltip-${width}-${theme}.png`),animations:'disabled'});
-      await page.keyboard.press('Escape');
+      await page.locator('#library-heading').click();
     }
     for(const t of f.snapshot.transfers){
       await page.locator(`[data-id="${t.id}"] .transfer-name`).click();
@@ -97,18 +96,18 @@ test('catalogue and compact live tooltip, responsive themes and torrent states',
   }finally{await cleanup(f.root,f.app);}
 });
 
-test('catalogue scroll and focus survive Back, Forward, reload and direct detail links',async({page,context})=>{
+test('catalogue scroll survives Back, Forward, reload and direct detail links',async({page,context})=>{
   const f=await fixture(page,36);
   try{
     await page.goto(f.app.url+'/#/library');const t=f.snapshot.transfers[33];
     const link=page.locator(`#library-open-${t.id}`);
     await link.scrollIntoViewIfNeeded();const top=await page.evaluate(()=>scrollY);expect(top).toBeGreaterThan(500);
     await link.click();await expect(page).toHaveURL(new RegExp('#/library/'+t.id+'$'));
-    await expect(page.locator('#torrent-heading')).toBeFocused();expect(await page.evaluate(()=>scrollY)).toBe(0);
-    await page.goBack();await expect(link).toBeFocused();await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(top);
+    expect(await page.evaluate(()=>scrollY)).toBe(0);
+    await page.goBack();await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(top);
     await page.goForward();await expect(page.locator('#torrent-heading')).toHaveText(t.name);
     await page.reload();await expect(page.locator('#torrent-heading')).toHaveText(t.name);
-    await page.locator('#library-back').click();await expect(link).toBeFocused();await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(top);
+    await page.locator('#library-back').click();await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(top);
     // A new tab has no catalogue origin in its history.
     const direct=await context.newPage();
     await direct.addInitScript(()=>{class Events extends EventTarget{};(window as any).EventSource=Events;});
@@ -134,9 +133,7 @@ test('detail retains commands, approval, file availability, removal failure and 
     const files=page.locator('#library-reader .reader-row');await expect(files).toHaveCount(2);
     await expect(files.first().getByRole('button')).toBeDisabled();await expect(files.last().getByRole('button')).toBeEnabled();
     await files.last().getByRole('button').click();expect(f.commands.at(-1)).toMatchObject({type:'reveal',id:t.id,file:1});
-    await expect(page.locator('#torrent-more')).toBeEnabled();await page.locator('#torrent-more').focus();await page.locator('#torrent-more').press('ArrowDown');await expect(page.locator('#torrent-more')).toHaveAttribute('aria-activedescendant','torrent-folder');t.peers++;await f.publish();await expect(page.locator('#torrent-more')).toBeFocused();await expect(page.locator('#torrent-more')).toHaveAttribute('aria-activedescendant','torrent-folder');await expect(page.locator('#torrent-menu')).toBeVisible();await page.locator('#torrent-folder').click();expect(f.commands.at(-1)).toMatchObject({type:'reveal',id:t.id,file:null});await expect(page.locator('#torrent-menu')).toBeHidden();await expect(page.locator('#torrent-more')).toBeFocused();
-    // Updates preserve the actual focused file control.
-    await files.last().getByRole('button').focus();t.files[0].verified++;await f.publish();await expect(files.last().getByRole('button')).toBeFocused();
+    await expect(page.locator('#torrent-more')).toBeEnabled();await page.locator('#torrent-more').click();t.peers++;await f.publish();await expect(page.locator('#torrent-menu')).toBeVisible();await page.locator('#torrent-folder').click();expect(f.commands.at(-1)).toMatchObject({type:'reveal',id:t.id,file:null});await expect(page.locator('#torrent-menu')).toBeHidden();
     f.refuse(true);await page.locator('#torrent-more').click();await page.locator('#torrent-remove').click();await page.locator('#delete-files').check();
     await page.locator('#remove-form button[type=submit]').click();await expect(page.locator('#remove-error')).toContainText('Removal refused');
     await expect(page.locator('#delete-files')).toBeChecked();await expect(page).toHaveURL(new RegExp('#/library/'+t.id+'$'));

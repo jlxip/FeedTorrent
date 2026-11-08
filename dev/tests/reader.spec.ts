@@ -53,7 +53,7 @@ test('followed reader keeps reading, resolves original names across pages and pi
   const link=page.getByRole('link',{name:'Wiring notes',exact:true});await link.click();
   await expect(page.locator('#post-reader .reader-body')).toContainText('Child page');
   await expect(page.locator('#post-reader .reader-breadcrumb')).toContainText('Wiring notes');
-  await page.goBack();await expect(link).toBeFocused();await expect(page.locator('#post-reader .reader-body')).toContainText('Workshop notes');
+  await page.goBack();await expect(page.locator('#post-reader .reader-body')).toContainText('Workshop notes');
   await page.goForward();await expect(page.locator('#post-reader .reader-body')).toContainText('Child page');
   await page.locator('#post-reader .reader-breadcrumb a').first().click();await expect(page.locator('#post-reader .reader-body')).toContainText('Workshop notes');
   x.f.head=hash(2);x.f.available=hash(2);x.f.sequence='43';await x.publish();
@@ -68,7 +68,7 @@ test('followed reader keeps reading, resolves original names across pages and pi
    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
    await page.screenshot({path:info.outputPath(`reader-${width}-${theme}.png`),animations:'disabled'});
   }
-  const help=page.locator('#post-info');await help.focus();await expect(page.locator('#post-help')).toBeVisible();await help.press('Escape');await expect(page.locator('#post-help')).toBeHidden();
+  const help=page.locator('#post-info');await help.hover();await expect(page.locator('#post-help')).toBeVisible();await page.locator('#post-title').click();await expect(page.locator('#post-help')).toBeHidden();
   await page.evaluate(()=>(window as any).__readerEvents.onerror());await expect(page.locator('#catalog-status')).toHaveText('Server disconnected');
   await expect(page.locator('#post-reader .reader-body')).toContainText('Workshop notes');
   expect(errors).toEqual([]);

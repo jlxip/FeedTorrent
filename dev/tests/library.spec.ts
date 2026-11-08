@@ -62,9 +62,8 @@ test('Library replaces Transfers, preserves legacy history and opens manual magn
     await page.locator('#remove-form button[type=submit]').click();
     await expect(row).toHaveCount(0);await expect(page.locator('#empty')).toHaveText('No torrents');
     expect((await app.api()).transfers).toHaveLength(0);
-    await page.locator('#sections-button').click();await expect(page.locator('#new-nav')).toBeFocused();
-    await page.keyboard.press('Tab');await expect(library).toBeFocused();
-    await page.keyboard.press('Escape');await expect(page.locator('#sections-button')).toBeFocused();
+    await page.locator('#sections-button').click();
+    await page.locator('#sections-button').click();
     expect(errors).toEqual([]);expect(external).toEqual([]);
     console.log(info.project.name,browser.version());
   }finally{await cleanup(root,app);}

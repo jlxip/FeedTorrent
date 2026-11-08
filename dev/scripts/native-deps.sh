@@ -16,10 +16,15 @@ set -- cmake -S "$root/backends/libtorrent/vendor/libtorrent" \
   -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF -Dwebtorrent=OFF \
   -Di2p=OFF -Dbuild_tests=OFF -Dbuild_examples=OFF -Dbuild_tools=OFF \
   -Dpython-bindings=OFF
+# Keep the distributable independent of package-manager TLS libraries.
+if [ "$(uname -s)" != OpenBSD ]; then
+  set -- "$@" -DOPENSSL_USE_STATIC_LIBS=TRUE
+fi
 # Honor explicit paths everywhere; Homebrew discovery is specific to macOS.
 if [ "$(uname -s)" = Darwin ]; then
   : "${OPENSSL_ROOT_DIR:=$(brew --prefix openssl@3)}"
   : "${BOOST_ROOT:=$(brew --prefix boost)}"
+  set -- "$@" "-DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-15.0}"
 fi
 if [ -n "${OPENSSL_ROOT_DIR:-}" ]; then set -- "$@" "-DOPENSSL_ROOT_DIR=$OPENSSL_ROOT_DIR"; fi
 if [ -n "${BOOST_ROOT:-}" ]; then set -- "$@" "-DBoost_ROOT=$BOOST_ROOT"; fi

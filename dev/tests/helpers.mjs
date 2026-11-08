@@ -115,6 +115,7 @@ export async function reference({
   dht = false,
   tracker = false,
   uploadLimit = -1,
+  utPex = true,
 } = {}) {
   const client = new WebTorrent({
     utp,
@@ -124,6 +125,7 @@ export async function reference({
     natUpnp: false,
     natPmp: false,
     uploadLimit,
+    utPex,
   });
   const errors = [];
   client.on("error", (e) => errors.push(e.message));
@@ -270,25 +272,41 @@ export async function exact(app, ref) {
 }
 export async function reverse(app, ref, root, { utp = false } = {}) {
   const s = await app.api();
-  const downloader = await reference({ utp });
+  const target = `127.0.0.1:${s.listen_port}`;
+  // Only the native application may serve this download. PEX would admit other
+  // fixture peers, and a TCP connection could win before uTP finishes connecting.
+  const downloader = await reference({ utp, utPex: false });
+  const wires = [];
   try {
+    if (utp) {
+      if (!downloader.client.utp) throw Error("Independent uTP transport unavailable");
+      await new Promise((yes, no) =>
+        downloader.client._connPool.tcpServer.close(error => error ? no(error) : yes()),
+      );
+    }
     const t = downloader.client.add(Buffer.from(ref.bytes), {
       path: join(root, "reverse-" + (utp ? "utp" : "tcp")),
       announce: [],
     });
-    const wires = [];
-    t.on("wire", (wire) => wires.push(wire.type));
+    t.on("wire", (wire, address) => {
+      const connection = { type: wire.type, address, downloaded: 0 };
+      wires.push(connection);
+      wire.on("download", bytes => { connection.downloaded += bytes; });
+      if (utp && (wire.type !== "utpOutgoing" || address !== target)) wire.destroy();
+    });
     await new Promise((r) => t.once("infoHash", r));
-    t.addPeer(`127.0.0.1:${s.listen_port}`);
+    t.addPeer(target);
     await wait(() => t.done, "independent reverse download");
     for (let i = 0; i < ref.originals.length; i++) {
       const f = t.files.find((f) => f.name === `file-${i}.bin`);
       if (hash(Buffer.from(await f.arrayBuffer())) !== hash(ref.originals[i]))
         throw Error("Reverse mismatch");
     }
-    if (utp && !wires.some((type) => String(type).includes("utp")))
+    if (utp && !wires.some(wire => wire.type === "utpOutgoing" && wire.address === target && wire.downloaded > 0))
       throw Error("Reverse transfer did not use uTP");
     return t.downloaded;
+  } catch (error) {
+    throw new Error(`${error.message}; reverse diagnostics: ${JSON.stringify({ target, utp, wires, errors: downloader.errors })}`, { cause: error });
   } finally {
     await downloader.stop();
   }

@@ -34,8 +34,7 @@ export class OrganizationUI {
   constructor(private call:(c:Command)=>Promise<unknown>,private removeOwn:(id:string,revision:string)=>Promise<void>,private removedFollowed:(id:string)=>void){
     $('post-remove-form').onsubmit=e=>{e.preventDefault();void this.submitRemove();};
     $('post-remove-dialog').addEventListener('close',()=>{
-      const focus=this.returnFocus;
-      requestAnimationFrame(()=>{if(focus?.isConnected&&(!document.querySelector('dialog[open]')||focus.closest<HTMLDialogElement>('dialog')?.open))focus.focus();});
+      requestAnimationFrame(()=>{const focus=this.returnFocus;if(focus?.isConnected&&(!document.querySelector('dialog[open]')||focus.closest<HTMLDialogElement>('dialog')?.open))focus.focus();});
     });
     try{const saved=JSON.parse(localStorage.getItem('postTreeFolded')||localStorage.getItem('feedTreeFolded')||'[]');if(Array.isArray(saved))this.folded=new Set(saved.filter(x=>typeof x==='string'));}catch{}
     $('post-archive').addEventListener('toggle',()=>{try{localStorage.setItem('postArchiveOpen',String(($('post-archive') as HTMLDetailsElement).open));}catch{}});
@@ -57,14 +56,18 @@ export class OrganizationUI {
     document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(this.drag){e.preventDefault();e.stopPropagation();this.endDrag(true);return;}const open=document.querySelector<Menu>('.dropdown-menu:has(>button[aria-expanded=true])');if(open&&!document.querySelector('dialog[open]')){e.preventDefault();e.stopPropagation();open.close();}},true);
     // Basecoat owns menu keyboard/focus behavior. Native popovers escape the
     // scrolling sidebar; only placement and top-layer visibility are adapted.
-    new MutationObserver(changes=>{for(const c of changes){const p=c.target as HTMLElement;if(!p.matches('.tree-popover'))continue;
+    new MutationObserver(changes=>{let closed=false;for(const c of changes){const p=c.target as HTMLElement;if(!p.isConnected||!p.matches('.tree-popover'))continue;
       if(p.getAttribute('aria-hidden')==='false'){
         const trigger=p.previousElementSibling as HTMLElement,rect=trigger.getBoundingClientRect();
         p.showPopover();const box=p.getBoundingClientRect();
         p.style.left=`${Math.max(8,Math.min(rect.left,innerWidth-box.width-8))}px`;
         p.style.top=`${Math.max(8,Math.min(rect.bottom+4,innerHeight-box.height-8))}px`;
-      }else if(p.matches(':popover-open'))p.hidePopover();
-    }}).observe(document.body,{subtree:true,attributes:true,attributeFilter:['aria-hidden']});
+      }else{if(p.matches(':popover-open'))p.hidePopover();closed=true;}
+    }
+      // Finish bubbling the click before replacing nodes: Basecoat's sidebar
+      // treats a detached menu target as a click outside its navigation.
+      if(closed)requestAnimationFrame(()=>this.render(this.state,this.connected));
+    }).observe(document.body,{subtree:true,attributes:true,attributeFilter:['aria-hidden']});
     window.addEventListener('hashchange',()=>this.render(this.state,this.connected));
   }
   private rememberMove(){this.drafts.set(this.moving,{parent:$<HTMLSelectElement>('post-move-parent').value,position:$<HTMLSelectElement>('post-move-position').value});}
@@ -142,9 +145,14 @@ export class OrganizationUI {
     for(const key of names.keys())if(!nodes.some(n=>n.key===key))nodes.push({key,parent:null,archived:false});
     this.items=nodes.map(n=>({...n,...names.get(n.key)!}));
     const signature=JSON.stringify([this.items,[...this.folded],connected,!!state?.ready]);
-    if(signature!==this.signature){
+    // Live draft saves can reorder the tree between pointerdown and click.
+    // Keep the current menu/keyboard selection intact until Basecoat closes it.
+    // Removal, archiving, disconnect and unavailable state still invalidate it.
+    const openRow=document.querySelector<HTMLElement>('#sidebar .post-row:has(.post-row-menu > button[aria-expanded="true"])');
+    const keepMenu=connected&&state?.ready&&openRow&&this.items.some(n=>n.key===openRow.dataset.key&&n.archived===!!openRow.closest('#archived-posts'));
+    if(signature!==this.signature&&!keepMenu){
       this.signature=signature;
-      const focus=(document.activeElement as HTMLElement)?.dataset.focus;
+      const focus=(document.activeElement as HTMLElement)?.dataset.focus,returnFocus=this.returnFocus?.dataset.focus;
       for(const archived of [false,true]){
         const list=$(archived?'archived-posts':'post-tree');list.replaceChildren();
         const draw=(parent:string|null,container:HTMLElement)=>{
@@ -164,7 +172,10 @@ export class OrganizationUI {
           }
         };draw(null,list);
       }
-      if(focus)for(const e of document.querySelectorAll<HTMLElement>('#sidebar [data-focus]'))if(e.dataset.focus===focus){e.focus();break;}
+      for(const e of document.querySelectorAll<HTMLElement>('#sidebar [data-focus]')){
+        if(focus&&e.dataset.focus===focus)e.focus();
+        if(returnFocus&&e.dataset.focus===returnFocus)this.returnFocus=e;
+      }
       window.basecoat.init('dropdown-menu');
     }
     for(const a of document.querySelectorAll<HTMLAnchorElement>('.post-link')){const root=a.hash.split('/').slice(0,3).join('/');a.setAttribute('aria-current',location.hash===root||location.hash.startsWith(root+'/')?'page':'false');}

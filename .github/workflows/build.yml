@@ -1,0 +1,142 @@
+name: Build and distribute
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: macos-arm64
+          - os: ubuntu-24.04
+            target: linux-amd64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      NATIVE_JOBS: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Prepare toolchain
+        run: sh dev/ci/prepare.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.npm
+          key: downloads-${{ matrix.target }}-rust195-node24-${{ hashFiles('Cargo.lock', 'dev/package-lock.json') }}
+      - name: Validate and package
+        run: sh dev/ci/run.sh
+      - name: Upload validated package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: feedtorrent-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ matrix.target }}
+          path: .runtime/tests/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  openbsd:
+    name: openbsd-8.0-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GITHUB_REF_TYPE: ${{ github.ref_type }}
+      GITHUB_REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Build, test and package in OpenBSD
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1.4.9
+        with:
+          release: '8.0'
+          arch: x86_64
+          cpu: 2
+          mem: 6144
+          envs: 'GITHUB_REF_TYPE GITHUB_REF_NAME'
+          sync: rsync
+          copyback: true
+          prepare: |
+            sh dev/ci/prepare.sh
+            useradd -m -s /bin/sh ci
+            chown -R ci:ci .
+          run: |
+            set -eu
+            # Permission/error fixtures must run without root privileges.
+            su -m ci -c 'env HOME=/home/ci USER=ci LOGNAME=ci NATIVE_JOBS=2 sh dev/ci/run.sh'
+      - name: Upload validated package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: feedtorrent-openbsd-8.0-amd64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-openbsd-8.0-amd64
+          path: .runtime/tests/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  release:
+    name: Publish release
+    needs: [native, openbsd]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: feedtorrent-*
+          path: packages
+          merge-multiple: true
+      - name: Verify and publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd packages
+          sh ../dev/ci/publish.sh

@@ -1,4 +1,5 @@
-/* OpenBSD-only test fixture: fail positional writes to one explicitly selected
+#define _GNU_SOURCE
+/* Linux/OpenBSD test fixture: fail positional writes to one explicitly selected
  * inode after two MiB. Never loaded by a normal application invocation. */
 #include <dlfcn.h>
 #include <errno.h>
@@ -61,3 +62,17 @@ ssize_t pwritev(int fd, const struct iovec *data, int count, off_t offset)
     errno = error;
     return result;
 }
+
+#if defined(__linux__)
+/* libtorrent uses _FILE_OFFSET_BITS=64. Interpose those glibc entry points too;
+ * the supported Linux package is amd64, where off_t already holds 64 bits. */
+ssize_t pwrite64(int fd, const void *data, size_t count, off64_t offset)
+{
+    return pwrite(fd, data, count, (off_t)offset);
+}
+
+ssize_t pwritev64(int fd, const struct iovec *data, int count, off64_t offset)
+{
+    return pwritev(fd, data, count, (off_t)offset);
+}
+#endif

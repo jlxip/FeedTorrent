@@ -50,6 +50,9 @@ export class ContentHeader {
     this.error.id=prefix+'-error';this.error.dataset.variant='destructive';this.error.setAttribute('role','alert');this.error.append(node('section'));
     this.warning.setAttribute('role','status');this.warning.append(node('section'));this.approve.id=prefix+'-approve';
     this.sharing.append(this.controls,rates,this.error,this.warning,this.approve);this.root.append(this.identity,this.sharing);
+    // WebKit touch may omit click on non-interactive text. Let Basecoat close
+    // this menu on an outside touch, without changing its mouse/key handling.
+    document.addEventListener('pointerdown',event=>{if(event.pointerType==='touch'&&!this.menu.contains(event.target as Node))this.menu.close?.(false);});
     this.toggle.onclick=()=>{const m=this.value;if(m.t)void this.run(()=>m.action?.({type:m.t!.active?'pause':'resume',id:m.t!.id}));else if(m.download)void this.run(m.download);};
     // Close through Basecoat before pending disables menu items or a modal takes focus.
     this.folder.onclick=()=>{const value=this.value;this.menu.close?.();if(value.t)void this.run(()=>value.action?.({type:'reveal',id:value.t!.id,file:null}));};

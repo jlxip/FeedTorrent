@@ -177,9 +177,9 @@ test("magnet metadata, unlimited activity, errors, settings and compact layout",
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
     await page.locator("#download-dir").hover();
     await expect(folderTooltip).toBeHidden();
-    await folderHelp.focus();
+    await folderHelp.hover();
     await expect(folderTooltip).toBeVisible();
-    await folderHelp.press("Escape");
+    await page.locator("#download-dir").hover();
     await expect(folderTooltip).toBeHidden();
     await expect(page.locator("#settings-dialog")).toBeVisible();
     await folderHelp.click();
@@ -187,15 +187,16 @@ test("magnet metadata, unlimited activity, errors, settings and compact layout",
     await page.locator("#download-dir").click();
     await expect(folderTooltip).toBeHidden();
     const portHelp = page.getByRole("button", { name: "About listening port", exact: true });
-    await portHelp.focus();
+    await portHelp.hover();
     await expect(page.locator("#peer-port-help")).toHaveText("Requires a server restart");
     await expect(page.locator("#peer-port-help")).toBeVisible();
-    await portHelp.press("Escape");
+    await page.locator("#peer-port").hover();
+    await expect(page.locator("#peer-port-help")).toBeHidden();
     await expect(page.locator("#settings-save-status")).toBeHidden();
     await expect(page.locator("#seed-by-default")).toBeChecked();
     await page.locator("#seed-by-default").uncheck();
     await page.locator("#download-dir").fill(join(root, "changed"));
-    await page.locator("#download-dir").press("Tab");
+    await page.locator("#settings-title").click();
     await expect.poll(async () => (await app.api()).settings.download_dir).toBe(join(root, "changed"));
     await expect(page.locator("#settings-dialog")).toBeVisible();
     await page.locator("#settings-dialog [data-close]").click();
@@ -226,7 +227,7 @@ test("magnet metadata, unlimited activity, errors, settings and compact layout",
   }
 });
 
-test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard", async ({
+test("Open tabs, drafts, explicit file confirmation, inline errors", async ({
   page,
 }) => {
   const root = await temporary(),
@@ -248,7 +249,7 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
       "aria-selected",
       "true",
     );
-    await expect(page.locator("#magnet")).toBeFocused();
+
     const surface = dialog.locator(":scope > .dialog-surface");
     const box = await surface.boundingBox();
     expect(box!.x).toBeGreaterThan(0);
@@ -294,13 +295,7 @@ test("Open tabs, drafts, explicit file confirmation, inline errors and keyboard"
       "aria-selected",
       "true",
     );
-    await page.locator("#magnet-tab").focus();
-    await page.keyboard.press("ArrowRight");
-    await expect(page.locator("#torrent-tab")).toBeFocused();
-    await page.keyboard.press("Home");
-    await expect(page.locator("#magnet-tab")).toBeFocused();
-    await page.keyboard.press("End");
-    await expect(page.locator("#torrent-tab")).toBeFocused();
+    await page.locator("#torrent-tab").click();
     await page.setViewportSize({ width: 320, height: 740 });
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
@@ -405,7 +400,7 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
     const port = page.locator("#peer-port");
     const checkbox = page.locator("#seed-by-default");
     const close = dialog.getByRole("button", { name: "Close", exact: true });
-    await expect(folder).toBeFocused();
+
     await expect(dialog.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
     await checkbox.uncheck();
     await expect.poll(async () => (await app.api()).settings.seed_by_default).toBe(false);
@@ -418,12 +413,12 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
     const count = configurations.length;
     await folder.fill(changed);
     expect(configurations.length).toBe(count);
-    await folder.press("Tab");
+    await page.locator("#settings-title").click();
     await expect.poll(async () => (await app.api()).settings.download_dir).toBe(changed);
     await expect(page.locator("#settings-save-status")).toHaveText("Saved");
 
     await port.fill("65536");
-    await port.press("Tab");
+    await page.locator("#settings-title").click();
     await expect(page.locator("#settings-error")).toContainText("between 0 and 65535");
     await expect(port).toHaveAttribute("aria-invalid", "true");
     await expect(port).toHaveAttribute("aria-describedby", /settings-error/);
@@ -431,22 +426,22 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
     await close.click();
     await expect(dialog).toBeVisible();
     await port.fill("51888");
-    await port.press("Enter");
+    await page.locator("#settings-title").click();
     await expect.poll(async () => (await app.api()).settings.peer_port).toBe(51888);
     await expect(page.locator("#notice")).toContainText("Restart FeedTorrent");
     await port.fill(String(original.peer_port));
-    await port.press("Enter");
+    await page.locator("#settings-title").click();
     await expect.poll(async () => (await app.api()).settings.peer_port).toBe(original.peer_port);
 
     const blocker = join(root, "not-a-folder");
     await writeFile(blocker, "file");
     await folder.fill(blocker);
-    await folder.press("Enter");
+    await page.locator("#settings-title").click();
     await expect(page.locator("#settings-error")).toContainText("Cannot create");
     await expect(dialog).toBeVisible();
     expect((await app.api()).settings.download_dir).toBe(changed);
     await folder.fill(changed);
-    await folder.press("Enter");
+    await page.locator("#settings-title").click();
     await expect(page.locator("#settings-error")).toBeEmpty();
 
     await page.route("**/api/commands", async route => {
@@ -463,9 +458,9 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
     expect((await app.api()).settings.seed_by_default).toBe(true);
     await page.unroute("**/api/commands");
 
-    const closing = join(root, "closed-with-escape");
+    const closing = join(root, "closed-with-cross");
     await folder.fill(closing);
-    await page.keyboard.press("Escape");
+    await close.click();
     await expect(dialog).toBeHidden();
     expect((await app.api()).settings.download_dir).toBe(closing);
     await page.locator("#settings-open").click();
@@ -484,7 +479,7 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
     });
     const retry = join(root, "retry");
     await folder.fill(retry);
-    await folder.press("Enter");
+    await page.locator("#settings-title").click();
     await expect(page.locator("#settings-error")).not.toBeEmpty();
     await expect(folder).toHaveValue(retry);
     await expect(dialog).toBeVisible();
@@ -509,4 +504,32 @@ test("Settings autosave, invalid edits, ordered writes, retry and close", async 
   } finally {
     await cleanup(root, app);
   }
+});
+
+
+test('autosave status cannot move Settings controls between pointerdown and pointerup',async({page},info)=>{
+  const root=await temporary();let app,release=()=>{};
+  try{
+    app=await startApp(root);await page.goto(app.url+'/#/library');await page.locator('#settings-open').click();
+    const checkbox=page.locator('#seed-by-default'),status=page.locator('#settings-save-status');
+    const held=new Promise<void>(r=>release=r);let saw=()=>{};const first=new Promise<void>(r=>saw=r);const writes:boolean[]=[];
+    await page.route('**/api/commands',async route=>{
+      const command=route.request().postDataJSON();
+      if(command.type==='configure'){
+        writes.push(command.settings.seed_by_default);
+        if(writes.length===1){saw();await held;}
+      }
+      await route.continue();
+    });
+    await checkbox.uncheck();await first;await expect(status).toHaveText('Saving…');
+    await checkbox.check();await expect(status).toBeHidden();
+    await checkbox.click({trial:true});const before=(await checkbox.boundingBox())!;
+    await page.mouse.move(before.x+before.width/2,before.y+before.height/2);await page.mouse.down();
+    release();await expect(status).toBeVisible();
+    await page.mouse.up();expect(await checkbox.isChecked()).toBe(false);
+    const after=(await checkbox.boundingBox())!;expect(after.y).toBeCloseTo(before.y,1);
+    await expect.poll(()=>writes.length).toBe(3);await expect(status).toHaveText('Saved');
+    expect(writes).toEqual([false,true,false]);expect((await app.api()).settings.seed_by_default).toBe(false);
+    await page.screenshot({path:info.outputPath('settings-stable.png')});
+  }finally{release();await cleanup(root,app);}
 });

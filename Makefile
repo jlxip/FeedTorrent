@@ -57,6 +57,7 @@ test-unit: web native-deps
 test-build: $(NPM_READY) root
 	node dev/tests/make-entry.mjs
 	python3 dev/tests/validation-env.py
+	node --test dev/tests/package.test.mjs dev/tests/release.test.mjs dev/tests/pre-commit.test.mjs dev/tests/test-deps.test.mjs dev/tests/disk-image.test.mjs
 test-integration: build test-deps
 	@test -n "$(NATIVE_SUITES)" || { echo 'No native suites selected.' >&2; exit 2; }
 	@set -e; for suite in $(NATIVE_SUITES); do case " $(ALL_NATIVE_SUITES) " in *" $$suite "*) ;; *) echo "Unknown native suite: $$suite" >&2; exit 2;; esac; done
@@ -71,7 +72,7 @@ check: check-native host-wasm
 check-native: check-rust check-web
 check-rust: web native-deps
 	cargo fmt --all -- --check
-	cargo clippy --locked --workspace --all-targets -- -D warnings
+	sh dev/scripts/clippy.sh
 check-web: $(NPM_READY) root
 	node dev/node_modules/typescript/bin/tsc -p web/tsconfig.json --noEmit
 

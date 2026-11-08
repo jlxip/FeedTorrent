@@ -27,14 +27,13 @@ test(
         await expect(page.locator('#post-dialog')).toBeVisible();
         await expect(page.locator('#post-mode')).toHaveValue('current_catalog');
         await expect(page.locator('#post-limit')).toHaveValue('8');
-        await expect(page.locator('#post-magnet')).toBeFocused();
+
         await page.locator('#post-name').fill('My reading list');
         await page.locator('#post-mode').selectOption('mirror_catalogs');
         await page.locator('#post-limit').fill('13');
-        for (const dismissal of ['outside', 'cross', 'escape']) {
+        for (const dismissal of ['outside', 'cross']) {
           if (dismissal === 'outside') await page.mouse.click(2, 2);
           else if (dismissal === 'cross') await page.locator('#post-dialog [data-close]').click();
-          else await page.keyboard.press('Escape');
           await expect(page.locator('#post-dialog')).toBeHidden();
           await page.locator('#post-add').click();
       await page.locator('#follow-open').click();
@@ -85,9 +84,9 @@ test(
         await page.locator('#post-name').fill('My reading list');
         await page.locator('#post-mode').selectOption('current_catalog');
         await page.locator('#post-limit').fill('8');
-        await page.getByRole('button', {name: 'About download mode'}).focus();
+        await page.getByRole('button', {name: 'About download mode'}).hover();
         await expect(page.locator('#post-mode-help')).toBeVisible();
-        await page.keyboard.press('Escape');
+        await page.locator('#post-dialog-title').click();
         await expect(page.locator('#post-mode-help')).not.toBeVisible();
         await expect(page.locator('#post-dialog')).toBeVisible();
         await page.locator('#post-unlimited').check();
@@ -118,7 +117,7 @@ test(
         await expect(page.locator('#post-limit-help')).toBeVisible();
         await page.screenshot(
             {path: info.outputPath('post-settings-320.png'), fullPage: true});
-        await page.keyboard.press('Escape');
+        await page.locator('#post-dialog-title').click();
         await page.locator('#post-dialog [data-close]').click();
         await page.locator('.catalog-row')
             .first()

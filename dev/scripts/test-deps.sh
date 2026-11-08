@@ -21,5 +21,21 @@ if [ "$(uname -s)" = OpenBSD ]; then
     cp .tools/node-datachannel/upstream/node_datachannel.node dev/node_modules/node-datachannel/build/Release/
   fi
 elif [ ! -f dev/node_modules/node-datachannel/build/Release/node_datachannel.node ]; then
-  (cd dev/node_modules/node-datachannel && ../.bin/prebuild-install -r napi)
+  # GitHub release downloads can time out transiently. Retry preparation only;
+  # an exhausted download still fails the build, and tests are never retried.
+  attempt=1
+  while :; do
+    if (cd dev/node_modules/node-datachannel && ../.bin/prebuild-install -r napi --verbose); then
+      break
+    else
+      status=$?
+    fi
+    if [ "$attempt" -ge 3 ]; then
+      echo 'node-datachannel prebuild download failed after 3 attempts.' >&2
+      exit "$status"
+    fi
+    echo "Retrying node-datachannel prebuild download ($attempt/3 failed)..." >&2
+    sleep 5
+    attempt=$((attempt + 1))
+  done
 fi

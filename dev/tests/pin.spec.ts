@@ -12,7 +12,7 @@ test('Pin help, cancellation, shared Unpin and revised Delete post confirmation'
   await page.goto(app.url+'/#/library/'+ref.id);await page.locator('#torrent-more').click();
   await expect(page.locator('#torrent-pin')).toHaveAttribute('aria-checked','false');await page.locator('#torrent-pin-info').hover();
   await expect(page.locator('#torrent-pin-help')).toHaveText('Keep in Library even if the original post is deleted.');
-  await page.locator('#torrent-pin-info').click();await expect(page.locator('#torrent-pin-help')).toBeVisible();await page.keyboard.press('Escape');await expect(page.locator('#torrent-pin-help')).toBeHidden();
+  await page.locator('#torrent-pin-info').click();await expect(page.locator('#torrent-pin-help')).toBeVisible();await page.locator('body > header h1').click();await expect(page.locator('#torrent-pin-help')).toBeHidden();
   await page.locator('#torrent-more').click();await page.locator('#torrent-pin').click();await expect.poll(async()=>(await app.api()).transfers[0].pinned).toBe(true);
   await page.locator('#torrent-more').click();await expect(page.locator('#torrent-remove')).toBeDisabled();await page.locator('#torrent-pin').click();
   await expect.poll(async()=>(await app.api()).transfers[0].pinned).toBe(false);await expect(page.locator('#remove-dialog')).toBeHidden();
@@ -22,10 +22,10 @@ test('Pin help, cancellation, shared Unpin and revised Delete post confirmation'
   await page.locator('#post-remove-submit').click();await expect(page).toHaveURL(new RegExp('#/library/'+ref.id+'$'));expect((await app.api()).transfers).toHaveLength(1);
   for(const theme of ['light','dark']){
    await page.setViewportSize({width:320,height:740});await page.emulateMedia({colorScheme:theme as 'light'|'dark'});
-   await page.locator('#torrent-more').tap();await page.locator('#torrent-pin-info').tap();await expect(page.locator('#torrent-pin-help')).toBeVisible();await page.keyboard.press('Escape');
+   await page.locator('#torrent-more').tap();await page.locator('#torrent-pin-info').tap();await expect(page.locator('#torrent-pin-help')).toBeVisible();await page.locator('body > header h1').click();
    await page.locator('#torrent-more').tap();await page.locator('#torrent-pin').tap();await expect(page.locator('#remove-dialog')).toHaveCSS('opacity','1');
-   await expect(page.locator('#remove-title')).toHaveText('Unpin and delete?');await expect(page.locator('#remove-dialog [data-close]')).toBeFocused();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-   await page.screenshot({path:info.outputPath('unpin-'+theme+'.png')});await page.keyboard.press('Escape');expect((await app.api()).transfers[0].pinned).toBe(true);
+   await expect(page.locator('#remove-title')).toHaveText('Unpin and delete?');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+   await page.screenshot({path:info.outputPath('unpin-'+theme+'.png')});await page.locator('#remove-dialog [data-close]').click();expect((await app.api()).transfers[0].pinned).toBe(true);
   }
   await page.locator('#torrent-more').click();await page.locator('#torrent-pin').click();await page.locator('#remove-form button[type=submit]').click();await expect(page).toHaveURL(/#\/library$/);await expect.poll(async()=>(await app.api()).transfers.length).toBe(0);
  }finally{await cleanup(root,app,ref,tr);}

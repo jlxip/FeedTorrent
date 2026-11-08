@@ -341,6 +341,7 @@ impl PostManager {
         config.validate()?;
         let key = identity(uri)?;
         let id = hex(&key.target());
+        let refollow = self.state.posts.get(&id).is_some_and(|s| !s.followed);
         self.now = now;
         let s = self
             .state
@@ -356,6 +357,16 @@ impl PostManager {
             });
         s.followed = true;
         s.config = config;
+        if refollow {
+            // A new subscription retries its current catalog, while unrelated
+            // manually stopped torrents keep their durable suppression.
+            if let Some(record) = self.known(&id)? {
+                self.remember_pointer(&id, record);
+                if let Some(head) = self.runtime.get(&id).and_then(|r| r.head.clone()) {
+                    self.retry_catalog(&id, &head);
+                }
+            }
+        }
         self.runtime.entry(id.clone()).or_default().next_check = now;
         if self.known(&id)?.is_some() {
             self.renewals
@@ -588,9 +599,21 @@ impl PostManager {
             .ok_or_else(|| err("Post not found"))?
             .manual_catalogs
             .insert(id.into());
+        self.retry_catalog(post, id);
         self.dirty = true;
         self.tick(self.now);
         Ok(())
+    }
+    fn retry_catalog(&mut self, post: &str, id: &str) {
+        // Retry metadata under the configured size limit, without granting
+        // Download once permission to the payload.
+        self.state.suppressed.remove(id);
+        if let Some(v) = self.visits.get_mut(&(post.into(), id.into())) {
+            v.error.clear();
+            if v.meta.is_none() && !self.transfer_states.contains_key(id) {
+                v.state = "Waiting for metadata".into();
+            }
+        }
     }
     pub fn download_item(&mut self, post: &str, catalog: &str, index: usize) -> Result<String> {
         let v = self

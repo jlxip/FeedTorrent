@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+if ! git diff --quiet --ignore-submodules=none; then
+  echo 'Commit blocked: stage or stash unstaged changes before running the checks.' >&2
+  exit 1
+fi
+# Check the exact staged sources, including the absence of missing source files.
+untracked=$(git ls-files --others --exclude-standard)
+if [ -n "$untracked" ]; then
+  echo 'Commit blocked: add or remove untracked source files before running the checks.' >&2
+  exit 1
+fi
+# Keep the caller's index for the guards above. Tests and submodule checks
+# must discover their own repositories instead of inheriting the hook context.
+for variable in $(git rev-parse --local-env-vars); do unset "$variable"; done
+exec make check test

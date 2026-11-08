@@ -60,9 +60,6 @@ impl Vault {
         })
     }
     pub fn validate(&self) -> Result<()> {
-        if self.ciphertext.starts_with(b"age-encryption.org/") {
-            bail!("Legacy age/scrypt publishing key: convert it with dev/scripts/migrate-publishing-key.py before using this version")
-        }
         if self.ciphertext.len() != SIZE || !self.ciphertext.starts_with(MAGIC) {
             bail!("Unsupported or invalid publishing key encryption; expected FTKV v1")
         }
@@ -151,9 +148,9 @@ mod tests {
         assert_eq!(format!("{old:?}"), "[REDACTED]");
     }
     #[test]
-    fn rejects_legacy_and_malformed_envelopes_without_derivation() {
+    fn rejects_malformed_envelopes_without_derivation() {
         for data in [
-            b"age-encryption.org/v1\n".to_vec(),
+            b"unsupported key format".to_vec(),
             vec![],
             vec![0; SIZE],
             [MAGIC.as_slice(), &[0; 3]].concat(),

@@ -25,6 +25,7 @@ try {
   for (const file of ["index.html","app.css","theme.js"]) await writeFile(join(project,"web",file),file);
   for (const file of ["basecoat-vega-1.0.2.min.css","lucide-0.468.0.min.js","basecoat-runtime-1.0.2.min.js","basecoat-tabs-1.0.2.min.js","basecoat-sidebar-1.0.2.min.js","basecoat-dropdown-menu-1.0.2.min.js"]) await writeFile(join(project,"web/vendor",file),file);
   await copyFile("dev/scripts/unit.mjs",join(project,"dev/scripts/unit.mjs"));
+  await copyFile("dev/scripts/clippy.sh",join(project,"dev/scripts/clippy.sh"));
   await copyFile("dev/tests/runtime.mjs",join(project,"dev/tests/runtime.mjs"));
   await writeFile(join(project,"dev/scripts/ui.mjs"),"import{appendFileSync}from\"node:fs\";appendFileSync(process.env.BUILD_LOG,\"ui:\"+process.argv.slice(2).join(\" \")+\"\\n\");\n");
   await writeFile(join(project,"dev/scripts/test-deps.sh"),"#!/bin/sh\nprintf \"test-deps\\n\" >> \"$BUILD_LOG\"\n");
@@ -32,6 +33,11 @@ try {
   for(const name of [...suites,"make-entry","desktop","bep-consumer","posts-consumer"])
     await writeFile(join(project,"dev/tests",name+".mjs"),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:'+name+'\\n");\n');
   await writeFile(join(project,'dev/tests/validation-env.py'),'print("validation fixture")\n');
+  await writeFile(join(project,'dev/tests/package.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:package\\n");\n');
+  await writeFile(join(project,'dev/tests/release.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:release\\n");\n');
+  await writeFile(join(project,'dev/tests/pre-commit.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:pre-commit\\n");\n');
+  await writeFile(join(project,'dev/tests/test-deps.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:test-deps\\n");\n');
+  await writeFile(join(project,'dev/tests/disk-image.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:disk-image\\n");\n');
   const log = join(root,"calls"); env.BUILD_LOG=log; env.PATH=bin+":"+env.PATH;
   await writeFile(join(bin,"npm"), '#!/bin/sh\nprintf "npm\\n" >> "$BUILD_LOG"\n', {mode:0o755});
   await writeFile(join(project,"dev/scripts/native-deps.sh"), '#!/bin/sh\nif [ "${1:-}" = --verify-source ]; then printf "verify\\n" >> "$BUILD_LOG"; else mkdir -p .tools/native; printf "native:%s\\n" "$NATIVE_JOBS" >> "$BUILD_LOG"; fi\n');

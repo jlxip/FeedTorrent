@@ -35,14 +35,8 @@ def prepare(root):
    with tarfile.open(archive) as tar:tar.extractall(prefix,members=[m for m in tar.getmembers() if not m.name.startswith('+')],filter='data')
    marker.write_text(digest)
  if not (root/'local').exists():(root/'local').symlink_to(prefix,target_is_directory=True)
- python=root/'python'
- if not (python/'bin/python').exists():subprocess.run([sys.executable,'-m','venv',str(python)],check=True)
- wheel=Path.home()/'.cache/feedtorrent-test-wheels/openbsd8-amd64-py313/cryptography-50.0.0-cp313-abi3-openbsd_8_0_amd64.whl'
- assert sha(wheel)=='8871af5ed32b3fe2f38560e0a87f00cfb54b33d89ac2b5d5c313d917e454f1c7'
  env=environment(root)
- probe=subprocess.run([str(python/'bin/python'),'-c','from cryptography.hazmat.primitives.kdf.argon2 import Argon2id; Argon2id(salt=b"a"*16,length=32,iterations=1,lanes=1,memory_cost=8192).derive(b"test")'],env=env,capture_output=True)
- if probe.returncode:subprocess.run([str(python/'bin/python'),'-m','pip','install',str(wheel),'cffi==2.1.1','pycparser==3.12'],env=env,check=True)
- write(root/'environment.json',{'platform':platform.platform(),'packages':PACKAGES,'rustc':output(['rustc','--version']),'cxx':output(['c++','--version']),'node':output([str(prefix/'bin/node'),'--version'],env=env),'python':sys.version,'wheel_sha256':sha(wheel)})
+ write(root/'environment.json',{'platform':platform.platform(),'packages':PACKAGES,'rustc':output(['rustc','--version']),'cxx':output(['c++','--version']),'node':output([str(prefix/'bin/node'),'--version'],env=env),'python':sys.version})
  vendor=root/'workspace/backends/libtorrent/vendor/libtorrent';vendor.parent.mkdir(parents=True,exist_ok=True)
  if not (vendor/'.git').exists():
   subprocess.run(['git','clone','--no-checkout','--depth','1','https://github.com/arvidn/libtorrent.git',str(vendor)],check=True)
@@ -52,7 +46,7 @@ def prepare(root):
  assert output(['git','-C',str(vendor),'rev-parse','HEAD'])==PIN
  subprocess.run(['git','-C',str(vendor),'diff','--exit-code','HEAD'],check=True)
 def environment(root):
- env=os.environ.copy();env.update(PATH=str(root/'prefix/bin')+':'+str(root/'python/bin')+':/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',LD_LIBRARY_PATH=str(root/'prefix/lib')+':/usr/local/lib:/usr/local/lib/eopenssl35',BOOST_ROOT=str(root/'prefix'),NODE_PREFIX=str(root/'prefix'),NATIVE_JOBS='2',CARGO_BUILD_JOBS='2');return env
+ env=os.environ.copy();env.update(PATH=str(root/'prefix/bin')+':/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',LD_LIBRARY_PATH=str(root/'prefix/lib')+':/usr/local/lib:/usr/local/lib/eopenssl35',BOOST_ROOT=str(root/'prefix'),NODE_PREFIX=str(root/'prefix'),NATIVE_JOBS='2',CARGO_BUILD_JOBS='2');return env
 def source_path(workspace,name):
  p=workspace/name
  if not p.resolve().is_relative_to(workspace.resolve()):raise RuntimeError('Source path escapes managed workspace: '+str(name))
@@ -91,7 +85,7 @@ def refresh(root):
     if p.exists():shutil.rmtree(p)
    write(marker,key)
 
- recorded=json.loads((root/'environment.json').read_text());tools={'tls':output(['openssl','version']),'cmake':output(['cmake','--version']).splitlines()[0],'ninja':output(['ninja','--version'])}
+ recorded=json.loads((root/'environment.json').read_text());recorded.pop('wheel_sha256',None);tools={'tls':output(['openssl','version']),'cmake':output(['cmake','--version']).splitlines()[0],'ninja':output(['ninja','--version'])}
  tool_marker=root/'build-tool-inputs.json';previous_tools=json.loads(tool_marker.read_text()) if tool_marker.exists() else None
  if previous_tools is not None and previous_tools!=tools:
   for rel in ['.tools/native','.tools/libtorrent-build','target','.tools/node-datachannel','dev/node_modules/utp-native/build','dev/node_modules/node-datachannel/build']:

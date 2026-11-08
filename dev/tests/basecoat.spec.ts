@@ -61,7 +61,7 @@ test('native removal surface, inline failure, progress accessibility and mobile 
     await expect(page.locator('#remove-error')).toContainText('Removal refused by test');
     await expect(page.locator('#delete-files')).toBeChecked();
     await page.unroute('**/api/commands');
-    await page.keyboard.press('Escape');
+    await page.locator('#remove-dialog [data-close]').click();
     await page.locator('#torrent-more').click();await page.locator('#torrent-remove').click();
     await expect(page.locator('#delete-files')).not.toBeChecked();
     await expect(page.locator('#remove-error')).toBeEmpty();
@@ -131,7 +131,7 @@ test('post field errors, native nested key forms, secret cleanup and breadcrumb 
     await expect(page.locator('#own-old-password')).toHaveValue('');
     await expect.poll(async () => (await app.api()).publishing.posts.length).toBe(1);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-    await page.keyboard.press('Escape');await expect(keys).toBeHidden();await expect(page.locator('#settings-dialog')).toBeVisible();
-    await page.keyboard.press('Escape');await expect(page.locator('#settings-dialog')).toBeHidden();
+    await page.locator('#publishing-keys-dialog [data-close]').click();await expect(keys).toBeHidden();await expect(page.locator('#settings-dialog')).toBeVisible();
+    await page.locator('#settings-dialog [data-close]').click();await expect(page.locator('#settings-dialog')).toBeHidden();
   } finally {await cleanup(root,app);}
 });

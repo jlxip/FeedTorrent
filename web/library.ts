@@ -1,6 +1,6 @@
 import type {Command, Snapshot, Transfer} from './types.js';
 import {ContentReader, ContentPage, torrentRoute, type ContentHost} from './content.js';
-import {ReaderHistory} from './reader.js';
+import {ReaderHistory,canRestoreFocus} from './reader.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id:string) => document.getElementById(id)! as T;
 function node(tag:string, value='', cls='') {
@@ -117,9 +117,9 @@ export class LibraryUI {
     this.drawTooltip();
     if(this.restoring&&state){
       this.restoring='';if(!catalog)return;const saved:Position|undefined=catalog?history.state?.library:undefined;
-      const fromSidebar=this.restoringSidebar;
+      const fromSidebar=this.restoringSidebar,previousFocus=document.activeElement;
       requestAnimationFrame(()=>{
-        if(location.hash!==route)return;
+        if(location.hash!==route||!canRestoreFocus(previousFocus))return;
         const focus=saved?.focus?document.getElementById(saved.focus):null;
         // The mobile Sidebar owns focus when closing after its own navigation.
         if(!fromSidebar)(focus||$(catalog?'library-heading':'torrent-heading')).focus({preventScroll:true});

@@ -60,12 +60,8 @@ class EnvironmentTests(unittest.TestCase):
  def test_verified_cache_reuse_requires_no_network(self):
   archive=self.root/'downloads/deps.tgz';archive.parent.mkdir();archive.write_bytes(b'package');digest=module.sha(archive)
   prefix=self.root/'prefix';prefix.mkdir();(prefix/'deps.tgz.ready').write_text(digest)
-  python=self.root/'python/bin/python';python.parent.mkdir(parents=True);python.touch()
   (self.workspace/'backends/libtorrent/vendor/libtorrent/.git').mkdir(parents=True)
-  real_sha=module.sha
-  def hash_file(p):return '8871af5ed32b3fe2f38560e0a87f00cfb54b33d89ac2b5d5c313d917e454f1c7' if str(p).endswith('.whl') else real_sha(p)
-  from types import SimpleNamespace
-  with patch.object(module,'PACKAGES',{'deps.tgz':digest}),patch.object(module,'sha',side_effect=hash_file),patch.object(module.platform,'system',return_value='OpenBSD'),patch.object(module.platform,'release',return_value='8.0'),patch.object(module.platform,'machine',return_value='amd64'),patch.object(module.urllib.request,'urlopen',side_effect=AssertionError('unexpected network')),patch.object(module,'output',return_value=module.PIN),patch.object(module.subprocess,'run',return_value=SimpleNamespace(returncode=0)):
+  with patch.object(module,'PACKAGES',{'deps.tgz':digest}),patch.object(module.platform,'system',return_value='OpenBSD'),patch.object(module.platform,'release',return_value='8.0'),patch.object(module.platform,'machine',return_value='amd64'),patch.object(module.urllib.request,'urlopen',side_effect=AssertionError('unexpected network')),patch.object(module,'output',return_value=module.PIN),patch.object(module.subprocess,'run'):
    module.prepare(self.root)
  def test_unowned_directory_is_not_adopted(self):
   sentinel=self.root/'user-file';sentinel.write_text('keep');r=subprocess.run([sys.executable,'dev/scripts/openbsd-validation.py','--root',str(self.root),'status'],capture_output=True)

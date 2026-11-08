@@ -13,6 +13,8 @@ await copyFile(
   join(root, "backends/libtorrent/vendor/libtorrent/LICENSE"),
   join(notices, "LIBTORRENT-LICENSE"),
 );
+await copyFile(join(root, "dev/licenses/Boost-LICENSE"), join(notices, "BOOST-LICENSE"));
+await copyFile(join(root, "backends/libtorrent/vendor/libtorrent/deps/try_signal/LICENSE"), join(notices, "TRY-SIGNAL-LICENSE"));
 // Use the TLS implementation selected by CMake, including system LibreSSL.
 const cache = await readFile(join(root, ".tools/libtorrent-build/CMakeCache.txt"), "utf8");
 const include = cache.match(/^OPENSSL_INCLUDE_DIR:[^=]+=(.+)$/m)?.[1];
@@ -24,6 +26,7 @@ const candidates = process.env.TLS_LICENSE_FILE ? [process.env.TLS_LICENSE_FILE]
     join(include, "../LICENSE.txt"),
     join(include, "../share/doc/openssl/LICENSE.txt"),
     join(include, "../share/doc/openssl/LICENSE"),
+    "/usr/share/doc/libssl-dev/copyright",
   ];
 let tlsLicense;
 for (const candidate of candidates) {

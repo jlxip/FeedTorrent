@@ -109,7 +109,7 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.locator("#own-toggle").click();
     await page.locator("#own-publish").click();
     await page.locator("#own-publish-password").fill("not retained");
-    await page.keyboard.press("Escape");
+    await page.locator("#own-publish-dialog [data-close]").click();
     await expect(page.locator("#own-publish-password")).toHaveValue("");
     await page.locator("#own-publish").click();
     await page.mouse.click(2, 2);
@@ -117,8 +117,8 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.locator("#settings-open").click();
     await page.locator("#publishing-keys-open").click();
     await expect(page.locator("#publishing-keys-dialog")).toBeVisible();
-    await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
+    await page.locator("#publishing-keys-dialog [data-close]").click();
+    await page.locator("#settings-dialog [data-close]").click();
     await page.screenshot({
       path: evidencePath("publishing-editor-") + info.project.name + ".png",
       fullPage: true,

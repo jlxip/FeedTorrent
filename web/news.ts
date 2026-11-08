@@ -1,3 +1,4 @@
+import {canRestoreFocus} from './reader.js';
 import type {Command, NewsEntry, NewsPage, Snapshot} from "./types.js";
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
 const node = (tag: string, value = "", cls = "") => {
@@ -73,7 +74,7 @@ export class NewsUI {
   }
   private async load(top=false,restore?:Position) {
     if (!this.connected||!this.state?.ready||!this.active) return;
-    const request=++this.request;
+    const request=++this.request,previousFocus=document.activeElement;
     this.busy=true;this.error("");
     this.draw();
     try {
@@ -85,9 +86,9 @@ export class NewsUI {
       }
       this.page=page;this.offset=page.offset;this.anchor=page.anchor;
       this.draw();
-      if (top) {scrollTo({top:0,behavior:"instant"});$("news-heading").setAttribute('tabindex','-1');$("news-heading").focus({preventScroll:true});}
+      if (top&&canRestoreFocus(previousFocus)) {scrollTo({top:0,behavior:"instant"});$("news-heading").setAttribute('tabindex','-1');$("news-heading").focus({preventScroll:true});}
       if (restore) requestAnimationFrame(()=> {
-        if (this.active&&request===this.request) {
+        if (this.active&&request===this.request&&canRestoreFocus(previousFocus)) {
           scrollTo({top:restore.scroll,behavior:"instant"});if(restore.focus)document.getElementById(restore.focus)?.focus({preventScroll:true});
           this.save();
         }

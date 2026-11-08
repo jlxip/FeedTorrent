@@ -18,7 +18,7 @@ try {
   openssl(["req", "-x509", "-sha256", "-config", join(root,"ca.conf"), "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=FeedTorrent test CA", "-keyout", join(root,"ca.key"), "-out", ca]);
   openssl(["req", "-new", "-sha256", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost", "-keyout", key, "-out", join(root,"server.csr")]);
   await writeFile(join(root,"extensions"), "basicConstraints=CA:FALSE\nsubjectAltName=DNS:localhost,IP:127.0.0.1\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n");
-  openssl(["x509", "-req", "-sha256", "-in", join(root,"server.csr"), "-CA", ca, "-CAkey", join(root,"ca.key"), "-CAcreateserial", "-days", "1", "-extfile", join(root,"extensions"), "-out", cert]);
+  openssl(["x509", "-req", "-sha256", "-in", join(root,"server.csr"), "-CA", ca, "-CAkey", join(root,"ca.key"), "-CAserial", join(root,"ca.srl"), "-CAcreateserial", "-days", "1", "-extfile", join(root,"extensions"), "-out", cert]);
   openssl(["verify", "-purpose", "sslserver", "-CAfile", ca, cert]);
   tr = await tracker();
   const protocols=[];

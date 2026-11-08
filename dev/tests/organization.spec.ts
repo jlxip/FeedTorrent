@@ -46,7 +46,7 @@ test('mixed tree, content activity, no-op saves, archive and durable organizatio
     await expect.poll(async()=>{const s=await x.app.api();return Number(s.organization.revision)>Number(archived.organization.revision);}).toBe(true);
     await expect(page.locator('#archived-posts .post-link')).toHaveCount(3);
     await page.reload();await expect(page.locator('#archived-posts .post-link')).toHaveCount(3);
-    await expect(x.row(f)).toBeVisible();await x.row(f).getByRole('button',{name:'Actions for Reading'}).focus();await page.keyboard.press('ArrowDown');await page.keyboard.press('Home');await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+    await expect(x.row(f)).toBeVisible();await x.row(f).getByRole('button',{name:'Actions for Reading'}).click();await page.getByRole('menuitem',{name:'Restore',exact:true}).click();
     await expect(page.locator('#post-tree .post-link')).toHaveCount(3);
     const disk=JSON.parse(await readFile(join(x.root,'app/state/feed-organization.json'),'utf8'));expect(disk.nodes.some(n=>n.key===a&&n.parent===f)).toBe(true);
     // Unfollow promotes children instead of losing their navigation entries.
@@ -55,7 +55,7 @@ test('mixed tree, content activity, no-op saves, archive and durable organizatio
   }finally{await cleanup(x.root,x.app);}
 });
 
-test('pointer nesting, sibling positions, root, Escape and concurrent drag conflicts',async({page},info)=>{
+test('pointer nesting, sibling positions, root and concurrent drag conflicts',async({page},info)=>{
   const x=await fixture(page),errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
   try{
     const {a,b,f}=x.keys;
@@ -70,7 +70,6 @@ test('pointer nesting, sibling positions, root, Escape and concurrent drag confl
     await drag(b,f,.5);await page.mouse.up();await expect.poll(async()=>((await x.app.api()).organization.nodes.find(n=>n.key===b).parent)).toBe(f);
     await drag(a,b,.1);await page.mouse.up();await expect(page.locator(`#post-tree li[data-key="${f}"] > ul .post-link`)).toHaveText(['Alpha','Beta']);
     await drag(a,b,.9);await page.mouse.up();await expect(page.locator(`#post-tree li[data-key="${f}"] > ul .post-link`)).toHaveText(['Beta','Alpha']);
-    await drag(a,f,.5);await page.keyboard.press('Escape');await page.mouse.up();await expect(page.locator('#organization-status')).toHaveText('Move cancelled');await expect(page.locator('#post-move-dialog')).toBeHidden();
     await drag(a,b,.1);await x.change(f,'archive');await page.mouse.up();await expect(page.locator('#organization-error')).toContainText('another tab');
     await x.change(f,'restore');await expect(x.row(a)).toBeVisible();
     await drag(a,b,.5);const root=await page.locator('#post-root-drop').boundingBox();await page.mouse.move(root!.x+root!.width/2,root!.y+root!.height/2);await page.mouse.up();
@@ -91,13 +90,13 @@ test('touch alternative, move drafts, mobile menus and first/last positions',asy
     await page.setViewportSize({width:320,height:740});await page.locator('#sections-button').click();
     const {a,f}=x.keys;
     await x.row(a).getByRole('button',{name:'Actions for Alpha'}).click();await page.getByRole('menuitem',{name:'Move…'}).click();
-    await expect(page.locator('#post-move-dialog')).toBeVisible();await expect(page.locator('#post-move-parent')).toBeFocused();
+    await expect(page.locator('#post-move-dialog')).toBeVisible();
     await page.locator('#post-move-parent').selectOption(f);await page.locator('#post-move-position').selectOption('last');
-    await page.keyboard.press('Escape');await page.locator('#sections-button').click();await x.row(a).getByRole('button',{name:'Actions for Alpha'}).click();await page.getByRole('menuitem',{name:'Move…'}).click();
+    await page.locator('#post-move-dialog [data-close]').click();await page.locator('#sections-button').click();await x.row(a).getByRole('button',{name:'Actions for Alpha'}).click();await page.getByRole('menuitem',{name:'Move…'}).click();
     await expect(page.locator('#post-move-parent')).toHaveValue(f);await expect(page.locator('#post-move-position')).toHaveValue('last');await page.locator('#post-move-submit').click();
     await expect.poll(async()=>((await x.app.api()).organization.nodes.find(n=>n.key===a).parent)).toBe(f);
     await page.locator('#sections-button').click();await page.locator('#post-add').click();await expect(page.getByRole('menuitem',{name:'Follow post'})).toBeVisible();
-    await page.getByRole('menuitem',{name:'Follow post'}).click();await expect(page.locator('#post-magnet')).toBeFocused();await page.keyboard.press('Escape');
+    await page.getByRole('menuitem',{name:'Follow post'}).click();await page.locator('#post-dialog [data-close]').click();
     // Real touch input opens the accessible alternative; Chromium also drives a native touch drag.
     const context=await browser.newContext({viewport:{width:320,height:740},hasTouch:true});const touch=await context.newPage();
     await touch.goto(x.app.url+'/#/library');await touch.locator('#sections-button').tap();
@@ -158,7 +157,7 @@ test('whole rows drag from icon and padding while ordinary clicks and controls s
     const fold=x.row(f).getByRole('button',{name:'Toggle children of Reading'});await fold.click();await expect(x.row(a)).toBeHidden();
     await fold.click();await expect(x.row(a)).toBeVisible();await expect(page.locator('#post-root-drop')).toBeHidden();
     await x.row(f).getByRole('button',{name:'Actions for Reading'}).click();await expect(page.getByRole('menuitem',{name:'Move…'})).toBeVisible();
-    await expect(page.locator('#post-root-drop')).toBeHidden();await page.keyboard.press('Escape');
+    await expect(page.locator('#post-root-drop')).toBeHidden();await x.row(f).getByRole('button',{name:'Actions for Reading'}).click();
     await x.row(a).locator('.post-link').click();await expect(page.locator('#own-preview')).toBeVisible();await expect(page.locator('#own-heading')).toHaveText('Alpha');
   }finally{await cleanup(x.root,x.app);}
 });

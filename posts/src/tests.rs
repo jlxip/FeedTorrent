@@ -144,6 +144,82 @@ fn download_once_does_not_change_limit_and_suppression_is_durable() {
         .any(|a| matches!(a, Action::Stage { .. } | Action::Approve { .. })));
 }
 #[test]
+fn refollow_restores_head_without_restoring_removed_content_or_bypassing_limit() {
+    let b = catalog(&[b"a".to_vec()], Default::default());
+    let (mut m, id) = setup(Mode::CurrentCatalog, Some(1));
+    let w = stage(&mut m, &id, &b, 1);
+    metadata(&mut m, w, &b, false);
+    acts(&mut m);
+    let h = hex(&b.feed.infohash());
+    let other = hex(&[8; 20]);
+    m.suppress(&h).unwrap();
+    m.removed(&h);
+    m.suppress(&other).unwrap();
+    // Opening an already followed post must preserve an explicit stop.
+    m.follow(&format_magnet(&key()), Config::default(), 2)
+        .unwrap();
+    assert!(m.suppressed(&h));
+    m.unfollow(&id).unwrap();
+    acts(&mut m);
+    // Exercise the persisted case too: unfollowed posts have no runtime head.
+    let mut m = PostManager::restore(&m.checkpoint().unwrap()).unwrap();
+    m.start(3);
+    acts(&mut m);
+    m.follow(
+        &format_magnet(&key()),
+        Config {
+            automatic_limit: Some(1),
+            ..Default::default()
+        },
+        4,
+    )
+    .unwrap();
+    let w = acts(&mut m)
+        .into_iter()
+        .find_map(|a| match a {
+            Action::Stage {
+                work, id: target, ..
+            } if target == h => Some(work),
+            _ => None,
+        })
+        .expect("following again must request the removed head metadata");
+    assert!(!m.suppressed(&h));
+    assert!(m.suppressed(&other));
+    metadata(&mut m, w, &b, false);
+    assert!(!acts(&mut m)
+        .iter()
+        .any(|a| matches!(a, Action::Approve { .. })));
+    assert_eq!(m.views()[0].catalogs[0].state, "Awaiting approval");
+}
+
+#[test]
+fn open_removed_catalog_retries_metadata_without_granting_payload_approval() {
+    let b = catalog(&[b"a".to_vec()], Default::default());
+    let (mut m, id) = setup(Mode::CurrentCatalog, Some(1));
+    let w = stage(&mut m, &id, &b, 1);
+    metadata(&mut m, w, &b, false);
+    acts(&mut m);
+    let h = hex(&b.feed.infohash());
+    m.suppress(&h).unwrap();
+    m.removed(&h);
+    m.open_catalog(&id, &h).unwrap();
+    let w = acts(&mut m)
+        .into_iter()
+        .find_map(|a| match a {
+            Action::Stage {
+                work, id: target, ..
+            } if target == h => Some(work),
+            _ => None,
+        })
+        .expect("Download must restart metadata after removal");
+    metadata(&mut m, w, &b, false);
+    assert!(!acts(&mut m)
+        .iter()
+        .any(|a| matches!(a, Action::Approve { .. })));
+    assert_eq!(m.views()[0].catalogs[0].state, "Awaiting approval");
+}
+
+#[test]
 fn highwater_survives_incompatible_update_and_restore() {
     let b = catalog(&[b"ok".to_vec()], Default::default());
     let (mut m, id) = setup(Mode::CurrentCatalog, None);

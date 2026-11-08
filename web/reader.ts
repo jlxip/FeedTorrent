@@ -12,9 +12,17 @@ export const size=(n:number|null|undefined)=>{
 };
 export const plainClick=(e:MouseEvent)=>e.button===0&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.shiftKey;
 export type ReadingPosition={route:string;catalog?:string;offset?:number;trail?:Crumb[];scroll?:number;focus?:string|null};
+// Delayed history restoration must yield to a newer focus choice, including
+// menus/dialogs already opened while asynchronous content was loading.
+export function canRestoreFocus(previous:Element|null){
+  const current=document.activeElement;
+  if(current?.closest('dialog[open],.dropdown-menu:has(>button[aria-expanded="true"])'))return false;
+  return !current||current===previous||current===document.body||current===document.documentElement;
+}
 // One entry per browser history position, never another persisted content inventory.
 export class ReaderHistory {
   private route='';private pending=false;private data:ReadingPosition={route:''};
+  private entryFocus:Element|null=null;
   private origin:{target:string;from:string}|null=null;
   constructor(private root:HTMLElement,private key:string,private heading:HTMLElement){
     let queued:ReturnType<typeof setTimeout>|undefined;
@@ -33,7 +41,7 @@ export class ReaderHistory {
     if(this.origin?.target===location.hash)state[this.key+'From']=this.origin.from;
     else if(!saved)delete state[this.key+'From'];
     history.replaceState(state,'');this.origin=null;
-    this.route=location.hash;this.pending=true;this.data={...saved,route:this.route};
+    this.route=location.hash;this.pending=true;this.entryFocus=document.activeElement;this.data={...saved,route:this.route};
   }
   back(href:string){if(history.state?.[this.key+'From']===href){history.back();return true;}return false;}
   patch(p:Partial<ReadingPosition>){this.data={...this.data,...p,route:this.route};this.store();}
@@ -42,9 +50,9 @@ export class ReaderHistory {
   save(chosen?:string){if(!this.active()||this.pending)return;this.data={...this.data,scroll:scrollY,focus:chosen||(document.activeElement as HTMLElement|null)?.id||null};this.store();}
   restore(){
     if(!this.pending||!this.active())return;this.pending=false;
-    const route=this.route,data={...this.data};
+    const route=this.route,data={...this.data},previousFocus=this.entryFocus;
     requestAnimationFrame(()=>{
-      if(location.hash!==route||!this.active())return;
+      if(location.hash!==route||!this.active()||!canRestoreFocus(previousFocus))return;
       // Preserve the native Sidebar focus return on mobile navigation.
       if(!(matchMedia('(max-width:767px)').matches&&document.activeElement?.id==='sections-button'))
         (data.focus?document.getElementById(data.focus):null)?.focus({preventScroll:true});

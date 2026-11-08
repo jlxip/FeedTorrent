@@ -1,4 +1,5 @@
 import {evidencePath} from './runtime.mjs';
+import {detachImage} from './disk-image.mjs';
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import {
@@ -184,6 +185,8 @@ async function scenarios() {
     await exact(app, ref);
     assert(wires.some((type) => String(type).includes("utp")));
     check("UDP tracker + uTP-only seeder", { wires });
+    await ref.stop();
+    ref.stop = async () => {};
     await reverse(app, ref, root, { utp: true });
     check("uTP reverse transfer");
   } finally {
@@ -279,10 +282,10 @@ async function quota() {
     mount = join(root, "volume");
   await mkdir(mount);
   try {
-    const injected = process.platform === "openbsd";
+    const injected = process.platform === "openbsd" || process.platform === "linux";
     const flag = join(root, "enospc-active"), shim = join(root, "enospc.so");
     if (injected) {
-      await exec("cc", ["-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror", "dev/fixtures/enospc.c", "-o", shim]);
+      await exec("cc", ["-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror", "dev/fixtures/enospc.c", "-o", shim, ...(process.platform === "linux" ? ["-ldl"] : [])]);
       await writeFile(flag, "active");
     } else {
       await exec("hdiutil", [
@@ -355,7 +358,7 @@ async function quota() {
     if (app) await app.stop();
     if (ref) await ref.stop();
     if (tr) await tr.stop();
-    if (mounted) await exec("hdiutil", ["detach", "-quiet", mount]);
+    if (mounted) await detachImage(mount);
     await rm(root, { recursive: true, force: true });
   }
 }

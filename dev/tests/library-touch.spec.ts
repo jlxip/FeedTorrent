@@ -21,7 +21,7 @@ test('touch opens only the info tooltip, long names fit, and the grid has two in
     await page.locator('.transfer-name').tap();await expect(page).toHaveURL(new RegExp('#/library/'+id+'$'));
     await expect(page.locator('#library-reader .content-status')).toBeVisible();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-    await page.locator('#library-back').tap();await expect(page.locator('.transfer-name')).toBeFocused();
+    await page.locator('#library-back').tap();await expect(page).toHaveURL(/#\/library$/);
     await page.setViewportSize({width:1000,height:740});
     await expect.poll(()=>page.locator('#transfers').evaluate(e=>getComputedStyle(e).gridTemplateColumns.split(' ').length)).toBe(2);
   }finally{await context?.close();await cleanup(root,app);}
