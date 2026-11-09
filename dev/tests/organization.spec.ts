@@ -48,7 +48,7 @@ test('mixed tree, content activity, no-op saves, archive and durable organizatio
     await page.reload();await expect(page.locator('#archived-posts .post-link')).toHaveCount(3);
     await expect(x.row(f)).toBeVisible();await x.row(f).getByRole('button',{name:'Actions for Reading'}).click();await page.getByRole('menuitem',{name:'Restore',exact:true}).click();
     await expect(page.locator('#post-tree .post-link')).toHaveCount(3);
-    const disk=JSON.parse(await readFile(join(x.root,'app/state/feed-organization.json'),'utf8'));expect(disk.nodes.some(n=>n.key===a&&n.parent===f)).toBe(true);
+    const disk=JSON.parse(await readFile(join(x.root,'app/state/posts.json'),'utf8'));expect(disk.organization.nodes.some(n=>n.key===a&&n.parent===f)).toBe(true);
     // Unfollow promotes children instead of losing their navigation entries.
     await x.app.deletePost('followed',f.slice(9));await expect(page.locator('#post-tree > li > .post-row > .post-link')).toHaveText(['Alpha','Beta']);
     expect(errors).toEqual([]);

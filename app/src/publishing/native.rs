@@ -242,7 +242,7 @@ impl Bridge {
                             if cancel.load(Ordering::Acquire) {
                                 bail!("Publication canceled")
                             }
-                            let existing = e.record(&s.id)?;
+                            let existing = e.record(&s.id)?.clone();
                             if existing.path != s.path {
                                 bail!("Catalog reservation changed")
                             }
@@ -254,7 +254,7 @@ impl Bridge {
                                 bail!("Catalog is paused or removed; restore it explicitly before publishing")
                             }
                             e.native.remove(&s.id)?;
-                            atomic(&e.dir.join(format!("{}.source", s.id)), &s.metainfo)?;
+                            atomic(&storage::sidecar(&existing, "source")?, &s.metainfo)?;
                             e.native.add(AddTransfer {
                                 id: &s.id,
                                 source: TorrentSource::Torrent(&s.metainfo),

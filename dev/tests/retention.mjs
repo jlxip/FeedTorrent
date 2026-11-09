@@ -18,7 +18,7 @@ try{
  const idle=()=>wait(async()=>(await snapshot()).cleanup.length===0,'cleanup finished',15000);
  const exists=async p=>{try{await access(p);return true;}catch{return false;}};
  await pub({action:'create_key',password,confirmation:password});
- const vault=JSON.parse(await readFile(join(appRoot,'state/publishing/library.json'),'utf8')).vault;
+ const vault=JSON.parse(await readFile(join(appRoot,'state/publishing.json'),'utf8')).vault;
  const a=await create('A'),b=await create('B');await attach(a);const t=await download(a);
  assert.equal(t.pinned,false);assert.deepEqual(t.used_by,['own:'+a]);const payload=t.save_path;
  const stale=await preview({kind:'post',post_kind:'own',id:a});assert.deepEqual(stale.deleting,[ref.id]);
@@ -32,7 +32,7 @@ try{
  const protectedPreview=await preview({kind:'post',post_kind:'own',id:b});assert.deepEqual(protectedPreview.protected,[ref.id]);await removePost(b);await idle();
  const unpin=await preview({kind:'unpin',id:ref.id});assert.deepEqual(unpin.deleting,[ref.id]);assert(await exists(payload));
  await command({type:'set_pin',id:ref.id,pinned:true});await command({type:'set_pin',id:ref.id,pinned:false,revision:unpin.revision});await idle();
- assert.equal(await exists(payload),false);assert.equal((await snapshot()).transfers.length,0);assert.equal(await exists(join(appRoot,'state',ref.id+'.source')),false);
+ assert.equal(await exists(payload),false);assert.equal((await snapshot()).transfers.length,0);assert.equal(await exists(join(appRoot,'downloads',ref.id+'.source')),false);
  console.log('PASS shared references, stale confirmation, obsolete mutations rejected, Pin guard, Unpin and physical cleanup');
  // Collection must not suppress a future legitimate download of the same hash.
  const d=await create('D');await attach(d);await download(d);await command({type:'pause',id:ref.id});
@@ -64,17 +64,16 @@ try{
  const canceled=await create('Canceled publisher');const c=await pub({action:'get_post',id:canceled});
  await pub({action:'publish',id:canceled,revision:c.revision,password});await removePost(canceled);await idle();
  await new Promise(r=>setTimeout(r,400));assert.equal((await snapshot()).publishing.posts.some(p=>p.id===canceled),false);
- const packages=await (await import('node:fs/promises')).readdir(join(appRoot,'state/publishing/catalogs')).catch(()=>[]);assert.equal(packages.length,0);
+ const packages=await (await import('node:fs/promises')).readdir(join(appRoot,'state/published')).catch(()=>[]);assert.equal(packages.length,0);
  console.log('PASS removal fences in-flight publication; restart resumes retired-post cleanup without restoring its post');
  const h=await create('H');await attach(h);await download(h);await command({type:'add_torrent',data:other.bytes});await wait(async()=>(await snapshot()).transfers.some(t=>t.id===other.id&&t.progress===1),'manual download',20000);
- await app.stop();const registry=join(appRoot,'state/transfers.json'),library=join(appRoot,'state/publishing/library.json');
- const legacy=JSON.parse(await readFile(registry,'utf8'));legacy.version=3;delete legacy.retention;for(const r of legacy.records){r.feed=r.post;delete r.post;}await writeFile(registry,JSON.stringify(legacy));
- const oldOwn=JSON.parse(await readFile(library,'utf8'));oldOwn.feeds=oldOwn.posts;delete oldOwn.posts;await writeFile(library,JSON.stringify(oldOwn));
- const cpPath=join(appRoot,'state/feeds.json'),cp=JSON.parse(await readFile(cpPath,'utf8'));cp.feeds=cp.posts;delete cp.posts;await writeFile(cpPath,JSON.stringify(cp));await writeFile(join(appRoot,'state/feeds.previous.json'),JSON.stringify(cp));
- app=await startApp(appRoot);await wait(async()=>(await snapshot()).ready,'migrated startup');const migrated=await snapshot();
- assert.equal(migrated.transfers.length,2);assert.equal(migrated.transfers.find(t=>t.id===ref.id).pinned,false);assert.equal(migrated.transfers.find(t=>t.id===other.id).pinned,true);
- assert.equal(migrated.cleanup.length,0);const saved=JSON.parse(await readFile(registry,'utf8'));assert.equal(saved.version,4);assert.equal(saved.retention.initialized,true);
- assert.deepEqual(JSON.parse(await readFile(library,'utf8')).vault,vault);
+ await app.stop();
+ app=await startApp(appRoot);await wait(async()=>(await snapshot()).ready,'restart');const restarted=await snapshot();
+ assert.equal(restarted.transfers.length,2);
+ assert.equal(restarted.transfers.find(t=>t.id===ref.id).pinned,false);
+ assert.equal(restarted.transfers.find(t=>t.id===other.id).pinned,true);
+ assert.equal(restarted.cleanup.length,0);
+ assert.deepEqual(JSON.parse(await readFile(join(appRoot,'state/publishing.json'),'utf8')).vault,vault);
  assert.equal(hash(await readFile(join(root,'source-a/source/file-0.bin'))),hash(ref.originals[0]));
- console.log('PASS legacy registry/post fields migrate without deletion; known ownership and ambiguous/manual Pin survive restart; key and source originals preserved');
+ console.log('PASS restart preserves ownership, Pin decisions, publishing key and source originals');
 }finally{await cleanup(root,tr,ref,other,app);}

@@ -46,6 +46,39 @@ jobs:
             ~/.cargo/git
             ~/.npm
           key: downloads-${{ matrix.target }}-rust195-node24-${{ hashFiles('Cargo.lock', 'dev/package-lock.json') }}
+      - name: Identify native build
+        id: native-key
+        env:
+          NATIVE_CACHE_TARGET: ${{ matrix.target }}
+        run: node dev/ci/native-cache-key.mjs
+      - name: Restore libtorrent
+        id: libtorrent-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .tools/native
+            .tools/libtorrent-build/CMakeCache.txt
+          key: ${{ steps.native-key.outputs.key }}
+      - name: Check restored libtorrent
+        if: steps.libtorrent-cache.outputs.cache-hit == 'true'
+        run: |
+          sh dev/scripts/native-deps.sh --verify-source
+          test -s .tools/native/lib/libtorrent-rasterbar.a
+          test -f .tools/native/include/libtorrent/version.hpp
+          grep -Fqx "prefix=$PWD/.tools/native" .tools/native/lib/pkgconfig/libtorrent-rasterbar.pc
+          grep -Fqx "CMAKE_INSTALL_PREFIX:PATH=$PWD/.tools/native" .tools/libtorrent-build/CMakeCache.txt
+          touch .tools/native/.ready
+      - name: Build libtorrent
+        if: steps.libtorrent-cache.outputs.cache-hit != 'true'
+        run: make native-deps
+      - name: Save libtorrent before tests
+        if: steps.libtorrent-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .tools/native
+            .tools/libtorrent-build/CMakeCache.txt
+          key: ${{ steps.native-key.outputs.key }}
       - name: Validate and package
         run: sh dev/ci/run.sh
       - name: Upload validated package
@@ -88,12 +121,33 @@ jobs:
           envs: 'GITHUB_REF_TYPE GITHUB_REF_NAME'
           sync: rsync
           copyback: true
+          cache-after-prepare: true
+          cache-after-prepare-key-suffix: libtorrent-6da363d2994f17c0b3c0450d124cf73a31a73847-${{ hashFiles('dev/ci/prepare.sh', 'dev/scripts/native-deps.sh', 'dev/cmake/openbsd.cmake', '.gitmodules') }}
           prepare: |
             sh dev/ci/prepare.sh
             useradd -m -s /bin/sh ci
             chown -R ci:ci .
+            su -m ci -c 'env HOME=/home/ci USER=ci LOGNAME=ci NATIVE_JOBS=2 make native-deps'
+            mkdir -p /opt
+            mv .tools/native /opt/feedtorrent-native
+            cp .tools/libtorrent-build/CMakeCache.txt /opt/feedtorrent-native-CMakeCache.txt
+            ln -s /opt/feedtorrent-native .tools/native
           run: |
             set -eu
+            # vmactions re-syncs a fresh worktree after restoring the prepared VM.
+            test -d /opt/feedtorrent-native
+            test -s /opt/feedtorrent-native-CMakeCache.txt
+            mkdir -p .tools/libtorrent-build
+            cp /opt/feedtorrent-native-CMakeCache.txt .tools/libtorrent-build/CMakeCache.txt
+            if [ ! -L .tools/native ]; then
+              test ! -e .tools/native
+              ln -s /opt/feedtorrent-native .tools/native
+            fi
+            test -s .tools/native/lib/libtorrent-rasterbar.a
+            grep -Fqx "prefix=$PWD/.tools/native" .tools/native/lib/pkgconfig/libtorrent-rasterbar.pc
+            grep -Fqx "CMAKE_INSTALL_PREFIX:PATH=$PWD/.tools/native" .tools/libtorrent-build/CMakeCache.txt
+            touch .tools/native/.ready
+            chown -R ci:ci .
             # Permission/error fixtures must run without root privileges.
             su -m ci -c 'env HOME=/home/ci USER=ci LOGNAME=ci NATIVE_JOBS=2 sh dev/ci/run.sh'
       - name: Upload validated package

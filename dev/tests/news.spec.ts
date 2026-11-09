@@ -78,26 +78,9 @@ test('New posts follows signed roots, reads only displayed content and restores 
     expect((await app.api()).news_unread).toBe(0);
     expect(fx.contentRequests).toBe(0);
     expect(initial.sequence).toBe('1');
-    // A recovered durable checkpoint must preserve acknowledged reading states.
-    await app.stop();await writeFile(join(appDir,'state','feeds.json'),'damaged primary');
-    app=await startApp(appDir,args);
-    expect((await app.api()).post_error).toContain('recovered previous checkpoint');
-    expect((await app.api()).news_unread).toBe(0);
-    expect((await app.command({type:'news_page',offset:0,anchor:null})).total).toBe(2);
-    // Exercise the native v1 migration with real signed history and local files.
-    await app.stop();
-    const path=join(appDir,'state','feeds.json');
-    const legacy=JSON.parse(await readFile(path,'utf8'));legacy.version=1;delete legacy.news;
-    await writeFile(path,JSON.stringify(legacy));
-    app=await startApp(appDir,args);
-    const migrated=await app.command({type:'news_page',offset:0,anchor:null});
-    expect(migrated.total).toBe(1);expect(migrated.entries[0].sequence).toBe('33');
-    expect(migrated.entries[0].read).toBe(false);
-    const durable=JSON.parse(await readFile(path,'utf8'));
-    expect(durable.version).toBe(2);
-    expect(durable.posts).toEqual(legacy.posts);
-    expect(durable.approvals).toEqual(legacy.approvals);
-    expect(durable.suppressed).toEqual(legacy.suppressed);
+    const durable=JSON.parse(await readFile(join(appDir,'state','posts.json'),'utf8'));
+    expect(durable.checkpoint.posts[fx.postId]).toBeDefined();
+    expect(durable.checkpoint.news.entries).toHaveLength(2);
   } finally {if(app)await app.stop();if(fx)await fx.stop();await cleanup(root);}
 });
 

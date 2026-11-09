@@ -41,13 +41,7 @@ pub struct Input {
 }
 impl Organization {
     pub fn load(dir: &Path) -> Result<Self> {
-        let path = dir.join("feed-organization.json");
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let value: Self = serde_json::from_slice(&read_limited(&path)?)?;
-        value.validate()?;
-        Ok(value)
+        Ok(crate::post_state::load(dir)?.organization)
     }
     pub fn view(&self, error: String) -> View {
         View {
@@ -56,7 +50,7 @@ impl Organization {
             error,
         }
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.version != 1 || self.nodes.len() > 1024 {
             bail!("Invalid post organization");
         }
@@ -94,10 +88,9 @@ impl Organization {
             .checked_add(1)
             .context("Organization revision exhausted")?;
         next.validate()?;
-        atomic(
-            &dir.join("feed-organization.json"),
-            &serde_json::to_vec_pretty(&next)?,
-        )?;
+        let mut state = crate::post_state::load(dir)?;
+        state.organization = next.clone();
+        state.save(dir)?;
         *self = next;
         Ok(())
     }
@@ -474,12 +467,9 @@ mod tests {
         assert!(o.validate().is_err());
         o.nodes.pop();
         o.validate().unwrap();
-        fs::write(p.join("feed-organization.json"), b"broken").unwrap();
+        fs::write(p.join("posts.json"), b"broken").unwrap();
         assert!(Organization::load(p).is_err());
-        assert_eq!(
-            fs::read(p.join("feed-organization.json")).unwrap(),
-            b"broken"
-        );
+        assert_eq!(fs::read(p.join("posts.json")).unwrap(), b"broken");
     }
     #[test]
     fn transient_unresolved_versions_and_mixed_identical_identities() {

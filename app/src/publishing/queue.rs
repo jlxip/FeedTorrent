@@ -943,12 +943,10 @@ pub(super) fn start(
     retry_delay: Duration,
 ) -> Result<(Client, std::thread::JoinHandle<()>)> {
     use std::os::unix::fs::PermissionsExt;
-    let dir = data_dir.join("publishing");
+    let dir = data_dir.to_path_buf();
     let initial = (|| -> Result<Library> {
-        if dir.exists() {
-            reject_symlinks(&dir)?;
-        }
-        fs::create_dir_all(dir.join("catalogs"))?;
+        fs::create_dir_all(dir.join("published"))?;
+        reject_symlinks(&dir.join("published"))?;
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
         let mut lib = load(&dir)?;
         if recover(&mut lib)? {

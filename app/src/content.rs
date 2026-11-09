@@ -273,8 +273,7 @@ impl Engine {
         let bodies: Vec<_> = t
             .files
             .iter()
-            .enumerate()
-            .filter(|(_, f)| body_file(&f.name, &t.name))
+            .filter(|f| body_file(&f.name, &t.name))
             .collect();
         value["body_state"] = json!(if info.is_none() {
             "metadata"
@@ -286,12 +285,12 @@ impl Engine {
         if bodies.len() > 1 {
             value["body_state"] = json!("error");
             value["body_error"] = json!("Torrent contains multiple Markdown bodies");
-        } else if let Some((index, file)) = bodies.first() {
+        } else if let Some(file) = bodies.first() {
             if file.length > feedtorrent_posts::publishing::MAX_BODY as u64 {
                 value["body_state"] = json!("error");
                 value["body_error"] = json!("Markdown exceeds 1 MiB");
             } else if file.ready && t.state != "Checking" && t.error.is_empty() {
-                let native = self.native.file_at(id, *index)?;
+                let native = self.native.file_by_name(id, &file.name)?;
                 if native.verified == native.length {
                     value["body_path"] = json!(self.verified_path(id, &native.name)?);
                     value["body_state"] = json!("ready");

@@ -49,6 +49,17 @@ impl LibtorrentBackend {
             verified: f.verified,
         })
     }
+    /// Resolve a native relative path without treating a filtered snapshot position
+    /// as an index: the original layout still contains its padding entries.
+    pub fn file_by_name(&self, id: &str, name: &str) -> Result<BackendFile> {
+        let description = self.session.description(id).map_err(error)?;
+        let index = description
+            .files
+            .iter()
+            .position(|file| !file.padding && file.name == name)
+            .ok_or_else(|| error("Unknown torrent file"))?;
+        self.file_at(id, index)
+    }
     /// Metadata may be fetched, but no payload pieces are requested until the host
     /// explicitly allows them. This hold survives native metadata/error callbacks.
     pub fn stage(&mut self, t: AddTransfer<'_>) -> Result<()> {

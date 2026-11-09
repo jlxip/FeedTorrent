@@ -6,6 +6,7 @@ test-results/
 playwright-report/
 .runtime/
 /downloads/
+/user/
 
 /web/dist/
 .DS_Store

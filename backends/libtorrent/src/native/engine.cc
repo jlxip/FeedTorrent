@@ -145,6 +145,7 @@ struct Session::Impl {
   fs::path dir;
   std::unique_ptr<lt::session> session;
   std::map<std::string, lt::torrent_handle> handles;
+  std::map<std::string, fs::path> transfer_roots;
   std::map<std::string, std::pair<bool, std::int64_t>> dates;
   std::map<std::string, std::string> errors, warnings;
   std::set<std::string> metadata_guard, approval_guard, pending;
@@ -270,7 +271,8 @@ struct Session::Impl {
       if (auto *t = lt::alert_cast<lt::save_resume_data_alert>(a)) {
         auto id = hash(t->params.info_hashes);
         try {
-          write(dir / (id + ".resume"), lt::write_resume_data_buf(t->params));
+          if (transfer_roots.count(id))
+            write(transfer_roots.at(id) / (id + ".resume"), lt::write_resume_data_buf(t->params));
         } catch (std::exception const &e) {
           warning = e.what();
         }
@@ -343,7 +345,7 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
     throw std::runtime_error("Transfer already exists");
   if (restore) {
     try {
-      auto data = read(impl->dir / (key + ".resume"));
+      auto data = read(fs::path(str(path)).parent_path() / (key + ".resume"));
       if (!data.empty()) {
         auto saved = lt::read_resume_data(data);
         if (hash(saved.info_hashes) != key)
@@ -363,7 +365,7 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
   }
   if (restore && !p.ti) {
     try {
-      auto cached = read(impl->dir / (key + ".info"));
+      auto cached = read(fs::path(str(path)).parent_path() / (key + ".info"));
       if (!cached.empty()) {
         if (cached.size() > 8 * 1024 * 1024) throw std::runtime_error("Cached metadata exceeds 8 MiB");
         std::string data = "d4:info";
@@ -392,6 +394,7 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
   }
   auto h = impl->session->add_torrent(std::move(p));
   impl->handles[key] = h;
+  impl->transfer_roots[key] = fs::path(str(path)).parent_path();
   impl->dates[key] = magnet ? std::make_pair(false, std::int64_t(0)) : creation_date(bytes);
   if (active)
     h.resume();
@@ -428,7 +431,10 @@ void Session::remove(rust::Str id) {
   impl->approval_guard.erase(key);
   impl->errors.erase(key);
   impl->warnings.erase(key);
-  fs::remove(impl->dir / (key + ".resume"));
+  if (impl->transfer_roots.count(key)) {
+    fs::remove(impl->transfer_roots.at(key) / (key + ".resume"));
+    impl->transfer_roots.erase(key);
+  }
 }
 NativeSnapshot Session::snapshot() {
   impl->alerts();

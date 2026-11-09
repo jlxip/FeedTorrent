@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync,spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {mkdtemp,mkdir,copyFile,cp,readFile,writeFile,rm,chmod} from 'node:fs/promises';
+import {mkdtemp,mkdir,copyFile,cp,readFile,writeFile,rm,chmod,readdir,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve,basename} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -46,7 +46,7 @@ export async function smoke(binary){
   let child,exit;
   try{
     await mkdir(join(root,'home'));
-    child=spawn(binary,['--no-open','--isolated','--data-dir',join(root,'state'),'--download-dir',join(root,'downloads'),'--peer-port','0'],{cwd:root,env:{...process.env,HOME:join(root,'home'),PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
+    child=spawn(binary,['--no-open','--isolated','--peer-port','0'],{cwd:root,env:{...process.env,HOME:join(root,'home'),PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
     let logs='';
     child.stdout.on('data',b=>{logs+=b});child.stderr.on('data',b=>{logs+=b});
     exit=once(child,'exit');
@@ -75,6 +75,10 @@ export async function smoke(binary){
     child.kill('SIGTERM');
     const [code]=await Promise.race([exit,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('Packaged executable did not stop')),15000);timer.unref()})]);
     assert.equal(code,0,'Packaged executable shutdown failed');
+    await stat(join(root,'user','transfers.json'));
+    await stat(join(root,'user','downloads'));
+    await stat(join(root,'user','published'));
+    assert.deepEqual(await readdir(join(root,'home')),[],'Packaged executable wrote under HOME');
     return {http:200,api:200,assets:assets.length,shutdown:code};
   }finally{
     if(child&&child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await exit.catch(()=>{})}

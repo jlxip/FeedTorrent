@@ -198,7 +198,7 @@ try {
   pass('saved catalog is rechecked and repaired before inspection after restart');
   await app.stop();
   await live.stop();
-  await rm(join(root, 'app/state', live.id + '.resume'), {force: true});
+  await rm(join(root, 'app/downloads', live.id + '.resume'), {force: true});
   app = await startApp(join(root, 'app'), args);
   await indexed(live);
   pass(
@@ -246,16 +246,10 @@ try {
   assert.equal((await app.api()).transfers.length,0);
   pass(
       'incompatible signed highwater is durable; readable catalog retained; Delete post collects its exclusively owned downloads');
-  const state = join(root, 'app/state/feeds.json');
-  await writeFile(state, 'corrupt current');
-  await app.stop();
-  app = await startApp(join(root, 'app'), args);
-  await wait(async () => (await app.api()).ready, 'restore');
-  assert.match((await app.api()).post_error, /recovered previous checkpoint/);
-  assert.equal(
-      (await app.api()).posts.length, 0,
-      'checkpoint recovery must preserve the completed Unfollow');
-  pass('corrupt checkpoint recovers verified previous state and reports recovery');
+  const state = JSON.parse(await readFile(join(root, 'app/state/posts.json'), 'utf8'));
+  assert.equal(Object.values(state.checkpoint.posts).filter(p=>p.followed).length,0);
+  assert.equal((await app.api()).posts.length,0);
+  pass('single posts.json checkpoint preserves completed Delete post');
   report.status = 'pass';
 } catch (e) {
   report.status = 'fail';

@@ -142,6 +142,7 @@ export class PublishingUI {
       const p = this.page();
       if (p) {
         p.title = $<HTMLInputElement>("own-title").value;
+        if(p.id===this.session()?.draft.root)$("own-heading").textContent=p.title||"Own post";
         const current = $("own-breadcrumb").querySelector('[aria-current="page"]');
         if (current) current.textContent = p.title;
         this.changed();
@@ -673,7 +674,12 @@ export class PublishingUI {
       $('own-unavailable').querySelector('h3')!.textContent=state?'Post unavailable':'Loading…';
       return;
     }
-    $("own-heading").textContent = f?.title || "Own post";
+    const session = this.sessions.get(id);
+    // The input and its heading must share a draft: delayed snapshots must not
+    // reflow the actions after autosave has already reported success.
+    const title=session&&(session.edits!==session.saved||session.revision>=f.revision)
+      ?session.draft.pages.find(p=>p.id===session.draft.root)?.title:f.title;
+    $("own-heading").textContent = title || "Own post";
     this.indicator();
     $("own-publish").toggleAttribute(
       "disabled",
@@ -686,7 +692,6 @@ export class PublishingUI {
     const problem = this.session()?.error || state?.publishing.error || "";
     if ($("own-error").firstElementChild!.textContent !== problem) $("own-error").firstElementChild!.textContent = problem;
     $("own-error").hidden = !problem;
-    const session = this.sessions.get(id);
     if (session && f && session.edits === session.saved)
       $("own-draft-status").textContent =
         "Draft saved" +

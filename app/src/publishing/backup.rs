@@ -23,7 +23,7 @@ pub(super) fn export(dir: &Path, lib: &Library, full: bool) -> Result<PathBuf> {
         }
     }
     let data = serde_json::to_vec(&Manifest {
-        version: 1,
+        version: 2,
         full,
         library,
     })?;
@@ -64,12 +64,19 @@ pub(super) fn export(dir: &Path, lib: &Library, full: bool) -> Result<PathBuf> {
                 })
                 .collect();
             for hash in hashes {
-                let bytes = read(&package_path(dir, hash)?)?;
-                total = total.checked_add(bytes.len()).context("Backup too large")?;
-                if total > MAX_LIBRARY {
-                    bail!("Backup exceeds 256 MiB")
-                };
-                append(&mut tar, &format!("catalogs/{hash}.json"), &bytes)?;
+                let pack = package(dir, hash)?;
+                for (name, bytes) in std::iter::once(("source".to_owned(), &pack.metainfo)).chain(
+                    pack.files
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, data))| (format!("file-{i}"), data)),
+                ) {
+                    total = total.checked_add(bytes.len()).context("Backup too large")?;
+                    if total > MAX_LIBRARY {
+                        bail!("Backup exceeds 256 MiB")
+                    }
+                    append(&mut tar, &format!("catalogs/{hash}/{name}"), bytes)?;
+                }
             }
         }
         tar.finish()?;
@@ -104,10 +111,15 @@ pub(super) fn import(
             .context("Invalid backup path")?
             .to_owned();
         let allowed = name == "manifest.json"
-            || name
-                .strip_prefix("catalogs/")
-                .and_then(|p| p.strip_suffix(".json"))
-                .is_some_and(valid_id);
+            || name.strip_prefix("catalogs/").is_some_and(|rest| {
+                rest.split_once('/').is_some_and(|(hash, file)| {
+                    valid_id(hash)
+                        && (file == "source"
+                            || file.strip_prefix("file-").is_some_and(|n| {
+                                !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+                            }))
+                })
+            });
         if !allowed || entries.contains_key(&name) {
             bail!("Unsafe, unknown or duplicate backup path")
         }
@@ -129,7 +141,7 @@ pub(super) fn import(
             .context("Missing backup manifest")?
             .as_slice(),
     )?;
-    if manifest.version != 1 {
+    if manifest.version != 2 {
         bail!("Unsupported backup version")
     };
     validate(&manifest.library)?;
@@ -146,21 +158,63 @@ pub(super) fn import(
     {
         bail!("A different key requires another data directory")
     }
-    for (name, data) in &entries {
-        let hash = name
-            .strip_prefix("catalogs/")
-            .and_then(|p| p.strip_suffix(".json"))
-            .context("Invalid package")?;
-        let pack: Package = serde_json::from_slice(data)?;
-        let f = Feed::from_metainfo(&pack.metainfo)?;
-        if hex(&f.infohash()) != hash {
+    let hashes: BTreeSet<_> = entries
+        .keys()
+        .filter_map(|name| {
+            name.strip_prefix("catalogs/")
+                .and_then(|rest| rest.split_once('/').map(|(hash, _)| hash.to_owned()))
+        })
+        .collect();
+    let mut packages = BTreeMap::new();
+    for hash in &hashes {
+        let metainfo = entries
+            .get(&format!("catalogs/{hash}/source"))
+            .context("Backup catalog source missing")?
+            .clone();
+        let feed = Feed::from_metainfo(&metainfo)?;
+        if hex(&feed.infohash()) != *hash {
             bail!("Backup catalog identity mismatch")
-        };
-        feedtorrent_posts::publishing::verify_payload(&pack.metainfo, &pack.files)?;
-        let path = package_path(dir, hash)?;
-        if path.exists() && read(&path)? != *data {
-            bail!("Backup conflicts with an existing catalog")
         }
+        let mut files = vec![];
+        for (index, entry) in feed
+            .entries()
+            .iter()
+            .filter(|entry| entry.kind() != EntryKind::Padding)
+            .enumerate()
+        {
+            let data = entries
+                .get(&format!("catalogs/{hash}/file-{index}"))
+                .context("Backup catalog payload missing")?
+                .clone();
+            files.push((entry.path().to_vec(), data));
+        }
+        if entries
+            .keys()
+            .filter(|name| name.starts_with(&format!("catalogs/{hash}/")))
+            .count()
+            != files.len() + 1
+        {
+            bail!("Backup has unexpected catalog files")
+        }
+        feedtorrent_posts::publishing::verify_payload(&metainfo, &files)?;
+        let root = package_path(dir, hash)?;
+        if root.exists() {
+            let current = package(dir, hash)?;
+            if current.metainfo != metainfo || current.files != files {
+                bail!("Backup conflicts with an existing catalog")
+            }
+        } else if dir
+            .join("published")
+            .join(format!("{hash}.source"))
+            .exists()
+            || dir
+                .join("published")
+                .join(format!("{hash}.transfer.json"))
+                .exists()
+        {
+            bail!("Backup conflicts with existing catalog metadata")
+        }
+        packages.insert(hash.clone(), CatalogData { metainfo, files });
     }
     let mut candidate = current.clone();
     if candidate.vault.is_none() {
@@ -184,7 +238,7 @@ pub(super) fn import(
                         .flat_map(|p| p.pages.values().map(|p| &p.hash)),
                 )
             {
-                if !entries.contains_key(&format!("catalogs/{hash}.json")) {
+                if !packages.contains_key(hash) {
                     bail!("Backup is missing a catalog")
                 }
             }
@@ -197,16 +251,27 @@ pub(super) fn import(
         candidate.posts.insert(id, f);
     }
     validate(&candidate)?;
-    // Commit immutable packages only after validating the entire archive. They
-    // are harmless if the final atomic registry commit fails; no live data moves.
-    for (name, data) in entries {
-        let hash = name
-            .strip_prefix("catalogs/")
-            .and_then(|p| p.strip_suffix(".json"))
-            .context("Invalid package path")?;
-        let path = package_path(dir, hash)?;
-        if !path.exists() {
-            save(&path, &data)?
+    // Catalogs are immutable. Validate the complete archive before writing any.
+    for (hash, pack) in packages {
+        let root = package_path(dir, &hash)?;
+        if root.exists() {
+            continue;
+        }
+        fs::create_dir_all(&root)?;
+        let feed = Feed::from_metainfo(&pack.metainfo)?;
+        save(
+            &dir.join("published").join(format!("{hash}.source")),
+            &pack.metainfo,
+        )?;
+        let manifest = serde_json::json!({"version":1,"magnet":false,"active":true,"seed":true,"held":false,"kind":"owned_catalog","post":null,"pinned":false});
+        save(
+            &dir.join("published").join(format!("{hash}.transfer.json")),
+            &serde_json::to_vec(&manifest)?,
+        )?;
+        for (parts, data) in pack.files {
+            let target = parts.iter().fold(root.join(feed.name()), |p, n| p.join(n));
+            fs::create_dir_all(target.parent().context("Missing catalog directory")?)?;
+            save(&target, &data)?;
         }
     }
     persist(dir, &candidate)?;

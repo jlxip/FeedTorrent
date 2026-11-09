@@ -107,7 +107,7 @@ test('own reader derives exact IDs without writes, supports deep pages and never
   const meta=Buffer.from(bencode.encode({info:{name:Buffer.from('payload.txt'),length:3,'piece length':16384,pieces:createHash('sha1').update('abc').digest()}}));
   const infohash=createHash('sha1').update(bencode.encode(bencode.decode(meta).info)).digest('hex');
   await app.api('/api/publishing',{action:'save_draft',id,revision:1,draft:{root:1,pages:[{id:1,title:'My notebook',body:'**Current draft**\n\n[Models](models.torrent)',entries:[{kind:'page',page:2},{kind:'torrent',name:'models.torrent',data:Array.from(meta)}]},{id:2,title:'Child',body:'A nested page.',entries:[]}]}});
-  const path=join(root,'app','state','publishing','library.json'),before=await readFile(path);
+  const path=join(root,'app','state','publishing.json'),before=await readFile(path);
   const value=await app.api('/api/publishing',{action:'get_post',id});expect(value.torrent_ids).toEqual([{page:1,index:1,infohash}]);
   const inspected=await app.api('/api/publishing',{action:'inspect_entry',id,page:1,infohash});expect(inspected.id).toBe(infohash);expect(inspected.total).toBe(3);
   await expect(app.api('/api/publishing',{action:'inspect_entry',id,page:2,infohash})).rejects.toThrow();expect(await readFile(path)).toEqual(before);expect((await app.api()).transfers).toHaveLength(0);

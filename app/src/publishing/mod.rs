@@ -5,7 +5,7 @@ use crate::publishing_keys::{Password, Vault};
 use feedtorrent_bep::{
     bep44::{select_mutable, Bep44Signer, MutableKey, MutableRecord},
     bep46::{self, TorrentPointer},
-    bep49::Feed,
+    bep49::{EntryKind, Feed},
 };
 use feedtorrent_posts::{
     hex,
@@ -197,9 +197,8 @@ impl Default for Library {
         }
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Package {
+#[derive(Clone)]
+struct CatalogData {
     metainfo: Vec<u8>,
     files: Vec<(Vec<String>, Vec<u8>)>,
 }
@@ -392,10 +391,10 @@ fn persist(dir: &Path, lib: &Library) -> Result<()> {
     if bytes.len() > MAX_LIBRARY {
         bail!("Publishing library exceeds 256 MiB")
     }
-    save(&dir.join("library.json"), &bytes)
+    save(&dir.join("publishing.json"), &bytes)
 }
 fn load(dir: &Path) -> Result<Library> {
-    let p = dir.join("library.json");
+    let p = dir.join("publishing.json");
     if !p.exists() {
         return Ok(Library::default());
     }
@@ -553,17 +552,33 @@ fn package_path(dir: &Path, hash: &str) -> Result<PathBuf> {
     if !valid_id(hash) {
         bail!("Invalid catalog identifier")
     };
-    Ok(dir.join("catalogs").join(format!("{hash}.json")))
+    Ok(dir.join("published").join(hash))
 }
-fn package(dir: &Path, hash: &str) -> Result<Package> {
-    let p: Package = serde_json::from_slice(&read(&package_path(dir, hash)?)?)?;
+fn package(dir: &Path, hash: &str) -> Result<CatalogData> {
+    let root = package_path(dir, hash)?;
+    reject_symlinks(&root)?;
+    let source = dir.join("published").join(format!("{hash}.source"));
+    reject_symlinks(&source)?;
+    let metainfo = read(&source)?;
+    let feed = Feed::from_metainfo(&metainfo)?;
+    let files = feed
+        .entries()
+        .iter()
+        .filter(|entry| entry.kind() != EntryKind::Padding)
+        .map(|entry| {
+            let parts = entry.path();
+            let target = parts.iter().fold(root.join(feed.name()), |p, n| p.join(n));
+            Ok((parts.to_vec(), read(&target)?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let p = CatalogData { metainfo, files };
     feedtorrent_posts::publishing::verify_payload(&p.metainfo, &p.files)?;
     if hex(&Feed::from_metainfo(&p.metainfo)?.infohash()) != hash {
         bail!("Saved catalog identity mismatch")
     };
     Ok(p)
 }
-fn package_dates(pack: &Package) -> Option<feedtorrent_posts::dates::Dates> {
+fn package_dates(pack: &CatalogData) -> Option<feedtorrent_posts::dates::Dates> {
     let entries: Vec<_> = pack
         .files
         .iter()
@@ -576,18 +591,34 @@ fn package_dates(pack: &Package) -> Option<feedtorrent_posts::dates::Dates> {
 }
 fn store_package(dir: &Path, c: &BuiltCatalog) -> Result<String> {
     let id = hex(&Feed::from_metainfo(&c.metainfo)?.infohash());
-    let p = Package {
-        metainfo: c.metainfo.clone(),
-        files: c
-            .files
-            .iter()
-            .map(|f| (f.path.clone(), f.data.clone()))
-            .collect(),
-    };
     let path = package_path(dir, &id)?;
-    if !path.exists() {
-        save(&path, &serde_json::to_vec(&p)?)?
+    fs::create_dir_all(&path)?;
+    reject_symlinks(&path)?;
+    let feed = Feed::from_metainfo(&c.metainfo)?;
+    let source = dir.join("published").join(format!("{id}.source"));
+    if source.exists() {
+        reject_symlinks(&source)?;
+        if read(&source)? != c.metainfo {
+            bail!("Existing catalog metadata differs; files preserved")
+        }
+    } else {
+        save(&source, &c.metainfo)?;
     }
+    for file in &c.files {
+        let target = file
+            .path
+            .iter()
+            .fold(path.join(feed.name()), |p, n| p.join(n));
+        fs::create_dir_all(target.parent().context("Missing catalog directory")?)?;
+        if target.exists() {
+            if read(&target)? != file.data {
+                bail!("Existing catalog file differs; files preserved")
+            }
+        } else {
+            save(&target, &file.data)?;
+        }
+    }
+    let _ = package(dir, &id)?;
     Ok(id)
 }
 fn publish(
@@ -825,7 +856,7 @@ mod tests {
                     | Native::Seed(_)
                     | Native::Ready(_) => Ok(NativeReply::Ready),
                     Native::Put(record) => {
-                        let lib = load(&folder.join("publishing")).unwrap();
+                        let lib = load(&folder).unwrap();
                         assert!(lib.posts.values().any(|f| f
                             .record
                             .as_ref()
@@ -927,7 +958,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned();
-        let path = dir.join("publishing/library.json");
+        let path = dir.join("publishing.json");
         let original = fs::read(&path).unwrap();
         fs::rename(&path, path.with_extension("preserved")).unwrap();
         fs::create_dir(&path).unwrap();
@@ -954,8 +985,7 @@ mod tests {
     #[tokio::test]
     async fn corrupt_library_disables_only_publication_and_preserves_original() {
         let dir = root();
-        fs::create_dir_all(dir.join("publishing")).unwrap();
-        let path = dir.join("publishing/library.json");
+        let path = dir.join("publishing.json");
         fs::write(&path, b"invalid original").unwrap();
         let (tx, _rx) = mpsc::sync_channel(1);
         let (client, worker) = start(&dir, tx).unwrap();
@@ -1001,7 +1031,7 @@ mod tests {
         client.stop();
         worker.join().unwrap();
         drop(client);
-        let folder = dir.join("publishing");
+        let folder = dir.clone();
         let mut lib = load(&folder).unwrap();
         lib.posts.get_mut(&id).unwrap().state = "Preparing".into();
         persist(&folder, &lib).unwrap();

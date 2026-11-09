@@ -191,7 +191,7 @@ fn both_backup_types_preserve_confirmed_sequence_below_canceled_highwater() {
     for full in [false, true] {
         let path = backup::export(&m.dir, &m.lib, full).unwrap();
         let target = dir.join(if full { "full" } else { "keys" });
-        fs::create_dir_all(target.join("catalogs")).unwrap();
+        fs::create_dir_all(target.join("published")).unwrap();
         let restored = backup::import(
             &target,
             &Library::default(),
@@ -231,9 +231,9 @@ fn legacy_backup_recovers_proven_confirmation_before_disabling_publication() {
                 f.record = Some(record(f, 8, 9));
                 f.state = "Canceled".into();
             }
-            let archive = backup::export(&dir.join("publishing"), &old, full).unwrap();
+            let archive = backup::export(&dir, &old, full).unwrap();
             let target = dir.join(format!("restored-{full}-{proven}"));
-            fs::create_dir_all(target.join("catalogs")).unwrap();
+            fs::create_dir_all(target.join("published")).unwrap();
             let restored = backup::import(
                 &target,
                 &Library::default(),

@@ -547,6 +547,9 @@ impl Engine {
             &serde_json::to_vec_pretty(&next)?,
         )?;
         self.store = next;
+        for record in &self.store.records {
+            storage::write_manifest(record, self.store.retention.pins.contains(&record.id))?;
+        }
         Ok(result)
     }
     pub(super) fn sync_retention(&mut self) -> Result<()> {
@@ -605,13 +608,7 @@ impl Engine {
             }
             next.ensure_root(&root)?;
             for hash in view.retention.get(&p.id).into_iter().flatten() {
-                if record_ids.contains(hash)
-                    || self
-                        .dir
-                        .join("publishing/catalogs")
-                        .join(format!("{hash}.json"))
-                        .is_file()
-                {
+                if record_ids.contains(hash) || self.dir.join("published").join(hash).is_dir() {
                     next.claim(&root, hash, None)?;
                 }
             }
@@ -891,6 +888,18 @@ impl Engine {
         }
         let result = (|| -> Result<()> {
             if !self.store.retention.may_delete(job.id, &id) {
+                if self.store.records.iter().any(|r| r.id == id)
+                    && !self
+                        .store
+                        .retention
+                        .used_by(&id)
+                        .iter()
+                        .any(|root| root.starts_with("own:"))
+                {
+                    let download_root =
+                        ensure_directory(Path::new(&self.store.settings.download_dir))?;
+                    self.relocate_transfer(&id, &download_root)?;
+                }
                 self.change_retention(|g| g.acknowledge(job.id, &id, false))?;
                 return Ok(());
             }
@@ -917,27 +926,12 @@ impl Engine {
                     }
                     fs::remove_dir_all(&record.path).context("Cannot delete downloaded files")?;
                 }
-                for suffix in ["source", "resume", "info"] {
-                    let file = self.dir.join(format!("{id}.{suffix}"));
+                for suffix in ["source", "resume", "info", "transfer.json"] {
+                    let file = storage::sidecar(record, suffix)?;
                     if file.exists() {
                         reject_symlinks(&file)?;
                         fs::remove_file(file)?;
                     }
-                }
-            }
-            // Publishing packages can be shared by several local posts, even
-            // after the user explicitly removes their downloaded transfer.
-            if self.store.retention.used_by(&id).is_empty()
-                && self.store.retention.protected_by(&id).is_empty()
-            {
-                let folder = self.dir.join("publishing/catalogs");
-                let file = folder.join(format!("{id}.json"));
-                if file.exists() {
-                    if fs::symlink_metadata(&folder)?.file_type().is_symlink() {
-                        bail!("Catalog directory changed; files preserved")
-                    }
-                    reject_symlinks(&file)?;
-                    fs::remove_file(file)?;
                 }
             }
             let mut next = self.store.clone();
@@ -988,6 +982,38 @@ pub enum SourceOrigin {
     },
 }
 impl Engine {
+    fn relocate_transfer(&mut self, id: &str, root: &Path) -> Result<()> {
+        let record = self.record(id)?.clone();
+        if record.path.parent() == Some(root) {
+            return Ok(());
+        }
+        if !self.failures.contains_key(id) {
+            self.native.remove(id)?;
+        }
+        let moved = storage::move_record(&record, root)?;
+        *self.store.records.iter_mut().find(|r| r.id == id).unwrap() = moved.clone();
+        self.persist()?;
+        let source = fs::read(storage::sidecar(&moved, "source")?)?;
+        let transfer = AddTransfer {
+            id,
+            source: TorrentSource::from_bytes(&source, moved.magnet)?,
+            save_path: moved.path.to_str().context("Non-UTF-8 transfer path")?,
+            active: moved.active,
+            restore: true,
+        };
+        let result = if moved.held {
+            self.native.stage(transfer)
+        } else {
+            self.native.add(transfer)
+        };
+        if let Err(error) = result {
+            self.failures.insert(id.into(), error.to_string());
+            return Err(error.into());
+        }
+        self.failures.remove(id);
+        Ok(())
+    }
+
     pub(crate) fn reserve_source(
         &mut self,
         bytes: Vec<u8>,
@@ -1059,6 +1085,11 @@ impl Engine {
             }
             None => None,
         };
+        let recovering = self.failures.contains_key(&id);
+        if publishing && !recovering && self.store.records.iter().any(|r| r.id == id) {
+            let published = ensure_directory(&storage::published(&self.dir))?;
+            self.relocate_transfer(&id, &published)?;
+        }
         let mut next = self.store.clone();
         next.retention.register_asset(&id)?;
         if let Some(root) = &root {
@@ -1072,7 +1103,11 @@ impl Engine {
         let path = if existing {
             self.record(&id)?.path.clone()
         } else {
-            let base = ensure_directory(Path::new(&next.settings.download_dir))?;
+            let base = if publishing {
+                ensure_directory(&storage::published(&self.dir))?
+            } else {
+                ensure_directory(Path::new(&next.settings.download_dir))?
+            };
             let path = base.join(&id);
             if path.exists() {
                 reject_symlinks(&path)?;
@@ -1100,21 +1135,39 @@ impl Engine {
             &serde_json::to_vec_pretty(&next)?,
         )?;
         self.store = next;
-        if existing {
+        if existing && !recovering {
             return Ok(id);
         }
         let result = (|| -> Result<()> {
             fs::create_dir_all(&path)?;
             reject_symlinks(&path)?;
-            atomic(&self.dir.join(format!("{id}.source")), &bytes)?;
+            atomic(&storage::sidecar(self.record(&id)?, "source")?, &bytes)?;
+            // A failed reservation has no native handle. Repair it with the
+            // supplied source, preserving its pause and approval decisions.
+            self.store
+                .records
+                .iter_mut()
+                .find(|r| r.id == id)
+                .unwrap()
+                .magnet = magnet;
+            storage::write_manifest(self.record(&id)?, self.store.retention.pins.contains(&id))?;
+            if existing {
+                if publishing {
+                    let published = ensure_directory(&storage::published(&self.dir))?;
+                    let moved = storage::move_record(self.record(&id)?, &published)?;
+                    *self.store.records.iter_mut().find(|r| r.id == id).unwrap() = moved;
+                }
+                self.persist()?;
+            }
+            let record = self.record(&id)?.clone();
             let transfer = AddTransfer {
                 id: &id,
-                source: TorrentSource::from_bytes(&bytes, magnet)?,
-                save_path: path.to_str().context("Non-UTF-8 transfer path")?,
-                active: true,
-                restore: false,
+                source: TorrentSource::from_bytes(&bytes, record.magnet)?,
+                save_path: record.path.to_str().context("Non-UTF-8 transfer path")?,
+                active: record.active,
+                restore: existing,
             };
-            if held {
+            if record.held {
                 self.native.stage(transfer)?;
             } else {
                 self.native.add(transfer)?;
@@ -1129,6 +1182,7 @@ impl Engine {
             self.persist()?;
             return Err(error);
         }
+        self.failures.remove(&id);
         Ok(id)
     }
 }

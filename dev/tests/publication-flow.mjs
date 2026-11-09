@@ -26,7 +26,7 @@ export async function publicationFlow(){
   let {draft,revision}=await pub({action:'get_post',id});draft.pages[0].body='This snapshot is published.';
   revision=(await pub({action:'save_draft',id,revision,draft})).revision;
   const own=async()=> (await app.api()).publishing.posts.find(p=>p.id===id);
-  const saved=async()=>JSON.parse(await readFile(join(root,'publisher/state/publishing/library.json'),'utf8')).posts[id];
+  const saved=async()=>JSON.parse(await readFile(join(root,'publisher/state/publishing.json'),'utf8')).posts[id];
   await pub({action:'publish',id,revision,password});
   await wait(async()=>{const f=await own();return f?.pending_sequence==='0'&&f.next_retry_at!==null},'signed zero without acknowledgement',90000);
   const before=await saved(),operation=before.pending.id,preparedAt=before.pending.prepared_at;

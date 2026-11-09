@@ -18,7 +18,7 @@ export function sourceHash(directory='.'){
  if(!files.length){
   // Small non-Git Make fixtures. Never traverse arbitrary workspace data.
   function walk(dir){for(const d of readdirSync(join(base,dir),{withFileTypes:true})){
-   const p=join(dir,d.name);if(['.git','.runtime','.tools','target','node_modules','dist','test-results','__pycache__','downloads'].includes(d.name)||p==='backends/libtorrent/vendor')continue;
+   const p=join(dir,d.name);if(['.git','.runtime','.tools','target','node_modules','dist','test-results','__pycache__','downloads','user'].includes(d.name)||p==='backends/libtorrent/vendor')continue;
    if(d.isDirectory())walk(p);else if(d.isFile())files.push(p);
   }}
   for(const name of ['app','bep','posts','backends','dev','web'])if(existsSync(join(base,name)))walk(name);

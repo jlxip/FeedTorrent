@@ -101,7 +101,7 @@ try {
     90000,
   );
   let saved = JSON.parse(
-    await readFile(join(root, "publisher/state/publishing/library.json")),
+    await readFile(join(root, "publisher/state/publishing.json")),
   );
   assert.equal(saved.posts[id].record.sequence, 0);
   assert.equal(saved.posts[id].published_sequence,0);
@@ -110,7 +110,7 @@ try {
   assert.equal(saved.posts[id].revision, revision);
   assert(initialRevision < revision);
   assert.equal(
-    (await stat(join(root, "publisher/state/publishing/library.json"))).mode &
+    (await stat(join(root, "publisher/state/publishing.json"))).mode &
       0o777,
     0o600,
   );
@@ -155,13 +155,15 @@ try {
     snapshot = await app.api(),
     rootTransfer = snapshot.transfers.find((t) => t.id === hash);
   assert.equal(rootTransfer.state, "Seeding");
-  const pkg = JSON.parse(
-    await readFile(
-      join(root, "publisher/state/publishing/catalogs", hash + ".json"),
-    ),
-  );
-  const metainfo = Buffer.from(pkg.metainfo),
+  const metainfo = await readFile(join(root, "publisher/state/published", hash + ".source")),
     decoded = bencode.decode(metainfo);
+  const pkg = {files: await Promise.all(decoded.info.files
+    .filter(f => !Buffer.from(f.attr || []).includes(112))
+    .map(async f => {
+      const parts = f.path.map(p => Buffer.from(p).toString());
+      return [parts, await readFile(join(root, "publisher/state/published", hash,
+        Buffer.from(decoded.info.name).toString(), ...parts))];
+    }))};
   const declared = JSON.parse(Buffer.from(pkg.files.find(([p])=>p.join('/')==='metadata/dates.json')[1]));
   assert.equal(declared.created_at,declared.updated_at);
   assert.equal(decoded['creation date'],declared.updated_at);
@@ -259,7 +261,7 @@ try {
     return f.state === "Published" && f.sequence === "1";
   }, "nested revision");
   saved = JSON.parse(
-    await readFile(join(root, "publisher/state/publishing/library.json")),
+    await readFile(join(root, "publisher/state/publishing.json")),
   );
   assert.equal(saved.posts[id].history.length, 4);
   const next = Buffer.from(
@@ -324,7 +326,9 @@ try {
     assert.equal(restoredDraft.draft.pages.length, full ? 2 : 1);
     if(full){
       assert.deepEqual(restoredDraft.published_dates,(await pub({action:'get_post',id})).published_dates);
-      assert.deepEqual(await readFile(join(root,'full-restore/state/publishing/catalogs',hash+'.json')),await readFile(join(root,'publisher/state/publishing/catalogs',hash+'.json')));
+      assert.deepEqual(await readFile(join(root,'full-restore/state/published',hash+'.source')),metainfo);
+      for(const [parts,bytes] of pkg.files) assert.deepEqual(
+        await readFile(join(root,'full-restore/state/published',hash,Buffer.from(decoded.info.name).toString(),...parts)), bytes);
     }else assert.deepEqual(restoredDraft.published_dates,{});
 
   }
@@ -342,14 +346,14 @@ try {
   await app.command({ type: "pause", id: hash });
   await app.stop();
   const restoredLibrary = JSON.parse(
-    await readFile(join(root, "publisher/state/publishing/library.json")),
+    await readFile(join(root, "publisher/state/publishing.json")),
   );
   restoredLibrary.vault.ciphertext = Array.from(
     encryptVault(seedBytes, "new test password", restoredLibrary.vault.public_key),
   );
   seedBytes.fill(0);
   await writeFile(
-    join(root, "publisher/state/publishing/library.json"),
+    join(root, "publisher/state/publishing.json"),
     JSON.stringify(restoredLibrary),
   );
   app = await startApp(join(root, "publisher"), args);
@@ -368,7 +372,7 @@ try {
       own.magnet.match(/btpk:([a-f0-9]+)/)[1],
     "restored public key snapshot",
   );
-  const beforeRepublish=await readFile(join(root,"publisher/state/publishing/catalogs",next+".json"));
+  const beforeRepublish=await readFile(join(root,"publisher/state/published",next+".source"));
   await app.api("/api/publishing", {
     action: "publish",
     id,
@@ -385,11 +389,19 @@ try {
   const unchanged=await app.api('/api/publishing',{action:'get_post',id});
   assert.deepEqual(unchanged.published_dates,after.published_dates);
   const version=(await app.api()).publishing.posts[0];assert.equal(version.published_sequence,'2');assert.equal(version.pending_sequence,null);assert.equal(version.sequence,'2');
-  assert.deepEqual(await readFile(join(root,'publisher/state/publishing/catalogs',next+'.json')),beforeRepublish);
-  const finalLibrary=JSON.parse(await readFile(join(root,'publisher/state/publishing/library.json')));
+  assert.deepEqual(await readFile(join(root,'publisher/state/published',next+'.source')),beforeRepublish);
+  const finalLibrary=JSON.parse(await readFile(join(root,'publisher/state/publishing.json')));
   assert.equal(Buffer.from(bencode.decode(Buffer.from(finalLibrary.posts[id].record.value)).ih).toString('hex'),next);
   assert.equal(finalLibrary.posts[id].history.length,4);
   pass('unchanged republish after restart preserves every catalog byte, hash and declared date');
+  await app.command({type:'set_pin',id:next,pinned:true});
+  await app.deletePost('own',id);
+  await wait(async()=>{
+    const s=await app.api(),t=s.transfers.find(t=>t.id===next);
+    return s.cleanup.length===0 && t?.save_path===join(root,'publisher/downloads',next) && t.progress===1;
+  },'published torrent moves to downloads when retained by Pin',20000);
+  assert.deepEqual(await readFile(join(root,'publisher/downloads',next+'.source')),beforeRepublish);
+  pass('deleting an own post moves a still-pinned catalog to downloads without duplicating its files');
   await publicationFlow();
   report.status = "passed";
 } finally {

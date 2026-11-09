@@ -26,7 +26,7 @@ async function fixture(page){
 test('own removal confirms, preserves Library and key, survives reload/restart and shows unavailable routes',async({page},info)=>{
   const x=await fixture(page);let restarted;
   try{
-    const file=join(x.root,'app/state/publishing/library.json'),before=JSON.parse(await readFile(file,'utf8'));
+    const file=join(x.root,'app/state/publishing.json'),before=JSON.parse(await readFile(file,'utf8'));
     await page.goto(x.app.url+'/#/own/'+x.own+'/read');await expect(page.locator('#own-preview')).toBeVisible();
     await x.open('own:'+x.own);
     await expect(page.locator('#post-remove-dialog')).toHaveCSS('opacity','1');
@@ -106,7 +106,7 @@ test('mobile confirmation supports touch, themes and disconnect without changing
     await page.locator('#sections-button').tap();await x.open('own:'+x.own);await x.app.stop();
     await expect(page.locator('#post-remove-submit')).toBeDisabled();await expect(page.locator('#post-remove-name')).toHaveText('My notes');
     await page.locator('#post-remove-dialog [data-close]').click();await expect(page.locator('#post-remove-dialog')).toBeHidden();
-    const library=JSON.parse(await readFile(join(x.root,'app/state/publishing/library.json'),'utf8'));expect(Object.keys(library.posts)).toHaveLength(2);
+    const library=JSON.parse(await readFile(join(x.root,'app/state/publishing.json'),'utf8'));expect(Object.keys(library.posts)).toHaveLength(2);
   }finally{await context.close();await cleanup(x.root,x.app);}
 });
 

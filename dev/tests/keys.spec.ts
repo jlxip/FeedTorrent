@@ -9,7 +9,7 @@ test('Manage keys is visible, preserves passwords only during submission, and ch
  try{
   app=await startApp(join(root,'app'));const password='UI original key password',next='UI replacement key password';
   await app.api('/api/publishing',{action:'create_key',password,confirmation:password});
-  const file=join(root,'app/state/publishing/library.json'),before=await readFile(file),original=JSON.parse(before.toString()),seed=decryptVault(original.vault,password);
+  const file=join(root,'app/state/publishing.json'),before=await readFile(file),original=JSON.parse(before.toString()),seed=decryptVault(original.vault,password);
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(app.url);
   await page.getByRole('button',{name:'Settings',exact:true}).click();const manage=page.getByRole('button',{name:'Manage keys',exact:true});
   await expect(manage).toHaveAttribute('data-variant','outline');await expect.poll(async()=>(await manage.boundingBox())?.height||0).toBeGreaterThanOrEqual(44);const box=(await manage.boundingBox())!;const parent=(await page.locator('#settings-form').boundingBox())!;expect(box.width).toBeGreaterThanOrEqual(parent.width-1);
@@ -39,6 +39,6 @@ test('Manage keys exports both encrypted backups and imports with the matching p
   await page.locator('#own-import-file').setInputFiles({name:'publishing.tar',mimeType:'application/x-tar',buffer:backup!});await page.locator('#own-import-password').fill('incorrect');await page.locator('#own-import-form button').click();await expect(page.locator('#own-import-error')).toContainText('Incorrect password');expect((await restored.api()).publishing.has_key).toBe(false);await expect(page.locator('#own-import-password')).toHaveValue('');
   await page.locator('#own-import-password').fill(password);await page.locator('#own-import-form button').click();await expect(page.locator('#own-keys-status')).toContainText('Backup restored');await expect(page.locator('#own-import-password')).toHaveValue('');
   await expect.poll(async()=>(await restored.api()).publishing.public_key).toBe((await app.api()).publishing.public_key);
-  const original=JSON.parse((await readFile(join(root,'publisher/state/publishing/library.json'))).toString()),copy=JSON.parse((await readFile(join(root,'restored/state/publishing/library.json'))).toString());expect(decryptVault(copy.vault,password)).toEqual(decryptVault(original.vault,password));
+  const original=JSON.parse((await readFile(join(root,'publisher/state/publishing.json'))).toString()),copy=JSON.parse((await readFile(join(root,'restored/state/publishing.json'))).toString());expect(decryptVault(copy.vault,password)).toEqual(decryptVault(original.vault,password));
  }finally{await cleanup(root,app,restored);}
 });

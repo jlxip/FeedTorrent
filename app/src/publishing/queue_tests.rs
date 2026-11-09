@@ -16,8 +16,8 @@ fn root() -> PathBuf {
 }
 fn fixture(count: usize) -> (PathBuf, Library, Vec<String>) {
     let dir = root();
-    let publishing = dir.join("publishing");
-    fs::create_dir_all(publishing.join("catalogs")).unwrap();
+    let publishing = dir.clone();
+    fs::create_dir_all(publishing.join("published")).unwrap();
     let (vault, _) = key();
     let mut lib = Library {
         vault: Some(vault.clone()),
@@ -65,7 +65,7 @@ fn manager(dir: &Path, lib: Library) -> Manager {
     let (native, _native_rx) = mpsc::sync_channel(32);
     let (views, _) = watch::channel(view(&lib, String::new()));
     Manager {
-        dir: dir.join("publishing"),
+        dir: dir.to_path_buf(),
         lib,
         disabled: None,
         error: String::new(),
@@ -144,7 +144,7 @@ fn snapshots_are_durable_duplicate_guarded_and_secrets_are_not_serialized() {
             password: Password(PASSWORD.into())
         })
         .is_err());
-    let json = fs::read_to_string(m.dir.join("library.json")).unwrap();
+    let json = fs::read_to_string(m.dir.join("publishing.json")).unwrap();
     assert!(!json.contains(PASSWORD));
     assert!(!json.contains("password"));
     assert!(!json.contains("seed"));
@@ -288,8 +288,8 @@ fn migration_resumes_only_the_matching_signed_revision() {
     assert!(lib.posts[&ids[1]].pending.is_none());
     assert_eq!(lib.posts[&ids[1]].state, "Canceled");
     validate(&lib).unwrap();
-    persist(&dir.join("publishing"), &lib).unwrap();
-    let mut again = load(&dir.join("publishing")).unwrap();
+    persist(&dir, &lib).unwrap();
+    let mut again = load(&dir).unwrap();
     let next = again.next_operation;
     recover(&mut again).unwrap();
     assert_eq!(again.next_operation, next);
@@ -305,8 +305,8 @@ fn signed_recovery_and_failed_phase_commit_preserve_public_state() {
     let signed = record(&m.lib.posts[id], 2, 3);
     m.signed(id, op, signed.clone(), BTreeMap::new(), vec![])
         .unwrap();
-    let original = fs::read(m.dir.join("library.json")).unwrap();
-    let path = m.dir.join("library.json");
+    let original = fs::read(m.dir.join("publishing.json")).unwrap();
+    let path = m.dir.join("publishing.json");
     fs::rename(&path, path.with_extension("saved")).unwrap();
     fs::create_dir(&path).unwrap();
     assert!(m.phase(id, op, "Publishing".into()).is_err());
@@ -379,7 +379,7 @@ async fn fifo_queue_limits_workers_and_cancel_frees_a_slot_without_waiting_for_n
     assert!(rx.try_recv().is_err());
     client.stop();
     thread.join().unwrap();
-    let mut saved = load(&dir.join("publishing")).unwrap();
+    let mut saved = load(&dir).unwrap();
     recover(&mut saved).unwrap();
     assert!(saved.posts.values().all(|f| f.pending.is_none()));
     assert_eq!(saved.posts[&ids[3]].draft.pages[0].body, "snapshot 3");
@@ -391,7 +391,7 @@ async fn unsigned_timeout_retries_the_snapshot_and_signs_above_canceled_sequence
     let id = &ids[0];
     install_record(lib.posts.get_mut(id).unwrap(), 7);
     lib.posts.get_mut(id).unwrap().revision = 2;
-    persist(&dir.join("publishing"), &lib).unwrap();
+    persist(&dir, &lib).unwrap();
     let (native, rx) = mpsc::sync_channel::<NativeTask>(16);
     let records = Arc::new(Mutex::new(vec![]));
     let observed = records.clone();
@@ -454,11 +454,11 @@ async fn unsigned_timeout_retries_the_snapshot_and_signs_above_canceled_sequence
     let records = records.lock().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].sequence(), 8);
-    let saved = load(&dir.join("publishing")).unwrap();
+    let saved = load(&dir).unwrap();
     let hash = saved.posts[id].pages[&saved.posts[id].draft.root]
         .hash
         .clone();
-    let package = package(&dir.join("publishing"), &hash).unwrap();
+    let package = package(&dir, &hash).unwrap();
     assert!(package.files.iter().any(|(_, b)| b == b"snapshot 0"));
     assert!(!package.files.iter().any(|(_, b)| b == b"later draft"));
     fs::remove_dir_all(dir).unwrap();
@@ -544,7 +544,7 @@ async fn cancellation_during_lookup_checking_and_put_ignores_late_native_results
             .unwrap();
         assert!(late.cancel.load(Ordering::Acquire));
         assert_eq!(client.view.borrow().posts[0].published_revision, 0);
-        let saved = load(&dir.join("publishing")).unwrap();
+        let saved = load(&dir).unwrap();
         assert_eq!(saved.posts[id].record.is_some(), stage == "put");
         let result = match late.command {
             Native::Lookup(_) => NativeReply::Record(None),
@@ -592,7 +592,7 @@ fn removing_post_cancels_jobs_and_fences_late_callbacks_without_touching_other_d
     let credentials = m.secrets[&op].clone();
     let signed = record(&m.lib.posts[id], 3, 9);
     m.renewals.insert(id.clone(), Instant::now());
-    let package = m.dir.join("catalogs/keep.json");
+    let package = m.dir.join("published/keep.json");
     fs::write(&package, b"existing catalog").unwrap();
     m.command(Command::RemovePost { id: id.clone() }).unwrap();
     assert!(cancel.load(Ordering::Acquire));
@@ -627,7 +627,7 @@ fn failed_removal_preserves_persistent_draft_and_live_credentials() {
     let op = enqueue(&mut m, id);
     running(&mut m, id, op);
     let cancel = m.running[id].cancel.clone();
-    let path = m.dir.join("library.json");
+    let path = m.dir.join("publishing.json");
     let before = fs::read(&path).unwrap();
     fs::rename(&path, path.with_extension("saved")).unwrap();
     fs::create_dir(&path).unwrap();
@@ -804,11 +804,11 @@ fn readers_keep_confirmed_dates_through_signed_retries_cancellation_and_backups(
     })
     .unwrap();
     assert_eq!(get(&mut m)["draft_differs"], false);
-    let before = fs::read(package_path(&m.dir, &hex(&first.root)).unwrap()).unwrap();
+    let before = package(&m.dir, &hex(&first.root)).unwrap().metainfo;
     for full in [false, true] {
         let archive = backup::export(&m.dir, &m.lib, full).unwrap();
         let restored_dir = dir.join(if full { "full" } else { "minimal" });
-        fs::create_dir_all(restored_dir.join("catalogs")).unwrap();
+        fs::create_dir_all(restored_dir.join("published")).unwrap();
         let restored = backup::import(
             &restored_dir,
             &Library::default(),
@@ -822,7 +822,7 @@ fn readers_keep_confirmed_dates_through_signed_retries_cancellation_and_backups(
                 dates
             );
             assert_eq!(
-                fs::read(package_path(&restored_dir, &hex(&first.root)).unwrap()).unwrap(),
+                package(&restored_dir, &hex(&first.root)).unwrap().metainfo,
                 before
             );
         } else {

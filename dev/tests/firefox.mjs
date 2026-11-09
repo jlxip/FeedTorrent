@@ -17,6 +17,7 @@ export function firefoxOptions() {
   const binary = firefox.executablePath(),
     resources = resolve(dirname(binary), "../Resources"),
     root = join(runRoot, `firefox-${process.pid}`);
+  if (!existsSync(join(resources, "browser"))) return {};
   mkdirSync(root, { recursive: true });
   for (const name of readdirSync(join(resources, "browser"))) {
     const target = join(root, name);

@@ -2,12 +2,28 @@
 set -eu
 export PATH="$HOME/.cargo/bin:$PATH"
 export NATIVE_JOBS=${NATIVE_JOBS:-2}
-if [ "$(uname -s)" = Darwin ]; then
+host=$(uname -s)
+if [ "$host" = Darwin ]; then
   export MACOSX_DEPLOYMENT_TARGET=15.0
 fi
 make build test-deps
-if [ "$(uname -s)" != OpenBSD ]; then
-  node dev/node_modules/playwright/cli.js install --with-deps chrome firefox webkit
-fi
-make check test
+case "$host" in
+  Darwin)
+    node dev/node_modules/playwright/cli.js install --with-deps chrome webkit
+    make check-native test-native
+    make test-ui UI_ARGS='--project=webkit'
+    make test-ui UI_ARGS='publication-live.spec.ts news.spec.ts --project=chrome'
+    ;;
+  Linux)
+    node dev/node_modules/playwright/cli.js install --with-deps chrome firefox webkit
+    make check test
+    ;;
+  OpenBSD)
+    make check-native test-native
+    ;;
+  *)
+    echo "Unsupported CI host: $host" >&2
+    exit 1
+    ;;
+esac
 node dev/ci/package.mjs

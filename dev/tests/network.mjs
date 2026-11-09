@@ -121,7 +121,7 @@ async function scenarios() {
     let bad = await readFile(join(t.save_path, f.name));
     bad[0] ^= 255;
     await writeFile(join(t.save_path, f.name), bad);
-    await writeFile(join(root, "state", ref.id + ".resume"), "corrupt");
+    await writeFile(join(root, "downloads", ref.id + ".resume"), "corrupt");
     app = await startApp(root);
     t = await exact(app, ref);
     check("corrupt resume and payload rebuilt; exact repair");

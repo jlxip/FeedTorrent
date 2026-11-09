@@ -2,9 +2,11 @@ mod content;
 mod desktop;
 mod lifecycle;
 mod organization;
+mod post_state;
 mod posts;
 mod publishing;
 mod publishing_keys;
+mod storage;
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
     body::Body,
@@ -28,7 +30,7 @@ use std::{
     collections::BTreeMap,
     convert::Infallible,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{BufReader, Write},
     path::{Path, PathBuf},
     sync::{mpsc, Arc},
     time::{Duration, Instant},
@@ -313,7 +315,7 @@ fn default_store() -> Store {
     Store {
         version: 4,
         settings: Settings {
-            download_dir: "downloads".into(),
+            download_dir: "user/downloads".into(),
             peer_port: 6881,
             seed_by_default: true,
         },
@@ -325,7 +327,7 @@ fn migrate_store(store: &mut Store, home: &Path) -> Result<()> {
     match store.version {
         1 => {
             if Path::new(&store.settings.download_dir) == home.join("Downloads/FeedTorrent") {
-                store.settings.download_dir = "downloads".into();
+                store.settings.download_dir = "user/downloads".into();
             }
             store.version = 2;
         }
@@ -371,6 +373,7 @@ struct Engine {
     store: Store,
     dir: PathBuf,
     failures: BTreeMap<String, String>,
+    storage_warning: String,
     view: Snapshot,
 }
 impl Engine {
@@ -379,7 +382,11 @@ impl Engine {
             &self.dir.join("transfers.json"),
             &serde_json::to_vec_pretty(&self.store)?,
         )
-        .context("Cannot save transfer registry")
+        .context("Cannot save transfer registry")?;
+        for record in &self.store.records {
+            storage::write_manifest(record, self.store.retention.pins.contains(&record.id))?;
+        }
+        Ok(())
     }
     fn new(args: &Args, dir: PathBuf, store: Store) -> Result<Self> {
         let native = LibtorrentBackend::new(
@@ -417,8 +424,75 @@ impl Engine {
             store,
             dir,
             failures: BTreeMap::new(),
+            storage_warning: String::new(),
             view,
         };
+        let mut found = BTreeMap::<String, storage::Discovered>::new();
+        let mut duplicate = std::collections::BTreeSet::new();
+        let mut warnings = vec![];
+        let empty_registry = e.store.records.is_empty() && !e.store.retention.initialized;
+        let mut restored = 0;
+        for root in [
+            PathBuf::from(&e.store.settings.download_dir),
+            storage::published(&e.dir),
+        ] {
+            match storage::discover(&root) {
+                Ok((records, errors)) => {
+                    warnings.extend(errors);
+                    for discovered in records {
+                        let id = discovered.record.id.clone();
+                        if found.insert(id.clone(), discovered).is_some() {
+                            duplicate.insert(id);
+                        }
+                    }
+                }
+                Err(error) => warnings.push(format!("{}: {error:#}", root.display())),
+            }
+        }
+        for id in duplicate {
+            found.remove(&id);
+            warnings.push(format!(
+                "Torrent {id} exists in both roots; files preserved"
+            ));
+        }
+        for (id, discovered) in found {
+            let record = discovered.record;
+            let source = storage::sidecar(&record, "source")?;
+            let valid = read_limited(&source).and_then(|bytes| {
+                Ok(e.native
+                    .inspect(TorrentSource::from_bytes(&bytes, record.magnet)?)?
+                    == id)
+            });
+            if !matches!(valid, Ok(true)) {
+                warnings.push(format!("Torrent {id} has invalid source; files preserved"));
+                continue;
+            }
+            if let Some(existing) = e.store.records.iter_mut().find(|r| r.id == id) {
+                if existing.path != record.path {
+                    if existing.path.exists() {
+                        warnings.push(format!(
+                            "Torrent {id} conflicts with the registry; files preserved"
+                        ));
+                    } else {
+                        *existing = record;
+                    }
+                }
+            } else {
+                e.store.retention.register_asset(&id)?;
+                if discovered.pinned {
+                    e.store.retention.pin(&id)?;
+                }
+                e.store.records.push(record);
+                restored += 1;
+            }
+        }
+        if empty_registry && restored > 0 {
+            // The manifests state which torrents were explicitly pinned. The
+            // legacy first-run fallback must not turn restored owned files into
+            // permanent Pins when publishing.json is restored later.
+            e.store.retention.initialized = true;
+        }
+        e.storage_warning = warnings.join("; ");
         for record in e.store.records.clone() {
             let outcome = (|| -> Result<()> {
                 if !valid_id(&record.id)
@@ -428,7 +502,7 @@ impl Engine {
                 }
                 fs::create_dir_all(&record.path)?;
                 reject_symlinks(&record.path)?;
-                let bytes = read_limited(&e.dir.join(format!("{}.source", record.id)))?;
+                let bytes = read_limited(&storage::sidecar(&record, "source")?)?;
                 let transfer = AddTransfer {
                     id: &record.id,
                     source: TorrentSource::from_bytes(&bytes, record.magnet)?,
@@ -577,7 +651,7 @@ impl Engine {
                     // permission. The held flag remains durable and enforced.
                     fs::create_dir_all(&r.path)?;
                     reject_symlinks(&r.path)?;
-                    let bytes = read_limited(&self.dir.join(format!("{id}.source")))?;
+                    let bytes = read_limited(&storage::sidecar(&r, "source")?)?;
                     self.native.stage(AddTransfer {
                         id: &id,
                         source: TorrentSource::from_bytes(&bytes, r.magnet)?,
@@ -606,7 +680,7 @@ impl Engine {
                 self.persist_posts()?;
                 if self.failures.contains_key(&id) {
                     reject_symlinks(&r.path)?;
-                    let bytes = read_limited(&self.dir.join(format!("{id}.source")))?;
+                    let bytes = read_limited(&storage::sidecar(&r, "source")?)?;
                     self.native.add(AddTransfer {
                         id: &id,
                         source: TorrentSource::from_bytes(&bytes, r.magnet)?,
@@ -664,6 +738,11 @@ impl Engine {
             }
             Command::Configure { mut settings } => {
                 settings.download_dir = directory_setting(&settings.download_dir)?;
+                if fs::canonicalize(&settings.download_dir)?
+                    == fs::canonicalize(storage::published(&self.dir))?
+                {
+                    bail!("Downloads and published must be different directories")
+                }
                 self.store.settings = settings;
                 self.persist()?;
             }
@@ -844,7 +923,11 @@ impl Engine {
             settings: self.store.settings.clone(),
             dht_nodes: native.dht_nodes,
             listen_port: native.listen_port,
-            warning: native.warning,
+            warning: [native.warning, self.storage_warning.clone()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("; "),
             publishing: self
                 .publication_view
                 .as_ref()
@@ -1196,12 +1279,10 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
 async fn main() -> Result<()> {
     let args = Args::parse();
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
-    let dir = ensure_directory(
-        &args
-            .data_dir
-            .clone()
-            .unwrap_or_else(|| home.join("Library/Application Support/FeedTorrent")),
-    )?;
+    let dir = match args.data_dir.as_deref() {
+        Some(path) => ensure_directory(path)?,
+        None => ensure_directory(&std::env::current_dir()?.join("user"))?,
+    };
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -1212,7 +1293,9 @@ async fn main() -> Result<()> {
         .context("FeedTorrent is already running with this data directory")?;
     let registry = dir.join("transfers.json");
     let mut store = if registry.exists() {
-        serde_json::from_slice::<Store>(&read_limited(&registry)?)
+        // Registry writes are unbounded. Decode incrementally so a growing
+        // library remains restartable without buffering the whole file too.
+        serde_json::from_reader::<_, Store>(BufReader::new(File::open(&registry)?))
             .context("Cannot read transfer registry; original data was preserved")?
     } else {
         default_store()
@@ -1225,7 +1308,11 @@ async fn main() -> Result<()> {
     if let Some(port) = args.peer_port {
         store.settings.peer_port = port;
     }
-    ensure_directory(Path::new(&store.settings.download_dir))?;
+    let downloads = ensure_directory(Path::new(&store.settings.download_dir))?;
+    let published = ensure_directory(&storage::published(&dir))?;
+    if downloads == published {
+        bail!("Downloads and published must be different directories")
+    }
     let listener =
         tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, args.http_port)).await?;
     let address = listener.local_addr()?;
@@ -1426,7 +1513,7 @@ mod tests {
         let home = Path::new("/fixture-home");
         let mut store = default_store();
         assert_eq!(store.version, 4);
-        assert_eq!(store.settings.download_dir, "downloads");
+        assert_eq!(store.settings.download_dir, "user/downloads");
         assert!(store.settings.seed_by_default);
         let legacy: Settings =
             serde_json::from_str(r#"{"download_dir":"downloads","peer_port":6881}"#).unwrap();
@@ -1444,7 +1531,7 @@ mod tests {
             post: None,
         });
         migrate_store(&mut store, home).unwrap();
-        assert_eq!(store.settings.download_dir, "downloads");
+        assert_eq!(store.settings.download_dir, "user/downloads");
         assert_eq!(store.records[0].path, Path::new("/existing/payload"));
         store.settings.download_dir = home.join("Downloads/FeedTorrent").display().to_string();
         migrate_store(&mut store, home).unwrap();

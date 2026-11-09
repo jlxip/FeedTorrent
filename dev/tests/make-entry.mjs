@@ -29,7 +29,9 @@ try {
   await copyFile("dev/tests/runtime.mjs",join(project,"dev/tests/runtime.mjs"));
   await writeFile(join(project,"dev/scripts/ui.mjs"),"import{appendFileSync}from\"node:fs\";appendFileSync(process.env.BUILD_LOG,\"ui:\"+process.argv.slice(2).join(\" \")+\"\\n\");\n");
   await writeFile(join(project,"dev/scripts/test-deps.sh"),"#!/bin/sh\nprintf \"test-deps\\n\" >> \"$BUILD_LOG\"\n");
-  const suites="bep44 bep50 network tls edge-cases open-cwd posts publishing key-vault retention organization".split(" ");
+  const suiteList=(await readFile(join(project,"Makefile"),"utf8")).match(/^ALL_NATIVE_SUITES[ \t]*=[ \t]*(.+)$/m);
+  assert(suiteList,"Makefile must define ALL_NATIVE_SUITES");
+  const suites=suiteList[1].trim().split(/\s+/);
   for(const name of [...suites,"make-entry","desktop","bep-consumer","posts-consumer"])
     await writeFile(join(project,"dev/tests",name+".mjs"),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:'+name+'\\n");\n');
   await writeFile(join(project,'dev/tests/validation-env.py'),'print("validation fixture")\n');

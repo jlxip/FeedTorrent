@@ -7,13 +7,13 @@ import {temporary,startApp,cleanup} from './helpers.mjs';
 const root=await temporary();let app;
 try{
  app=await startApp(join(root,'app'));const password='original vault test password',next='changed vault test password';
- const pub=c=>app.api('/api/publishing',c),file=join(root,'app/state/publishing/library.json');
+ const pub=c=>app.api('/api/publishing',c),file=join(root,'app/state/publishing.json');
  await pub({action:'create_key',password,confirmation:password});const {id}=await pub({action:'create_post',title:'Stable identity'});
  let library=JSON.parse(await readFile(file));const seed=decryptVault(library.vault,password),identity=library.vault.public_key,post=library.posts[id].magnet;
  const bytes=await readFile(file);
  await assert.rejects(pub({action:'change_password',old:'wrong',password:next,confirmation:next}),/Incorrect password/);assert.deepEqual(await readFile(file),bytes);
  await assert.rejects(pub({action:'change_password',old:password,password:next,confirmation:'different'}),/match/);assert.deepEqual(await readFile(file),bytes);
- const folder=join(root,'app/state/publishing'),mode=(await stat(folder)).mode & 0o777;
+ const folder=join(root,'app/state'),mode=(await stat(folder)).mode & 0o777;
  await chmod(folder,0o500);
  try{await assert.rejects(pub({action:'change_password',old:password,password:next,confirmation:next}));}finally{await chmod(folder,mode);}
  assert.deepEqual(await readFile(file),bytes);

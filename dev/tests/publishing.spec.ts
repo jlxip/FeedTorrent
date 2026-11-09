@@ -174,3 +174,40 @@ test("existing posts open Public view at their actual root without an extra hist
     await page.setViewportSize({width:320,height:740});await page.getByRole('button',{name:'Public view',exact:true}).click();await expect(page.locator('#own-preview')).toContainText('Saved page');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   }finally{await cleanup(root,app);}
 });
+
+
+test('title snapshots cannot move Public view between pointerdown and pointerup',async({page})=>{
+  const root=await temporary();let app;
+  try{
+    app=await startApp(join(root,'app'));const pub=(body:unknown)=>app.api('/api/publishing',body);
+    const password='stable title fixture password',longTitle='A'.repeat(240);
+    await pub({action:'create_key',password,confirmation:password});
+    const {id}=await pub({action:'create_post',title:longTitle});
+    await expect.poll(async()=>(await app.api()).publishing.posts.find(p=>p.id===id)?.title).toBe(longTitle);
+    const stale=await app.api();
+    await page.addInitScript(()=>{
+      (window as any).sources=[];
+      (window as any).EventSource=class extends EventTarget{close(){}constructor(){super();(window as any).sources.push(this)}};
+    });
+    await page.route('**/api/snapshot',route=>route.fulfill({json:stale}));
+    const emit=async(state:unknown)=>page.evaluate(s=>{
+      for(const source of (window as any).sources)source.dispatchEvent(new MessageEvent('snapshot',{data:JSON.stringify(s)}));
+    },state);
+    await page.setViewportSize({width:320,height:900});
+    await page.goto(app.url+'/#/own/'+id);
+    await expect(page.locator('#own-title')).toHaveValue(longTitle);
+    await page.locator('#own-title').fill('Field notes');
+    await expect(page.locator('#own-draft-status')).toHaveText('Draft saved');
+    await expect.poll(async()=>(await app.api()).publishing.posts.find(p=>p.id===id)?.title).toBe('Field notes');
+    const latest=await app.api(),toggle=page.locator('#own-toggle');
+    await toggle.click({trial:true});const before=(await toggle.boundingBox())!;
+    const point={x:before.x+before.width/2,y:before.y+before.height/2};
+    const underPointer=()=>page.evaluate(({x,y})=>document.elementFromPoint(x,y)?.closest('#own-toggle')?.id,point);
+    await page.mouse.move(point.x,point.y);await page.mouse.down();
+    await emit(stale);expect(await underPointer()).toBe('own-toggle');
+    await emit(latest);expect(await underPointer()).toBe('own-toggle');
+    await page.mouse.up();
+    await expect(page).toHaveURL(new RegExp('#/own/'+id+'/read/1$'));
+    await expect(page.locator('#own-preview')).toBeVisible();await expect(page.locator('#own-heading')).toHaveText('Field notes');
+  }finally{await cleanup(root,app);}
+});

@@ -6,14 +6,14 @@ import bencode from 'bencode';
 import {cleanup,startApp,temporary,wait} from './helpers.mjs';
 
 const sha=(data:Uint8Array|string)=>createHash('sha1').update(data).digest();
-function torrent(name:string,files:{path:string[];data:Buffer}[],catalog=false,fields={}){
+function torrent(name:string,files:{path:string[];data:Buffer;padding?:boolean}[],catalog=false,fields={}){
   const all=Buffer.concat(files.map(f=>f.data)),pieces:Buffer[]=[];
   for(let at=0;at<all.length;at+=16384)pieces.push(sha(all.subarray(at,at+16384)));
-  const info={name,files:files.map(f=>({path:f.path,length:f.data.length,...(catalog?{sha1:sha(f.data)}:{})})),'piece length':16384,pieces:Buffer.concat(pieces),...(catalog?{bep49:fields}:{})};
+  const info={name,files:files.map(f=>({path:f.path,length:f.data.length,...(f.padding?{attr:'p'}:catalog?{sha1:sha(f.data)}:{})})),'piece length':16384,pieces:Buffer.concat(pieces),...(catalog?{bep49:fields}:{})};
   return {id:sha(bencode.encode(info)).toString('hex'),name,bytes:Buffer.from(bencode.encode({info})),files};
 }
 async function preload(root:string,app,t){
-  for(const f of t.files){const path=join(root,'app','downloads',t.id,t.name,...f.path);await mkdir(dirname(path),{recursive:true});await writeFile(path,f.data);}
+  for(const f of t.files){if(f.padding)continue;const path=join(root,'app','downloads',t.id,t.name,...f.path);await mkdir(dirname(path),{recursive:true});await writeFile(path,f.data);}
   await app.command({type:'add_torrent',data:Array.from(t.bytes)});
   await wait(async()=>{const t0=(await app.api()).transfers.find(x=>x.id===t.id);return t0?.progress===1&&t0.files.every(f=>f.ready);},'preloaded pieces verified');
 }
@@ -136,5 +136,45 @@ test('Read own post keeps nested catalog provenance and removal returns to previ
     await page.locator('#own-reader-more').click();await page.locator('#own-reader-remove').click();await page.locator('#remove-form button[type=submit]').click();
     await expect(page.locator('#own-reader-toggle')).toHaveAccessibleName('Download');await expect(page).toHaveURL(new RegExp('/torrent/'+parent.id+'/torrent/'+child.id+'$'));
     expect((await app.api()).transfers).toHaveLength(1);expect(await app.api('/api/publishing',{action:'get_post',id})).toEqual(before);
+  }finally{await cleanup(root,app);}
+});
+
+
+test('Markdown resolves original file indices after padding, including a verified decoy',async({page})=>{
+  const root=await temporary();let app;
+  try{
+    app=await startApp(join(root,'app'));
+    for(const catalog of [false,true])for(const decoy of [true,false]){
+      const label=`Actual Markdown ${catalog?'catalog':'torrent'} ${decoy?'decoy':'padding'}`;
+      const body=Buffer.from(`# ${label}\n\nThe verified body, not another file.\n`);
+      const child=torrent(`Child ${label}`,[{path:['payload.txt'],data:Buffer.from('retained child payload')}]);
+      const files=[
+        {path:['child.torrent'],data:child.bytes},
+        {path:['.pad','first'],data:Buffer.alloc(16384-child.bytes.length),padding:true},
+        ...(decoy?[
+          {path:['decoy.txt'],data:Buffer.alloc(body.length,120)},
+          {path:['.pad','second'],data:Buffer.alloc(16384-body.length),padding:true},
+        ]:[]),
+        {path:['metadata','body.md'],data:body},
+      ];
+      const padded=torrent(`Padded ${label}`,files,catalog);
+      if(catalog)await preload(root,app,child);
+      await preload(root,app,padded);
+      const result=await app.command({type:'read_content',id:padded.id,offset:0});
+      expect(result.kind).toBe(catalog?'catalog':'torrent');
+      expect(result.body_state).toBe('ready');
+      expect(result.body).toMatchObject({kind:'document',children:[
+        {kind:'h1',children:[{kind:'text',text:label}]},
+        {kind:'p',children:[{kind:'text',text:'The verified body, not another file.'}]},
+      ]});
+      expect(result.files.map(f=>f.index)).toEqual(decoy?[0,1]:[0]);
+      expect(result.files.map(f=>f.name)).toEqual([padded.name+'/child.torrent',...(decoy?[padded.name+'/decoy.txt']:[])]);
+      await page.goto(app.url+'/#/library/'+padded.id);
+      await expect(page.locator('#library-reader .reader-body')).toContainText(label);
+      if(catalog){
+        const unpin=await app.command({type:'preview_removal',target:{kind:'unpin',id:child.id}});
+        expect(unpin.deleting).not.toContain(child.id);
+      }
+    }
   }finally{await cleanup(root,app);}
 });

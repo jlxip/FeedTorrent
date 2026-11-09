@@ -234,7 +234,82 @@ async function paths() {
     await cleanup(root, tr, ref, app);
   }
 }
+async function failedAdd() {
+  const root = await temporary(), tr = await tracker();
+  let app, ref;
+  try {
+    ref = await seed(join(root, "retry-source"), [32769], {
+      tracker: true, announce: [tr.http],
+    });
+    for (const failure of ["payload", "source", "manifest"]) {
+      const home = join(root, failure), downloads = join(home, "downloads");
+      await mkdir(downloads, { recursive: true });
+      const path = join(downloads, ref.id), source = path + ".source";
+      const blocked = failure === "payload" ? path
+        : failure === "source" ? source : path + ".transfer.tmp";
+      if (failure === "payload") await writeFile(blocked, "occupied");
+      else await mkdir(blocked);
+      app = await startApp(home);
+      const add = () => app.command({ type: "add_magnet", uri: ref.magnet });
+      await assert.rejects(add, undefined, failure + " initial add fails");
+      await assert.rejects(add, undefined, failure + " retry must report the unresolved failure");
+      const registry = join(home, "state", "transfers.json");
+      let saved = JSON.parse(await readFile(registry, "utf8"));
+      assert.equal(saved.records.length, 1);
+      assert.equal(saved.records[0].active, false);
+      assert.equal(saved.retention.pins.includes(ref.id), true);
+      if (failure !== "manifest") await app.stop();
+      if (failure === "source") {
+        // Simulate a persisted metadata-only approval decision before restart.
+        saved.records[0].held = true;
+        saved.records[0].seed = false;
+        await writeFile(registry, JSON.stringify(saved));
+      }
+      await rm(blocked, { recursive: true });
+      if (failure !== "manifest") app = await startApp(home);
+      const settings = (await app.api()).settings;
+      await app.command({ type: "configure", settings: { ...settings, seed_by_default: false } });
+      await app.command({ type: "add_torrent", data: ref.bytes });
+      saved = JSON.parse(await readFile(registry, "utf8"));
+      const record = saved.records[0];
+      assert.equal(record.active, false, "repair preserves paused state");
+      assert.equal(record.held, failure === "source");
+      assert.equal(record.seed, failure !== "source", "repair preserves the original seeding decision");
+      assert.equal(record.magnet, false, "replacement source format is durable");
+      assert.deepEqual(await readFile(source), Buffer.from(ref.bytes));
+      const transfer = (await app.api()).transfers.find(t => t.id === ref.id);
+      assert.equal(transfer.error, "");
+      assert.equal(transfer.active, false);
+      assert.equal(transfer.held, failure === "source");
+      assert.equal(transfer.pinned, true);
+      assert.equal(transfer.verified, 0);
+      if (failure === "source") {
+        await assert.rejects(() => app.command({ type: "resume", id: ref.id }), /approval/i);
+      } else {
+        await app.command({ type: "resume", id: ref.id });
+        await exact(app, ref);
+        await app.command({ type: "pause", id: ref.id });
+      }
+      const before = await readFile(source);
+      await app.command({ type: "add_magnet", uri: ref.magnet });
+      assert.deepEqual(await readFile(source), before, "healthy duplicate preserves its source");
+      assert.equal((await app.api()).transfers[0].active, false);
+      await app.stop();
+      app = await startApp(home);
+      const restored = (await app.api()).transfers[0];
+      assert.equal(restored.error, "");
+      assert.equal(restored.active, false);
+      assert.equal(restored.held, failure === "source");
+      assert.equal(restored.pinned, true);
+      await app.stop();
+      pass(failure + " failure retries honestly, repairs and preserves pause/approval across restart");
+    }
+  } finally {
+    await cleanup(root, tr, ref, app);
+  }
+}
 for (const [name, run] of [
+  ["failed add", failedAdd],
   ["partial", partial],
   ["hybrid", hybrid],
   ["private metadata", privateMetadata],

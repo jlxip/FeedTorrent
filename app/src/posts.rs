@@ -27,7 +27,6 @@ pub(super) struct PostHost {
     renewals: BTreeMap<u64, (WorkId, bool)>,
     start: Instant,
     disabled: bool,
-    recovered: bool,
     scan_after: WorkId,
 }
 fn description(d: feedtorrent_libtorrent::TorrentDescription) -> Description {
@@ -65,49 +64,22 @@ fn inspect_description(data: &[u8]) -> Option<Description> {
 }
 impl PostHost {
     pub fn new(dir: &Path, isolated: bool) -> Self {
-        let path = dir.join("feeds.json");
         let mut error = String::new();
         let mut disabled = false;
-        let mut recovered = false;
-        let mut manager = if path.exists() {
-            match read_limited(&path).and_then(|b| PostManager::restore(&b).map_err(Into::into)) {
-                Ok(m) => m,
-                Err(e) => {
-                    error = format!("Post state: {e:#}");
-                    match read_limited(&dir.join("feeds.previous.json"))
-                        .and_then(|b| PostManager::restore(&b).map_err(Into::into))
-                    {
-                        Ok(m) => {
-                            let stamp = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_nanos();
-                            match fs::copy(&path, dir.join(format!("posts.rejected-{stamp}.json")))
-                            {
-                                Ok(_) => {
-                                    recovered = true;
-                                    error.push_str(
-                                        "; recovered previous checkpoint; original preserved",
-                                    );
-                                }
-                                Err(copy_error) => {
-                                    disabled = true;
-                                    error.push_str(&format!(
-                                        "; cannot preserve corrupt checkpoint: {copy_error}"
-                                    ));
-                                }
-                            }
-                            m
-                        }
-                        Err(_) => {
-                            disabled = true;
-                            PostManager::new()
-                        }
-                    }
-                }
+        let manager_result: Result<PostManager> = (|| {
+            let state = crate::post_state::load(dir)?;
+            match state.checkpoint {
+                Some(value) => Ok(PostManager::restore(&serde_json::to_vec(&value)?)?),
+                None => Ok(PostManager::new()),
             }
-        } else {
-            PostManager::new()
+        })();
+        let mut manager = match manager_result {
+            Ok(manager) => manager,
+            Err(e) => {
+                error = format!("Post state: {e:#}");
+                disabled = true;
+                PostManager::new()
+            }
         };
         manager.start(0);
         let mut bind = Bind {
@@ -156,7 +128,6 @@ impl PostHost {
             renewals: BTreeMap::new(),
             start: Instant::now(),
             disabled,
-            recovered,
             scan_after: WorkId(0),
         }
     }
@@ -167,10 +138,7 @@ impl PostHost {
         self.start.elapsed().as_millis().min(u64::MAX as u128) as u64
     }
     pub fn persist(&mut self, dir: &Path) -> Result<()> {
-        if self.disabled {
-            return Ok(());
-        }
-        if !self.manager.dirty() && !self.recovered {
+        if self.disabled || !self.manager.dirty() {
             return Ok(());
         }
         let wall_ms = std::time::SystemTime::now()
@@ -179,13 +147,10 @@ impl PostHost {
             .min(u64::MAX as u128) as u64;
         self.manager.observe_news(wall_ms)?;
         let bytes = self.manager.checkpoint()?;
-        let path = dir.join("feeds.json");
-        // Both copies must contain the acknowledged decisions. An older backup
-        // could otherwise undo Unfollow/Remove after primary-file corruption.
-        atomic(&path, &bytes)?;
-        atomic(&dir.join("feeds.previous.json"), &bytes)?;
+        let mut state = crate::post_state::load(dir)?;
+        state.checkpoint = Some(serde_json::from_slice(&bytes)?);
+        state.save(dir)?;
         self.manager.acknowledge_checkpoint();
-        self.recovered = false;
         Ok(())
     }
     pub fn tick(&mut self, e: &mut Engine) {
@@ -319,7 +284,7 @@ impl PostHost {
                         let authorized = !e.record(target)?.held;
                         // Durable original bytes let a restart reconstruct pending
                         // references without depending on an online metadata peer.
-                        atomic(&e.dir.join(format!("{target}.info")), &info)?;
+                        atomic(&storage::sidecar(e.record(target)?, "info")?, &info)?;
                         self.manager
                             .metadata(work, description(d), info, authorized)?;
                         Ok(())
@@ -835,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn backup_does_not_revert_a_completed_unfollow() {
+    fn completed_unfollow_survives_a_single_checkpoint() {
         let dir =
             std::env::temp_dir().join(format!("feedtorrent-checkpoint-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -844,19 +809,17 @@ mod tests {
         host.persist(&dir).unwrap();
         host.manager.unfollow(&id).unwrap();
         host.persist(&dir).unwrap();
-        let backup =
-            PostManager::restore(&fs::read(dir.join("feeds.previous.json")).unwrap()).unwrap();
-        let followed = backup.followed(&id);
+        let state = crate::post_state::load(&dir).unwrap();
+        let restored =
+            PostManager::restore(&serde_json::to_vec(&state.checkpoint.unwrap()).unwrap()).unwrap();
+        assert!(!restored.followed(&id));
+        assert!(!dir.join("feeds.previous.json").exists());
         host.close();
         fs::remove_dir_all(dir).unwrap();
-        assert!(
-            !followed,
-            "a successfully saved Unfollow must survive primary-checkpoint corruption"
-        );
     }
 
     #[test]
-    fn news_write_failure_keeps_memory_and_recovery_unread() {
+    fn news_write_failure_keeps_memory_and_disk_unread() {
         let dir =
             std::env::temp_dir().join(format!("feedtorrent-news-fault-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -883,16 +846,15 @@ mod tests {
             .receive_record(&id, pointer.record().clone(), 0)
             .unwrap();
         host.persist(&dir).unwrap();
-        // Block the backup's atomic temporary after the primary can be written.
-        fs::create_dir(dir.join("feeds.previous.tmp")).unwrap();
+        // A failed atomic replacement leaves both the disk and memory unread.
+        fs::create_dir(dir.join("posts.tmp")).unwrap();
         assert!(engine.news_read(&id, "1", true).is_err());
         assert_eq!(engine.posts.as_ref().unwrap().manager.news_unread(), 1);
-        let primary = PostManager::restore(&fs::read(dir.join("feeds.json")).unwrap()).unwrap();
-        let backup =
-            PostManager::restore(&fs::read(dir.join("feeds.previous.json")).unwrap()).unwrap();
-        assert_eq!(primary.news_unread(), 1);
-        assert_eq!(backup.news_unread(), 1);
-        fs::remove_dir(dir.join("feeds.previous.tmp")).unwrap();
+        let saved = crate::post_state::load(&dir).unwrap();
+        let saved =
+            PostManager::restore(&serde_json::to_vec(&saved.checkpoint.unwrap()).unwrap()).unwrap();
+        assert_eq!(saved.news_unread(), 1);
+        fs::remove_dir(dir.join("posts.tmp")).unwrap();
         engine.news_read(&id, "1", true).unwrap();
         assert_eq!(engine.posts.as_ref().unwrap().manager.news_unread(), 0);
         engine.native.shutdown().unwrap();

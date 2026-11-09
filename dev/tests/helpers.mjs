@@ -49,6 +49,8 @@ export async function startApp(root, extra = [], options = {}) {
   }
   if (options.defaultDownloads && defaults.includes("--download-dir"))
     defaults.splice(defaults.indexOf("--download-dir"), 2);
+  if (options.defaultData && defaults.includes("--data-dir"))
+    defaults.splice(defaults.indexOf("--data-dir"), 2);
   const child = spawn(
     resolve("target/release/feedtorrent"),
     [...defaults, ...extra],
