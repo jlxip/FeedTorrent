@@ -1466,7 +1466,10 @@ async fn main() -> Result<()> {
         .route("/api/snapshot", get(snapshot))
         .route("/api/events", get(events))
         .route("/api/commands", post(command))
-        .route("/api/publishing", post(publishing::http::command))
+        .route(
+            "/api/publishing",
+            post(publishing::http::command).layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
+        )
         .route("/api/publishing/backup", get(publishing::http::export))
         .route(
             "/api/publishing/import",

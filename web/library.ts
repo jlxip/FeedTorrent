@@ -185,7 +185,7 @@ export class LibraryUI {
     tip.querySelector('.tooltip-down')!.textContent=this.connected?`↓ ${bytes(t.down)}/s`:'↓ —';
     tip.querySelector('.tooltip-up')!.textContent=this.connected?`↑ ${bytes(t.up)}/s`:'↑ —';
     tip.querySelector('.tooltip-peers')!.textContent=this.connected?`${t.peers} peers`:'— peers';
-    const message=[t.error,t.warning|| (t.held?'Download approval required.':'')].filter(Boolean).join('\n');
+    const message=[t.error,t.warning|| (t.held&&t.files.length?'Download approval required.':'')].filter(Boolean).join('\n');
     const warning=tip.querySelector<HTMLElement>('.tooltip-message')!;warning.textContent=message;warning.hidden=!message;
     tip.querySelector<HTMLElement>('.tooltip-offline')!.hidden=this.connected;this.positionTooltip();
   }

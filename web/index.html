@@ -36,13 +36,7 @@
             </ul></div>
             <div role="group" aria-labelledby="posts-label">
               <div class="side-heading"><h3 id="posts-label">Posts</h3>
-                <div class="dropdown-menu" data-keep-mobile-sidebar-open>
-                  <button type="button" id="post-add" class="btn" data-variant="ghost" data-size="icon-sm" aria-label="Add post" aria-haspopup="menu" aria-controls="post-add-menu" aria-expanded="false">+</button>
-                  <div data-popover popover="manual" class="tree-popover" aria-hidden="true"><div role="menu" id="post-add-menu" aria-labelledby="post-add">
-                    <button type="button" id="follow-open" role="menuitem">Follow post</button>
-                    <button type="button" id="own-create" role="menuitem">Create post</button>
-                  </div></div>
-                </div>
+                <button type="button" id="post-add" class="btn" data-variant="ghost" data-size="icon-sm" data-keep-mobile-sidebar-open aria-label="Create post">+</button>
               </div>
               <div id="organization-error" class="transfer-error" role="alert"></div>
               <ul id="post-tree" aria-label="Posts"></ul><p class="muted" id="no-posts">No posts</p>

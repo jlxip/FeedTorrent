@@ -271,6 +271,7 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .reader-body,.reader-contents {max-width:720px;}
 .content-heading {display:grid;grid-template-columns:minmax(0,1fr) 296px;align-items:center;gap:16px;margin-bottom:16px;}
 .content-heading:has(>.content-sharing[hidden]) {grid-template-columns:minmax(0,1fr);}
+#post-view .content-heading {align-items:start;}
 .content-identity {min-width:0;}
 .content-identity h2 {font-size:18px;line-height:1.3;font-weight:600;letter-spacing:0;margin:0;overflow-wrap:anywhere;}
 .content-identity>.reader-title {display:flex;align-items:center;gap:2px;}

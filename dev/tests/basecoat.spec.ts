@@ -1,5 +1,6 @@
 import {expect, test} from '@playwright/test';
 import {join} from 'node:path';
+import {generateKeyPairSync} from 'node:crypto';
 import {cleanup, startApp, temporary,seed,retainForRemoval} from './helpers.mjs';
 
 test('native removal surface, inline failure, progress accessibility and mobile CSP', async ({page, browserName}) => {
@@ -86,9 +87,11 @@ test('post field errors, native nested key forms, secret cleanup and breadcrumb 
   try {
     app = await startApp(join(root,'app'));
     await page.goto(app.url);
-    await expect(page.locator('#follow-open')).toBeEnabled();
-    await page.locator('#post-add').click();
-      await page.locator('#follow-open').click();
+    await expect(page.locator('#open-button')).toBeEnabled();
+    await page.locator('#open-button').click();
+    await page.locator('#magnet').fill('magnet:?xs=urn:btpk:'+generateKeyPairSync('ed25519').publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('hex'));
+    await page.locator('#magnet-form button[type=submit]').click();
+    await expect(page.locator('#post-dialog')).toBeVisible();
     await page.locator('#post-limit').fill('0');
     await page.locator('#post-submit').click();
     await expect(page.locator('#post-limit')).toHaveAttribute('aria-invalid','true');
@@ -98,7 +101,6 @@ test('post field errors, native nested key forms, secret cleanup and breadcrumb 
     await expect(page.locator('#post-limit')).not.toHaveAttribute('aria-invalid','true');
     await page.locator('#post-dialog [data-close]').click();
     await page.locator('#post-add').click();
-      await page.locator('#own-create').click();
     await page.locator('#own-create-title').fill('Integration post');
     const password = 'native UI integration passphrase';
     await page.locator('#own-key-password').fill(password);

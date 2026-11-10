@@ -75,19 +75,14 @@ test('Sidebar navigation, mobile overlay and breakpoint resize', async ({page, b
         await expect(selected).toHaveCount(1);
         await expect(page.locator(link)).toHaveAttribute('aria-current','page');
       }
-      // Sidebar actions open their dialogs while dismissing the overlay.
+      // The create action opens its dialog while dismissing the overlay.
       await toggle.click();
       await page.locator('#post-add').click();
-      await page.locator('#follow-open').click();
       await expect(sidebar).toHaveAttribute('aria-hidden','true');
-      await expect(page.locator('#post-dialog')).toBeVisible();
-      await page.locator('#post-dialog [data-close]').click();
-
-      await toggle.click();
-      await page.locator('#post-add').click();
-      await page.locator('#own-create').click();
       await expect(page.locator('#own-create-dialog')).toBeVisible();
+      await expect(page.locator('#own-create-title')).toBeFocused();
       await page.locator('#own-create-dialog [data-close]').click();
+      await expect(toggle).toBeFocused();
 
       await page.locator('#settings-open').click();
       await expect(page.locator('#settings-dialog')).toBeVisible();
@@ -109,8 +104,7 @@ test('Sidebar navigation, mobile overlay and breakpoint resize', async ({page, b
     await expect(page.locator('#open-button')).toBeDisabled();
     await expect(toggle).toBeEnabled();
     await toggle.click();
-    await expect(page.locator('#follow-open')).toBeDisabled();
-    await expect(page.locator('#own-create')).toBeDisabled();
+    await expect(page.locator('#post-add')).toBeDisabled();
     await page.locator('#transfers-nav').click();
     await expect(sidebar).toHaveAttribute('aria-hidden','true');
 

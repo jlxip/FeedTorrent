@@ -1,5 +1,6 @@
 import {expect, test} from '@playwright/test';
 import {join} from 'node:path';
+import {generateKeyPairSync} from 'node:crypto';
 
 import {postFixture} from './post-fixtures.mjs';
 import {cleanup, startApp, temporary, wait} from './helpers.mjs';
@@ -11,6 +12,7 @@ test(
       let app, fx;
       try {
         fx = await postFixture(root);
+        const nextMagnet='magnet:?xs=urn:btpk:'+generateKeyPairSync('ed25519').publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('hex');
         app = await startApp(join(root, 'app'), ['--dht-bootstrap', fx.bootstrap]);
         console.log(info.project.name, browser.version());
         await info.attach(
@@ -35,8 +37,9 @@ test(
           if (dismissal === 'outside') await page.mouse.click(2, 2);
           else if (dismissal === 'cross') await page.locator('#post-dialog [data-close]').click();
           await expect(page.locator('#post-dialog')).toBeHidden();
-          await page.locator('#post-add').click();
-      await page.locator('#follow-open').click();
+          await page.locator('#open-button').click();
+          await page.locator('#magnet').fill(fx.postMagnet);
+          await page.locator('#magnet-form button[type=submit]').click();
           await expect(page.locator('#post-magnet')).toHaveValue(fx.postMagnet);
           await expect(page.locator('#post-name')).toHaveValue('My reading list');
           await expect(page.locator('#post-mode')).toHaveValue('mirror_catalogs');
@@ -49,9 +52,15 @@ test(
         await expect(page.locator('#open-dialog')).not.toBeVisible();
         await expect(page.locator('#post-title')).toHaveText('My reading list');
         await expect(page.locator('#transfers-nav')).toHaveAttribute('aria-current','false');
-        await page.locator('#post-add').click();
-      await page.locator('#follow-open').click();
-        await expect(page.locator('#post-magnet')).toHaveValue('');
+        await page.locator('#open-button').click();
+        await page.locator('#magnet').fill(fx.postMagnet);
+        await page.locator('#magnet-form button[type=submit]').click();
+        await expect(page.locator('#post-dialog')).toBeHidden();
+        await expect(page.locator('#post-title')).toHaveText('My reading list');
+        await page.locator('#open-button').click();
+        await page.locator('#magnet').fill(nextMagnet);
+        await page.locator('#magnet-form button[type=submit]').click();
+        await expect(page.locator('#post-magnet')).toHaveValue(nextMagnet);
         await expect(page.locator('#post-name')).toHaveValue('');
         await expect(page.locator('#post-mode')).toHaveValue('current_catalog');
         await expect(page.locator('#post-limit')).toHaveValue('8');
@@ -93,10 +102,11 @@ test(
         await expect(page.locator('#post-limit')).toBeDisabled();
         await page.locator('#post-submit').click();
         await expect(page.locator('#post-dialog')).toBeHidden();
-        await page.locator('#post-add').click();
-      await page.locator('#follow-open').click();
+        await page.locator('#open-button').click();
+        await page.locator('#magnet').fill(nextMagnet);
+        await page.locator('#magnet-form button[type=submit]').click();
         await expect(page.locator('#post-name')).toHaveValue('Unsent next post');
-        await expect(page.locator('#post-magnet')).toHaveValue('');
+        await expect(page.locator('#post-magnet')).toHaveValue(nextMagnet);
         await page.mouse.click(2, 2);
         await page.setViewportSize({width: 320, height: 740});
         await expect
@@ -169,6 +179,11 @@ test(
         await page.locator('#post-remove-submit').click();
         await expect(page.locator('#transfer-view')).toBeVisible();
         await expect(page.locator('#count')).toHaveText('0 torrents');
+        await page.locator('#open-button').click();
+        await page.locator('#magnet').fill(fx.content.magnet);
+        await page.locator('#magnet-form button[type=submit]').click();
+        await expect(page.locator('#post-dialog')).toBeHidden();
+        await expect(page.locator('#count')).toHaveText('1 torrent');
         expect(external).toEqual([]);
       } finally {
         if (app) await app.stop();

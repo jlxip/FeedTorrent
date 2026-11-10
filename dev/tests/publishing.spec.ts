@@ -22,9 +22,22 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
       if (!r.url().startsWith(app.url)) external.push(r.url());
     });
     await page.goto(app.url);
-    await expect(page.locator("#own-create")).toBeEnabled();
+    await expect(page.locator("#post-add")).toBeEnabled();
+    await expect(page.locator("#post-add")).toHaveAccessibleName("Create post");
+    await expect(page.locator("#post-add-menu")).toHaveCount(0);
+    await page.locator("#post-add").focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#own-create-dialog")).toBeVisible();
+    await expect(page.locator("#own-create-title")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#own-create-dialog")).toBeHidden();
+    await expect(page.locator("#post-add")).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(page.locator("#own-create-dialog")).toBeVisible();
+    await page.locator("#own-create-dialog [data-close]").click();
+    await expect(page.locator("#post-add")).toBeFocused();
     await page.locator("#post-add").click();
-    await page.locator("#own-create").click();
+    await expect(page.locator("#own-create-dialog")).toBeVisible();
     await expect(
       page.locator("#own-create-dialog [data-close] svg"),
     ).toBeVisible();
@@ -32,7 +45,6 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.mouse.click(2, 2);
     await expect(page.locator("#own-create-dialog")).toBeHidden();
     await page.locator("#post-add").click();
-    await page.locator("#own-create").click();
     await expect(page.locator("#own-create-title")).toHaveValue("Field notes");
     await page
       .locator("#own-key-password")

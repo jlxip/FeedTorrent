@@ -10,7 +10,7 @@ use std::{
 };
 
 pub const MAX_BODY: usize = 1024 * 1024;
-pub const MAX_DRAFT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_DRAFT_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
@@ -115,7 +115,7 @@ impl Draft {
             }
         }
         if bytes > MAX_DRAFT_BYTES {
-            return Err(err("Draft content exceeds 16 MiB"));
+            return Err(err("Draft content exceeds 32 MiB"));
         }
         fn walk(
             id: u64,

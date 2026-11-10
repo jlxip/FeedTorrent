@@ -96,6 +96,26 @@ test('catalogue and compact live tooltip, responsive themes and torrent states',
   }finally{await cleanup(f.root,f.app);}
 });
 
+test('held magnet does not claim approval before metadata is known',async({page})=>{
+  const f=await fixture(page);
+  try{
+    const t=f.snapshot.transfers[4];t.state='Waiting for metadata';t.files=[];t.total=0;t.verified=0;t.progress=0;
+    await page.goto(f.app.url+'/#/library');
+    const card=page.locator(`[data-id="${t.id}"]`);
+    await card.getByRole('button').hover();
+    const tip=page.locator('#library-tooltip');await expect(tip).toBeVisible();
+    await expect(tip).not.toContainText('Download approval required.');
+    await card.locator('.transfer-name').click();
+    await expect(page.locator('#torrent-approve')).toBeHidden();
+    t.state='Awaiting approval';t.files=[{name:'catalog.torrent',length:20*1048576,verified:0,ready:false}];t.total=t.files[0].length;
+    await f.publish();
+    await expect(page.locator('#torrent-approve')).toBeEnabled();
+    await page.locator('#library-back').click();
+    await card.getByRole('button').hover();
+    await expect(tip).toContainText('Download approval required.');
+  }finally{await cleanup(f.root,f.app);}
+});
+
 test('catalogue scroll survives Back, Forward, reload and direct detail links',async({page,context})=>{
   const f=await fixture(page,36);
   try{

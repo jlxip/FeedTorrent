@@ -136,7 +136,6 @@ export class OrganizationUI {
   render(state:Snapshot|null,connected:boolean){
     this.state=state;this.connected=connected;
     $<HTMLButtonElement>('post-remove-submit').disabled=this.removeBusy||!this.removePreview||!connected||!state?.ready;
-    $('post-add').toggleAttribute('disabled',!connected||!state?.ready);
     if(this.drag)return;
     const names=new Map<string,{name:string;href:string}>();
     for(const f of state?.posts||[])names.set('followed:'+f.id,{name:f.name,href:`#/posts/${f.id}`});

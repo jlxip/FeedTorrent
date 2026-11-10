@@ -98,6 +98,29 @@ test('pending versions can be approved without replacing the page and late body 
  }finally{await cleanup(x.root,x.app);}
 });
 
+test('following a catalog waits for metadata before offering download approval',async({page})=>{
+ const x=await followed(page);
+ try{
+  const catalog=x.f.catalogs[0];catalog.ready=false;catalog.state='Waiting for metadata';catalog.total=0;
+  const transfer={...x.snapshot.transfers[0],id:catalog.id,name:catalog.id,state:'Waiting for metadata',held:true,verified:0,total:0,progress:0,files:[],warning:'Peer: End of file [asio.misc:2]'};
+  x.snapshot.transfers.push(transfer);
+  await page.goto(x.app.url+'/#/posts/'+x.f.id);
+  const warning=page.locator('#post-reader .content-sharing .alert[role="status"]');
+  await expect(page.locator('#post-reader .state')).toHaveText('Waiting for metadata');
+  await expect(warning).toContainText('Peer: End of file');
+  await expect(warning).not.toContainText('Download approval required.');
+  await expect(page.locator('#post-approve')).toBeHidden();
+
+  catalog.state='Awaiting approval';catalog.total=20*1048576;transfer.state='Awaiting approval';transfer.total=catalog.total;
+  transfer.files=[{name:'catalog.torrent',length:catalog.total,verified:0,ready:false}];
+  await x.publish();
+  await expect(warning).toContainText('Download approval required.');
+  await expect(page.locator('#post-approve')).toBeEnabled();
+  await page.locator('#post-approve').click();
+  expect(x.commands.at(-1)).toMatchObject({type:'approve_transfer',id:catalog.id});
+ }finally{await cleanup(x.root,x.app);}
+});
+
 test('own reader derives exact IDs without writes, supports deep pages and never adds an existing torrent',async({page},info)=>{
  const root=await temporary();let app;
  try{

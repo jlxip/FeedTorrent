@@ -61,7 +61,7 @@ export class ContentHeader {
     this.pinInfo.addEventListener('mouseenter',positionPinHelp);this.pinInfo.addEventListener('focus',positionPinHelp);
     this.pinInfo.onclick=()=>queueMicrotask(()=>{this.menu.close?.();this.more.focus();positionPinHelp();this.pinTip.hidden=false;});
     this.pin.onclick=()=>{const t=this.value.t;this.menu.close?.();if(t)void this.run(()=>this.value.pin?.(t.id,!t.pinned));};
-    this.approve.onclick=()=>{const id=this.value.approval?.id||this.value.t?.id;if(id)void this.run(()=>this.value.action?.({type:'approve_transfer',id}));};
+    this.approve.onclick=()=>{const id=this.value.approval?.ready?this.value.approval.id:this.value.t?.id;if(id)void this.run(()=>this.value.action?.({type:'approve_transfer',id}));};
     if(identity)this.adopt(identity);
   }
   init(){window.basecoat.init('dropdown-menu');}
@@ -102,9 +102,10 @@ export class ContentHeader {
     this.pinTip.textContent='Keep in Library even if the original post is deleted.'+(inherited?' Protected by Pin on '+(m.protectedNames||['another catalog']).join(', ')+'. Unpin that catalog first.':'');
     this.remove.setAttribute('aria-description',t?.protected_by?.length?'Protected by Pin. Unpin its source before deleting.':'');
     this.down.textContent=`↓ ${m.connected?size(t?.down||0)+'/s':'—'}`;this.up.textContent=`↑ ${m.connected?size(t?.up||0)+'/s':'—'}`;this.peers.textContent=m.connected?`${t?.peers||0} peers`:'— peers';
-    const error=[m.error,t?.error,this.failure].filter(Boolean).join('\n'),warning=[m.warning,t?.warning,t?.held||m.approval?'Download approval required.':''].filter(Boolean).join('\n');
+    const approvalReady=!!(m.approval?.ready||(t?.held&&t.files.length));
+    const error=[m.error,t?.error,this.failure].filter(Boolean).join('\n'),warning=[m.warning,t?.warning,approvalReady?'Download approval required.':''].filter(Boolean).join('\n');
     this.error.firstElementChild!.textContent=error;this.error.hidden=!error;this.warning.firstElementChild!.textContent=warning;this.warning.hidden=!warning;
-    this.approve.hidden=!t?.held&&!m.approval;this.approve.disabled=!enabled||!(m.approval?m.approval.ready:t?.files.length);this.menu.refresh?.();
+    this.approve.hidden=!approvalReady;this.approve.disabled=!enabled;this.menu.refresh?.();
   }
 }
 

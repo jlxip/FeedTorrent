@@ -104,7 +104,7 @@ export class PublishingUI {
     private host:ContentHost,
   ) {
     this.content=new ContentPage(this.reader,host);
-    $("own-create").onclick = () => {
+    $("post-add").onclick = () => {
       $("own-key-fields").hidden = !!this.state?.publishing.has_key;
       $("own-create-error").textContent = "";
       for (const input of $("own-create-form").querySelectorAll("[aria-invalid]")) input.removeAttribute("aria-invalid");
@@ -646,7 +646,7 @@ export class PublishingUI {
       $("transfer-view").hidden = true;
       $("post-view").hidden = true;
     }
-    for (const id of ["own-create", "publishing-keys-open"])
+    for (const id of ["post-add", "publishing-keys-open"])
       $<HTMLButtonElement>(id).disabled = !connected || !state?.ready;
     if (!active) {
       this.content.leave();this.position.leave();this.readRoute="";

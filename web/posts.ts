@@ -62,7 +62,6 @@ export class PostsUI {
   private editDrafts = new Map<string, PostDraft>();
   constructor(private host: Host) {
     this.content=new ContentPage(this.reader,host);this.reader.header.mountStatus($('catalog-status'));
-    $('follow-open').onclick = () => this.follow();
     $('post-refresh').onclick = () => {this.readKey='';this.readError='';void this.run({type: 'refresh_post', id: this.postId});};
     $('post-settings').onclick = () => {
       const f = this.post();
@@ -215,7 +214,7 @@ export class PostsUI {
     $('transfer-view').hidden=!isLibrary;$('post-view').hidden=!active;
     $('transfers-nav').setAttribute('aria-current',isLibrary?'page':'false');
     this.postId=active?route[2]||'':'';
-    for(const id of ['follow-open','post-submit','post-unfollow','post-refresh','post-settings'])$<HTMLButtonElement>(id).disabled=!connected||!state?.ready;
+    for(const id of ['post-submit','post-unfollow','post-refresh','post-settings'])$<HTMLButtonElement>(id).disabled=!connected||!state?.ready;
     if(!active){this.content.leave();this.position.leave();if(this.viewRoute){this.viewRoute='';this.request++;this.loading=false;}$('post-help').hidden=true;return;}
     if(this.viewRoute!==location.hash){
       const previous=this.viewRoute,departing=this.content.crumbs(),descended=!!previous&&location.hash.startsWith(previous+'/torrent/');
