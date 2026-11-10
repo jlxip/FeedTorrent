@@ -12,6 +12,7 @@ mod news;
 mod renewal;
 use renewal::Renewal;
 const MAX_WORK: usize = 32;
+const MISSING_POST_RETRY_MS: u64 = 5_000;
 #[derive(Clone)]
 struct Visit {
     origin: Origin,
@@ -509,6 +510,13 @@ impl PostManager {
             Ok(None) => {
                 if self.runtime[&id].head.is_none() {
                     self.notice(&id, "Waiting for a published catalog".into());
+                    // A lookup started before DHT bootstrap can miss an existing
+                    // record. Retry soon, then back off for genuinely missing posts.
+                    let r = self.runtime.get_mut(&id).unwrap();
+                    r.failures = r.failures.saturating_add(1);
+                    r.next_check = now.saturating_add(
+                        (MISSING_POST_RETRY_MS << r.failures.saturating_sub(1).min(8)).min(POLL_MS),
+                    );
                 }
             }
             Err(e) => {

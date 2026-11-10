@@ -595,6 +595,44 @@ fn nested_manual_open_in_current_mode_retains_source_and_identity() {
     assert!(m.can_approve(&id, &hex(&nested.feed.infohash())));
 }
 #[test]
+fn missing_first_post_record_retries_as_dht_bootstraps() {
+    let mut m = PostManager::new();
+    let id = m
+        .follow(&format_magnet(&key()), Config::default(), 0)
+        .unwrap();
+    let first = acts(&mut m)
+        .into_iter()
+        .find_map(|a| match a {
+            Action::Lookup { work, .. } => Some(work),
+            _ => None,
+        })
+        .unwrap();
+    m.lookup_result(first, Ok(None), 16_000);
+    assert_eq!(m.views()[0].state, "Resolving post");
+    m.tick(20_999);
+    assert!(!acts(&mut m)
+        .iter()
+        .any(|a| matches!(a, Action::Lookup { .. })));
+    m.tick(21_000);
+    let second = acts(&mut m)
+        .into_iter()
+        .find_map(|a| match a {
+            Action::Lookup { work, post, .. } if post == id => Some(work),
+            _ => None,
+        })
+        .unwrap();
+    m.lookup_result(second, Ok(None), 37_000);
+    m.tick(46_999);
+    assert!(!acts(&mut m)
+        .iter()
+        .any(|a| matches!(a, Action::Lookup { .. })));
+    m.tick(47_000);
+    assert!(acts(&mut m)
+        .iter()
+        .any(|a| matches!(a, Action::Lookup { .. })));
+}
+
+#[test]
 fn absence_or_invalid_record_never_removes_known_catalog() {
     let b = catalog(&[vec![1]], Default::default());
     let (mut m, id) = setup(Mode::CurrentCatalog, None);
