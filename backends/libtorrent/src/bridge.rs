@@ -1,6 +1,11 @@
 #[allow(clippy::too_many_arguments)]
 #[cxx::bridge(namespace = "ft")]
 pub mod ffi {
+    struct NativeInput {
+        name: String,
+        source: String,
+        length: u64,
+    }
     struct NativeFile {
         name: String,
         length: u64,
@@ -66,6 +71,14 @@ pub mod ffi {
     unsafe extern "C++" {
         include!("src/native/engine.h");
         type Session;
+        type TorrentBuilder;
+        fn torrent_builder(name: &str, files: &[NativeInput]) -> Result<UniquePtr<TorrentBuilder>>;
+        fn torrent_verifier(
+            data: &[u8],
+            files: &[NativeInput],
+        ) -> Result<UniquePtr<TorrentBuilder>>;
+        fn step(self: Pin<&mut TorrentBuilder>) -> Result<u64>;
+        fn finish(self: &TorrentBuilder) -> Result<Vec<u8>>;
         fn new_session(
             state_dir: &str,
             port: u16,

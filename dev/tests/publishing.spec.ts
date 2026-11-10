@@ -22,36 +22,10 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
       if (!r.url().startsWith(app.url)) external.push(r.url());
     });
     await page.goto(app.url);
-    await expect(page.locator("#post-add")).toBeEnabled();
-    await expect(page.locator("#post-add")).toHaveAccessibleName("Create post");
-    await expect(page.locator("#post-add-menu")).toHaveCount(0);
-    await page.locator("#post-add").focus();
-    await page.keyboard.press("Enter");
-    await expect(page.locator("#own-create-dialog")).toBeVisible();
-    await expect(page.locator("#own-create-title")).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(page.locator("#own-create-dialog")).toBeHidden();
-    await expect(page.locator("#post-add")).toBeFocused();
-    await page.keyboard.press("Space");
-    await expect(page.locator("#own-create-dialog")).toBeVisible();
-    await page.locator("#own-create-dialog [data-close]").click();
-    await expect(page.locator("#post-add")).toBeFocused();
-    await page.locator("#post-add").click();
-    await expect(page.locator("#own-create-dialog")).toBeVisible();
-    await expect(
-      page.locator("#own-create-dialog [data-close] svg"),
-    ).toBeVisible();
-    await page.locator("#own-create-title").fill("Field notes");
-    await page.mouse.click(2, 2);
-    await expect(page.locator("#own-create-dialog")).toBeHidden();
-    await page.locator("#post-add").click();
-    await expect(page.locator("#own-create-title")).toHaveValue("Field notes");
-    await page
-      .locator("#own-key-password")
-      .fill("a test publishing passphrase");
-    await page.locator("#own-key-confirm").fill("a test publishing passphrase");
-    await page.locator("#own-create-submit").click();
-    await expect(page.locator("#own-create-dialog")).toBeHidden();
+    const password='a test publishing passphrase';
+    await app.api('/api/publishing',{action:'create_key',password,confirmation:password});
+    const {id}=await app.api('/api/publishing',{action:'create_post',title:'Field notes'});
+    await page.goto(app.url+'/#/own/'+id);
     await expect(page.locator("#own-title")).toHaveValue("Field notes");
     await expect(page.locator("#own-editor")).toBeVisible();
     await expect(page.locator("#own-toggle")).toHaveText("Public view");
@@ -69,7 +43,6 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.reload();await expect(page.locator("#own-preview")).toBeVisible();
     await page.locator("#own-toggle").click();
     await expect(page.locator("#transfers-nav")).toHaveAttribute("aria-current","false");
-    await expect(page.locator("#own-key-password")).toHaveValue("");
     await page
       .locator("#own-body")
       .fill(

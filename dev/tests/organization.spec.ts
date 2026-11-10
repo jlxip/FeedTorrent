@@ -95,8 +95,8 @@ test('touch alternative, move drafts, mobile menus and first/last positions',asy
     await page.locator('#post-move-dialog [data-close]').click();await page.locator('#sections-button').click();await x.row(a).getByRole('button',{name:'Actions for Alpha'}).click();await page.getByRole('menuitem',{name:'Move…'}).click();
     await expect(page.locator('#post-move-parent')).toHaveValue(f);await expect(page.locator('#post-move-position')).toHaveValue('last');await page.locator('#post-move-submit').click();
     await expect.poll(async()=>((await x.app.api()).organization.nodes.find(n=>n.key===a).parent)).toBe(f);
-    await page.locator('#sections-button').click();await page.locator('#post-add').click();await expect(page.locator('#own-create-dialog')).toBeVisible();
-    await page.locator('#own-create-dialog [data-close]').click();
+    await page.locator('#sections-button').click();await page.locator('#post-add').click();await expect(page.locator('#creation-view')).toBeVisible();
+    await page.locator('#creation-delete').click();
     // Real touch input opens the accessible alternative; Chromium also drives a native touch drag.
     const context=await browser.newContext({viewport:{width:320,height:740},hasTouch:true});const touch=await context.newPage();
     await touch.goto(x.app.url+'/#/library');await touch.locator('#sections-button').tap();

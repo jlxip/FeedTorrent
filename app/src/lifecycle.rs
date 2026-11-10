@@ -926,7 +926,7 @@ impl Engine {
                     }
                     fs::remove_dir_all(&record.path).context("Cannot delete downloaded files")?;
                 }
-                for suffix in ["source", "resume", "info", "transfer.json"] {
+                for suffix in ["source", "resume", "info", "transfer.json", "external"] {
                     let file = storage::sidecar(record, suffix)?;
                     if file.exists() {
                         reject_symlinks(&file)?;

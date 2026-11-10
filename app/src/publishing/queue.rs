@@ -81,7 +81,7 @@ struct Running {
 pub(super) struct Work {
     id: String,
     operation: u64,
-    cancel: Arc<AtomicBool>,
+    pub(super) cancel: Arc<AtomicBool>,
     secrets: Secrets,
     tx: mpsc::SyncSender<Message>,
 }
@@ -358,6 +358,71 @@ impl Manager {
         let lib = &mut self.lib;
         let dir = &self.dir;
         match command {
+            Command::CreateFromDraft {
+                token,
+                draft,
+                password,
+                confirmation,
+            } => {
+                if !valid_id(&token) {
+                    bail!("Invalid draft identity");
+                }
+                draft.validate()?;
+                let mut c = lib.clone();
+                if c.vault.is_none() {
+                    if password.0 != confirmation.0 {
+                        bail!("Passwords do not match");
+                    }
+                    c.vault = Some(Vault::create(&password)?);
+                }
+                let v = c.vault.as_ref().context("No publishing key")?;
+                drop(v.unlock(&password)?);
+                let key = MutableKey::new(
+                    unhex(&v.public_key)?
+                        .try_into()
+                        .map_err(|_| anyhow!("Invalid key"))?,
+                    format!("draft:{token}").into_bytes(),
+                )?;
+                let id = hex(&key.target());
+                if c.posts.contains_key(&id) {
+                    return Ok(serde_json::json!({"id":id,"revision":c.posts[&id].revision}));
+                }
+                if c.posts.len() >= 256 {
+                    bail!("Publishing library has 256 posts");
+                }
+                let title = draft
+                    .pages
+                    .iter()
+                    .find(|p| p.id == draft.root)
+                    .context("Root unavailable")?
+                    .title
+                    .clone();
+                c.posts.insert(
+                    id.clone(),
+                    Owned {
+                        id: id.clone(),
+                        magnet: bep46::format_magnet(&key),
+                        title,
+                        draft,
+                        revision: 1,
+                        published_revision: 0,
+                        published_sequence: None,
+                        published: None,
+                        changed_at_us: crate::organization::now_us(),
+                        signed_revision: 0,
+                        pages: BTreeMap::new(),
+                        record: None,
+                        history: vec![],
+                        active: true,
+                        state: "Draft".into(),
+                        error: String::new(),
+                        pending: None,
+                    },
+                );
+                persist(dir, &c)?;
+                *lib = c;
+                Ok(serde_json::json!({"id":id,"revision":1}))
+            }
             Command::Preview { body } => {
                 Ok(serde_json::json!({"body":feedtorrent_posts::markdown::parse(&body)?}))
             }
@@ -901,7 +966,7 @@ impl Manager {
                 }
             }
             Message::Import {
-                bytes,
+                path,
                 password,
                 reply,
             } => {
@@ -910,10 +975,15 @@ impl Manager {
                 } else if self.running.is_empty()
                     && self.lib.posts.values().all(|f| f.pending.is_none())
                 {
-                    backup::import(&self.dir, &self.lib, &bytes, &password).map(|lib| {
-                        self.lib = lib;
-                        serde_json::json!({"ok":true})
-                    })
+                    File::open(path)
+                        .map_err(Into::into)
+                        .and_then(|file| {
+                            backup::import_reader(&self.dir, &self.lib, file, &password)
+                        })
+                        .map(|lib| {
+                            self.lib = lib;
+                            serde_json::json!({"ok":true})
+                        })
                 } else {
                     Err(anyhow!("Wait for pending publications before importing"))
                 };

@@ -18,6 +18,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 mod backup;
+pub(crate) mod files;
 pub mod http;
 mod native;
 mod queue;
@@ -151,8 +152,8 @@ fn reader_dates(dir: &Path, f: &Owned) -> serde_json::Value {
     let mut previous = BTreeMap::new();
     let mut dates = BTreeMap::new();
     for (&id, page) in &published.pages {
-        let pack = package(dir, &page.hash).ok();
-        let date = pack.as_ref().and_then(package_dates);
+        let pack = files::paths(dir, &page.hash).ok();
+        let date = files::dates(dir, &page.hash);
         dates.insert(id, date);
         if let Some(pack) = pack {
             previous.insert(
@@ -165,10 +166,18 @@ fn reader_dates(dir: &Path, f: &Owned) -> serde_json::Value {
             );
         }
     }
-    let matches = bep46::parse_magnet(&f.magnet)
-        .ok()
-        .and_then(|key| f.draft.preview(&key, &previous).ok())
-        .is_some_and(|built| hex(&built.root) == published.root);
+    let matches = if f.draft.pages.iter().any(|p| {
+        p.entries
+            .iter()
+            .any(|e| matches!(e, feedtorrent_posts::publishing::Entry::Files { .. }))
+    }) {
+        f.revision == f.published_revision
+    } else {
+        bep46::parse_magnet(&f.magnet)
+            .ok()
+            .and_then(|key| f.draft.preview(&key, &previous).ok())
+            .is_some_and(|built| hex(&built.root) == published.root)
+    };
     serde_json::json!({"published_dates":dates,"draft_differs":!matches})
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -205,6 +214,12 @@ struct CatalogData {
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    CreateFromDraft {
+        token: String,
+        draft: Draft,
+        password: Password,
+        confirmation: Password,
+    },
     Preview {
         body: String,
     },
@@ -299,7 +314,7 @@ enum Message {
         reply: oneshot::Sender<std::result::Result<PathBuf, String>>,
     },
     Import {
-        bytes: Vec<u8>,
+        path: PathBuf,
         password: Password,
         reply: oneshot::Sender<std::result::Result<serde_json::Value, String>>,
     },
@@ -331,15 +346,15 @@ impl Client {
         rx.await
             .map_err(|_| "Publishing service stopped".to_string())?
     }
-    pub async fn import(
+    pub async fn import_file(
         &self,
-        bytes: Vec<u8>,
+        path: PathBuf,
         password: Password,
     ) -> std::result::Result<serde_json::Value, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .try_send(Message::Import {
-                bytes,
+                path,
                 password,
                 reply: tx,
             })
@@ -358,13 +373,13 @@ impl Client {
         let _ = self.tx.send(Message::Stop);
     }
 }
-fn read(path: &Path) -> Result<Vec<u8>> {
+pub(super) fn read(path: &Path) -> Result<Vec<u8>> {
     if fs::metadata(path)?.len() > MAX_LIBRARY as u64 {
         bail!("Publishing data exceeds 256 MiB")
     };
     Ok(fs::read(path)?)
 }
-fn save(path: &Path, data: &[u8]) -> Result<()> {
+pub(super) fn save(path: &Path, data: &[u8]) -> Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let tmp = path.with_extension(format!("tmp-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -578,17 +593,6 @@ fn package(dir: &Path, hash: &str) -> Result<CatalogData> {
     };
     Ok(p)
 }
-fn package_dates(pack: &CatalogData) -> Option<feedtorrent_posts::dates::Dates> {
-    let entries: Vec<_> = pack
-        .files
-        .iter()
-        .filter(|(path, _)| path == &["metadata", "dates.json"])
-        .collect();
-    if entries.len() != 1 {
-        return None;
-    }
-    feedtorrent_posts::dates::Dates::parse(&entries[0].1)
-}
 fn store_package(dir: &Path, c: &BuiltCatalog) -> Result<String> {
     let id = hex(&Feed::from_metainfo(&c.metainfo)?.infohash());
     let path = package_path(dir, &id)?;
@@ -665,8 +669,8 @@ fn publish(
             .pages
             .iter()
             .map(|(id, p)| {
-                let pack = package(dir, &p.hash)?;
-                let dates = package_dates(&pack);
+                let pack = files::paths(dir, &p.hash)?;
+                let dates = files::dates(dir, &p.hash);
                 Ok((
                     *id,
                     Previous {
@@ -681,50 +685,99 @@ fn publish(
             .as_ref()
             .map(|r| TorrentPointer::from_record(&key, r.clone()).map(|p| p.infohash()))
             .transpose()?;
-        let built = pending.draft.build_with_previous_root(
-            &key,
-            &previous,
-            previous_root,
-            pending
-                .prepared_at
-                .context("Publication has no preparation time")?,
-        )?;
-        work.check()?;
-        for c in &built.catalogs {
-            work.check()?;
-            let (post, operation) = work.identity();
-            work.call(
-                native,
-                Native::Reserve {
-                    post: post.into(),
-                    operation,
-                    metainfo: c.metainfo.clone(),
-                },
-            )?;
-            let children = c
-                .files
+        let streamed = pending.draft.pages.iter().any(|p| {
+            p.entries
                 .iter()
-                .filter_map(
-                    |file| match feedtorrent_bep::bep49::inspect_item(&file.data) {
-                        feedtorrent_bep::bep49::ItemContent::Torrent(t) => Some(hex(&t.infohash())),
-                        _ => None,
+                .any(|e| matches!(e, feedtorrent_posts::publishing::Entry::Files { .. }))
+        });
+        let (root, built_pages) = if streamed {
+            work.phase("Preparing")?;
+            let built = files::build(dir, pending, &key, &previous, previous_root, native, work)?;
+            for c in &built.catalogs {
+                work.check()?;
+                let (post, operation) = work.identity();
+                work.call(
+                    native,
+                    Native::Reserve {
+                        post: post.into(),
+                        operation,
+                        metainfo: c.metainfo.clone(),
                     },
-                )
-                .collect();
-            let parent = hex(&Feed::from_metainfo(&c.metainfo)?.infohash());
-            work.call(
-                native,
-                Native::Link {
-                    post: post.into(),
-                    operation,
-                    parent,
-                    children,
-                },
+                )?;
+                let children = c
+                    .files
+                    .iter()
+                    .filter_map(|file| {
+                        if let feedtorrent_posts::publishing::StreamData::Bytes(data) = &file.data {
+                            if let feedtorrent_bep::bep49::ItemContent::Torrent(t) =
+                                feedtorrent_bep::bep49::inspect_item(data)
+                            {
+                                return Some(hex(&t.infohash()));
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                work.call(
+                    native,
+                    Native::Link {
+                        post: post.into(),
+                        operation,
+                        parent: hex(&Feed::from_metainfo(&c.metainfo)?.infohash()),
+                        children,
+                    },
+                )?;
+                files::store(dir, c, work)?;
+            }
+            (built.root, built.pages)
+        } else {
+            let built = pending.draft.build_with_previous_root(
+                &key,
+                &previous,
+                previous_root,
+                pending
+                    .prepared_at
+                    .context("Publication has no preparation time")?,
             )?;
-            store_package(dir, c)?;
-        }
-        let pages = built
-            .pages
+            work.check()?;
+            for c in &built.catalogs {
+                work.check()?;
+                let (post, operation) = work.identity();
+                work.call(
+                    native,
+                    Native::Reserve {
+                        post: post.into(),
+                        operation,
+                        metainfo: c.metainfo.clone(),
+                    },
+                )?;
+                let children = c
+                    .files
+                    .iter()
+                    .filter_map(
+                        |file| match feedtorrent_bep::bep49::inspect_item(&file.data) {
+                            feedtorrent_bep::bep49::ItemContent::Torrent(t) => {
+                                Some(hex(&t.infohash()))
+                            }
+                            _ => None,
+                        },
+                    )
+                    .collect();
+                let parent = hex(&Feed::from_metainfo(&c.metainfo)?.infohash());
+                work.call(
+                    native,
+                    Native::Link {
+                        post: post.into(),
+                        operation,
+                        parent,
+                        children,
+                    },
+                )?;
+                store_package(dir, c)?;
+            }
+            (built.root, built.pages)
+        };
+        let pages = built_pages
             .into_iter()
             .map(|(id, p)| {
                 Ok((
@@ -744,7 +797,7 @@ fn publish(
             .max(remote.as_ref().map_or(-1, |r| r.sequence))
             .checked_add(1)
             .context("BEP 44 sequence exhausted")?;
-        let pointer = TorrentPointer::sign(&signer, built.root, seq, key.salt().to_vec())?;
+        let pointer = TorrentPointer::sign(&signer, root, seq, key.salt().to_vec())?;
         drop(signer);
         let record = SignedRecord::from_record(pointer.record());
         (record, pages)
@@ -770,7 +823,8 @@ fn seed_pages(
     let mut seeds = vec![];
     for p in pages.values() {
         work.check()?;
-        let pack = package(dir, &p.hash)?;
+        let pack = files::paths(dir, &p.hash)?;
+        files::verify(&pack)?;
         let (post, operation) = work.identity();
         work.call(
             native,
@@ -782,27 +836,15 @@ fn seed_pages(
         )?;
         let NativeReply::Location(path) = work.call(native, Native::Location(p.hash.clone()))?
         else {
-            bail!("Invalid transfer path response")
+            bail!("Invalid transfer path response");
         };
-        let post = Feed::from_metainfo(&pack.metainfo)?;
-        for (parts, bytes) in &pack.files {
-            work.check()?;
-            if !post
-                .entries()
-                .iter()
-                .any(|f| f.path() == *parts && f.length() == bytes.len() as u64)
-            {
-                bail!("Saved payload disagrees with metadata")
-            }
-            let target = parts.iter().fold(path.join(post.name()), |p, n| p.join(n));
-            fs::create_dir_all(target.parent().context("Missing catalog directory")?)?;
-            reject_symlinks(&path)?;
-            if target.exists() {
-                if read(&target)? != *bytes {
-                    bail!("Existing catalog file differs; files preserved")
+        let feed = Feed::from_metainfo(&pack.metainfo)?;
+        if path != package_path(dir, &p.hash)? {
+            for (parts, source) in &pack.files {
+                let target = parts.iter().fold(path.join(feed.name()), |p, n| p.join(n));
+                if !target.exists() {
+                    crate::creation::copy_stream(source, &target, &work.cancel)?;
                 }
-            } else {
-                save(&target, bytes)?
             }
         }
         seeds.push(Seed {

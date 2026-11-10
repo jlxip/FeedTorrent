@@ -1,5 +1,6 @@
 //! Native libtorrent adapter. CXX types remain private to this crate.
 mod bridge;
+pub mod creation;
 mod dht;
 use bridge::ffi;
 use feedtorrent_bep::{

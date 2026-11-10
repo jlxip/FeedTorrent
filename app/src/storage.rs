@@ -119,7 +119,7 @@ pub(super) fn move_record(record: &Record, root: &Path) -> Result<Record> {
         )
     }
     reject_symlinks(&record.path)?;
-    for suffix in ["source", "resume", "info", "transfer.json"] {
+    for suffix in ["source", "resume", "info", "transfer.json", "external"] {
         if root.join(format!("{}.{suffix}", record.id)).exists() {
             bail!(
                 "Destination metadata conflicts for {}; files preserved",
@@ -133,7 +133,7 @@ pub(super) fn move_record(record: &Record, root: &Path) -> Result<Record> {
     // Make the destination self-contained before moving its payload. A crash
     // before the rename leaves the original complete; after it, the new root
     // can be discovered even if the central registry still names the old path.
-    for suffix in ["source", "resume", "info", "transfer.json"] {
+    for suffix in ["source", "resume", "info", "transfer.json", "external"] {
         let from = sidecar(record, suffix)?;
         if from.exists() {
             let to = root.join(format!("{}.{suffix}", record.id));
@@ -159,7 +159,7 @@ pub(super) fn move_record(record: &Record, root: &Path) -> Result<Record> {
         fs::remove_dir_all(&record.path)?;
     }
     moved.path = target;
-    for suffix in ["source", "resume", "info", "transfer.json"] {
+    for suffix in ["source", "resume", "info", "transfer.json", "external"] {
         let from = sidecar(record, suffix)?;
         if from.exists() {
             fs::remove_file(from)?;

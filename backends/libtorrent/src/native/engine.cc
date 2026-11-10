@@ -9,6 +9,7 @@
 #include <libtorrent/bdecode.hpp>
 #include <libtorrent/bencode.hpp>
 #include <libtorrent/entry.hpp>
+#include <libtorrent/create_torrent.hpp>
 #include <libtorrent/extensions/ut_metadata.hpp>
 #include <libtorrent/extensions/ut_pex.hpp>
 #include <libtorrent/hasher.hpp>
@@ -32,6 +33,101 @@ namespace lt = libtorrent;
 namespace fs = std::filesystem;
 namespace ft {
 static std::string str(rust::Str s) { return std::string(s); }
+struct TorrentBuilder::Impl {
+  std::vector<lt::create_file_entry> files;
+  std::vector<std::string> sources;
+  std::unique_ptr<lt::create_torrent> torrent;
+  std::ifstream input;
+  std::size_t file = 0;
+  std::int64_t remaining = 0;
+  std::uint64_t done = 0;
+  int piece = 0;
+  bool padding = false;
+  std::shared_ptr<lt::torrent_info const> expected;
+  std::vector<std::uint8_t> original;
+};
+TorrentBuilder::TorrentBuilder(rust::Str name, rust::Slice<const NativeInput> files) : impl(new Impl) {
+  auto title = str(name);
+  if (title.empty() || fs::path(title).filename() != title || title == "." || title == "..")
+    throw std::runtime_error("Invalid torrent title");
+  std::set<std::string> names;
+  for (auto const& f : files) {
+    fs::path path(std::string(f.name));
+    if (path.empty() || path.is_absolute() || !names.insert(path.generic_string()).second)
+      throw std::runtime_error("Invalid or duplicate torrent path");
+    for (auto const& p : path) if (p == ".." || p == ".") throw std::runtime_error("Unsafe torrent path");
+    if (f.length > std::uint64_t(INT64_MAX)) throw std::runtime_error("File too large");
+    impl->files.emplace_back(title + "/" + path.generic_string(), std::int64_t(f.length));
+    impl->sources.emplace_back(std::string(f.source));
+  }
+  impl->torrent = std::make_unique<lt::create_torrent>(impl->files, 0, lt::create_torrent::v1_only);
+  impl->torrent->set_creator("FeedTorrent");
+}
+TorrentBuilder::~TorrentBuilder() = default;
+TorrentBuilder::TorrentBuilder(rust::Slice<const std::uint8_t> data, rust::Slice<const NativeInput> files) : impl(new Impl) {
+  if (data.size() > 8 * 1024 * 1024) throw std::runtime_error("Torrent metadata exceeds 8 MiB");
+  auto params=lt::load_torrent_buffer(lt::span<char const>(reinterpret_cast<char const*>(data.data()),int(data.size())));
+  auto& b=*impl; b.expected=params.ti;
+  if (!b.expected || !b.expected->info_hashes().has_v1()) throw std::runtime_error("Expected v1 metainfo");
+  std::set<std::string> used;
+  for(auto index:b.expected->layout().file_range()) {
+    auto const& layout=b.expected->layout();auto name=layout.file_path(index);std::string source;
+    if (!layout.pad_file_at(index)) {
+      auto it=std::find_if(files.begin(),files.end(),[&](auto const& f){return std::string(f.name)==name;});
+      if(it==files.end() || it->length!=std::uint64_t(layout.file_size(index)) || !used.insert(name).second) throw std::runtime_error("Missing or mismatched torrent payload");
+      source=std::string(it->source);
+    }
+    b.files.emplace_back(name,layout.file_size(index),layout.file_flags(index));b.sources.push_back(source);
+  }
+  if(used.size()!=files.size())throw std::runtime_error("Unexpected torrent payload files");
+  b.torrent=std::make_unique<lt::create_torrent>(b.files,b.expected->piece_length(),lt::create_torrent::v1_only);
+  b.original.assign(data.begin(),data.end());
+}
+std::unique_ptr<TorrentBuilder> torrent_verifier(rust::Slice<const std::uint8_t> data,rust::Slice<const NativeInput> files) {
+  return std::make_unique<TorrentBuilder>(data,files);
+}
+std::unique_ptr<TorrentBuilder> torrent_builder(rust::Str name, rust::Slice<const NativeInput> files) {
+  return std::make_unique<TorrentBuilder>(name, files);
+}
+std::uint64_t TorrentBuilder::step() {
+  auto& b = *impl;
+  if (b.piece >= b.torrent->num_pieces()) return b.done;
+  lt::hasher hash;
+  std::vector<char> buffer(64 * 1024);
+  std::int64_t left = b.torrent->piece_size(lt::piece_index_t(b.piece));
+  while (left > 0) {
+    while (b.remaining == 0) {
+      if (b.input.is_open()) { if (b.input.peek() != EOF) throw std::runtime_error("Source file changed size"); b.input.close(); }
+      if (b.file >= b.files.size()) throw std::runtime_error("Incomplete torrent source");
+      auto const index = b.file++;
+      auto const& source = b.sources[index];
+      b.padding=bool(b.files[index].flags & lt::file_storage::flag_pad_file);
+      b.remaining = b.files[index].size;
+      if(b.padding) { if(b.remaining==0)continue; break; }
+      if (!fs::is_regular_file(fs::symlink_status(source))) throw std::runtime_error("Source is no longer a regular file");
+      b.input.open(source, std::ios::binary);
+      if (!b.input) throw std::runtime_error("Cannot open torrent source");
+    }
+    auto n = std::min<std::int64_t>({left, b.remaining, std::int64_t(buffer.size())});
+    if(b.padding)std::fill(buffer.begin(),buffer.begin()+n,0);
+    else {b.input.read(buffer.data(), n);if (b.input.gcount() != n) throw std::runtime_error("Source file changed or cannot be read");}
+    hash.update(buffer.data(), int(n));
+    b.remaining -= n; left -= n; b.done += std::uint64_t(n);
+  }
+  auto digest=hash.final();
+  if(b.expected && digest!=b.expected->hash_for_piece(lt::piece_index_t(b.piece)))throw std::runtime_error("Torrent piece hash mismatch");
+  b.torrent->set_hash(lt::piece_index_t(b.piece++), digest);
+  return b.done;
+}
+rust::Vec<std::uint8_t> TorrentBuilder::finish() const {
+  if (impl->piece != impl->torrent->num_pieces()) throw std::runtime_error("Torrent hashing is incomplete");
+  auto bytes = impl->torrent->generate_buf();
+  if(impl->expected)bytes.assign(impl->original.begin(),impl->original.end());
+  if (bytes.size() > 8 * 1024 * 1024) throw std::runtime_error("Torrent metadata exceeds 8 MiB");
+  rust::Vec<std::uint8_t> out;
+  out.reserve(bytes.size()); for (auto c : bytes) out.push_back(std::uint8_t(c));
+  return out;
+}
 static std::pair<bool, std::int64_t> creation_date(rust::Slice<const std::uint8_t> data) {
   lt::error_code ec;
   auto root = lt::bdecode(lt::span<char const>(reinterpret_cast<char const *>(data.data()), static_cast<int>(data.size())), ec);
@@ -148,7 +244,9 @@ struct Session::Impl {
   std::map<std::string, fs::path> transfer_roots;
   std::map<std::string, std::pair<bool, std::int64_t>> dates;
   std::map<std::string, std::string> errors, warnings;
-  std::set<std::string> metadata_guard, approval_guard, pending;
+  std::set<std::string> metadata_guard, approval_guard, pending, external_guard;
+  struct Original { fs::path path; std::uintmax_t size; fs::file_time_type time; };
+  std::map<std::string, std::vector<Original>> originals;
   std::string warning;
   int nodes = 0;
   int node_metric = -1;
@@ -228,7 +326,7 @@ struct Session::Impl {
             throw std::runtime_error("Missing metadata");
           validate(*ti);
           metadata_guard.erase(id);
-          if (!approval_guard.count(id)) t->handle.unset_flags(lt::torrent_flags::upload_mode);
+          if (!approval_guard.count(id) && !external_guard.count(id)) t->handle.unset_flags(lt::torrent_flags::upload_mode);
         } catch (std::exception const &e) {
           errors[id] = e.what();
           t->handle.pause();
@@ -378,10 +476,42 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
     } catch (std::exception const &e) { impl->warning = "Rebuilding cached metadata: " + std::string(e.what()); }
   }
   p.save_path = str(path);
+  // This local-only sidecar is never part of metainfo or received from peers.
+  // Storage mappings are installed before adding the torrent, not after checking starts.
+  auto mapping = fs::path(str(path)).parent_path() / (key + ".external");
+  if (fs::exists(mapping)) {
+    if (!p.ti || !fs::is_regular_file(fs::symlink_status(mapping)))
+      throw std::runtime_error("Invalid external source manifest");
+    std::ifstream manifest(mapping);
+    std::vector<Impl::Original> originals;
+    std::string line;
+    while (std::getline(manifest, line)) {
+      auto tab = line.find('\t');
+      if (tab == std::string::npos) throw std::runtime_error("Invalid external source entry");
+      int index = -1;
+      for (auto i : p.ti->layout().file_range()) if (p.ti->layout().file_path(i) == line.substr(0, tab)) index = int(i);
+      fs::path original(line.substr(tab + 1));
+      if (index < 0 || index >= p.ti->num_files() || !original.is_absolute() ||
+          !fs::is_regular_file(fs::symlink_status(original)))
+        throw std::runtime_error("External source missing or not a regular file");
+      for (auto parent = original.parent_path(); !parent.empty(); parent = parent.parent_path()) {
+        if (fs::is_symlink(fs::symlink_status(parent))) throw std::runtime_error("External source symlinks are not supported");
+        if (parent == parent.parent_path()) break;
+      }
+      if (fs::file_size(original) != std::uintmax_t(p.ti->layout().file_size(lt::file_index_t(index))))
+        throw std::runtime_error("External source changed size");
+      p.renamed_files[lt::file_index_t(index)] = original.string();
+      originals.push_back({original, fs::file_size(original), fs::last_write_time(original)});
+    }
+    if (originals.empty()) throw std::runtime_error("Empty external source manifest");
+    impl->external_guard.insert(key);
+    impl->originals[key] = std::move(originals);
+  }
   p.flags &= ~lt::torrent_flags::auto_managed;
   p.flags &= ~lt::torrent_flags::seed_mode;
   p.flags &= ~lt::torrent_flags::stop_when_ready;
   p.flags &= ~lt::torrent_flags::upload_mode;
+  if (impl->external_guard.count(key)) p.flags |= lt::torrent_flags::upload_mode;
   p.flags |= lt::torrent_flags::paused;
   if (!held) impl->approval_guard.erase(key);
   if (held) {
@@ -405,12 +535,21 @@ void Session::resume(rust::Str id) {
   if (auto ti = h.torrent_file())
     validate(*ti);
   const bool recover = !impl->errors[str(id)].empty() || bool(h.status().errc);
+  if (impl->external_guard.count(str(id))) {
+    for (auto& f : impl->originals.at(str(id))) {
+      if (!fs::is_regular_file(fs::symlink_status(f.path)) || fs::file_size(f.path) != f.size)
+        throw std::runtime_error("Original file missing or changed size");
+      f.time = fs::last_write_time(f.path);
+    }
+    h.set_flags(lt::torrent_flags::upload_mode);
+    h.force_recheck();
+  }
   impl->errors.erase(str(id));
   if (recover)
     h.pause();
   h.clear_error();
   if (recover && h.torrent_file()) {
-    if (!impl->approval_guard.count(str(id))) h.unset_flags(lt::torrent_flags::upload_mode);
+    if (!impl->approval_guard.count(str(id)) && !impl->external_guard.count(str(id))) h.unset_flags(lt::torrent_flags::upload_mode);
     h.force_recheck();
   }
   h.resume();
@@ -429,6 +568,8 @@ void Session::remove(rust::Str id) {
   impl->dates.erase(key);
   impl->metadata_guard.erase(key);
   impl->approval_guard.erase(key);
+  impl->external_guard.erase(key);
+  impl->originals.erase(key);
   impl->errors.erase(key);
   impl->warnings.erase(key);
   if (impl->transfer_roots.count(key)) {
@@ -444,7 +585,21 @@ NativeSnapshot Session::snapshot() {
   out.listen_port = impl->session->listen_port();
   out.warning = impl->warning;
   for (auto const &[id, h] : impl->handles) {
+    if (impl->external_guard.count(id)) {
+      try {
+        for (auto const& f : impl->originals.at(id)) {
+          if (!fs::is_regular_file(fs::symlink_status(f.path)) || fs::file_size(f.path) != f.size || fs::last_write_time(f.path) != f.time)
+            throw std::runtime_error("Original file changed or disappeared; source files preserved");
+        }
+      } catch (std::exception const& error) {
+        h.pause(); impl->errors[id] = error.what();
+      }
+    }
     auto s = h.status();
+    if (impl->external_guard.count(id) && s.state != lt::torrent_status::checking_files &&
+        s.state != lt::torrent_status::checking_resume_data && !s.is_finished) {
+      h.pause(); impl->errors[id] = "Original files do not match this torrent; files preserved";
+    }
     NativeTransfer t;
     t.id = id;
     t.name = s.name;
@@ -728,6 +883,7 @@ NativeFile Session::file_at(rust::Str id,std::uint32_t index) const {
   return out;
 }
 void Session::allow_download(rust::Str id) {
+  if (impl->external_guard.count(str(id))) throw std::runtime_error("External originals are read-only; recreate this torrent to change its content");
   if (impl->stopped) throw std::runtime_error("Backend closed");
   auto h=impl->handle(id);
   auto ti=h.torrent_file();

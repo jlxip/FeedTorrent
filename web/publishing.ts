@@ -1,3 +1,4 @@
+import {pickServerFiles,type FilesEntry} from './creation.js';
 import {ContentReader,ContentPage,torrentRoute,type ContentHost} from './content.js';
 import type {MarkdownNode} from "./markdown.js";
 import {ReaderHistory,type ReaderEntry} from "./reader.js";
@@ -25,7 +26,7 @@ export interface PublishingState {
   posts: OwnPost[];
   error: string;
 }
-type Entry =
+type Entry = FilesEntry
   | { kind: "page"; page: number }
   | { kind: "torrent"; name: string; data: number[] };
 interface Page {
@@ -104,40 +105,6 @@ export class PublishingUI {
     private host:ContentHost,
   ) {
     this.content=new ContentPage(this.reader,host);
-    $("post-add").onclick = () => {
-      $("own-key-fields").hidden = !!this.state?.publishing.has_key;
-      $("own-create-error").textContent = "";
-      for (const input of $("own-create-form").querySelectorAll("[aria-invalid]")) input.removeAttribute("aria-invalid");
-      $<HTMLDialogElement>("own-create-dialog").showModal();
-      $("own-create-title").focus();
-    };
-    $("own-create-form").onsubmit = async (e) => {
-      e.preventDefault();
-      const submit = $<HTMLButtonElement>("own-create-submit");
-      submit.disabled = true;
-      try {
-        if (!this.state?.publishing.has_key)
-          await api({
-            action: "create_key",
-            password: $<HTMLInputElement>("own-key-password").value,
-            confirmation: $<HTMLInputElement>("own-key-confirm").value,
-          });
-        const result = await api({
-          action: "create_post",
-          title: $<HTMLInputElement>("own-create-title").value,
-        });
-        $<HTMLFormElement>("own-create-form").reset();
-        $<HTMLDialogElement>("own-create-dialog").close();
-        location.hash = `#/own/${result.id}`;
-      } catch (e) {
-        $("own-create-error").textContent = String(e);
-        if (/confirm|match/i.test(String(e)) && $<HTMLInputElement>("own-key-password").value !== $<HTMLInputElement>("own-key-confirm").value) $("own-key-confirm").setAttribute("aria-invalid", "true");
-        else if (/title/i.test(String(e))) $("own-create-title").setAttribute("aria-invalid", "true");
-      } finally {
-        submit.disabled = false;
-        this.clearSecrets("own-create-dialog");
-      }
-    };
     $("own-title").oninput = () => {
       const p = this.page();
       if (p) {
@@ -167,6 +134,11 @@ export class PublishingUI {
       $("own-title").focus();
       $<HTMLInputElement>("own-title").select();
     };
+    $("own-add-files").onclick = async () => {
+      const id=this.id,p=this.page();if(!p)return;
+      try{const entries=await pickServerFiles(id+'/'+p.id);if(!entries||id!==this.id)return;for(const e of entries){e.copy=$<HTMLInputElement>('own-copy-files').checked;p.entries.push(e);}this.changed();this.drawEntries();}catch(e){this.error(e);}
+    };
+    $('own-copy-files').onchange=()=>{const s=this.session();if(!s)return;for(const p of s.draft.pages)for(const e of p.entries)if(e.kind==='files')e.copy=$<HTMLInputElement>('own-copy-files').checked;this.changed();};
     $("own-add-torrent").onclick = () =>
       $<HTMLInputElement>("own-torrent").click();
     $("own-torrent").onchange = async () => {
@@ -267,8 +239,6 @@ export class PublishingUI {
       try {
         const file = $<HTMLInputElement>("own-import-file").files?.[0];
         if (!file) throw Error("Select a backup");
-        if (file.size > 256 * 1024 * 1024)
-          throw Error("Backup exceeds 256 MiB");
         const password = $<HTMLInputElement>("own-import-password").value;
         const encoded = Array.from(new TextEncoder().encode(password))
           .map((b) => b.toString(16).padStart(2, "0"))
@@ -318,7 +288,6 @@ export class PublishingUI {
       }
     };
     for (const id of [
-      "own-create-dialog",
       "own-publish-dialog",
       "publishing-keys-dialog",
     ])
@@ -454,7 +423,7 @@ export class PublishingUI {
       const label =
         e.kind === "page"
           ? button(name, () => this.openPage(e.page), "link")
-          : this.reading
+          : this.reading && e.kind==='torrent'
             ? button(
                 name,
                 () => void this.downloadOwn(e),
@@ -464,8 +433,13 @@ export class PublishingUI {
       label.classList.add("own-entry-name");
       row.append(
         label,
-        element("span", e.kind === "page" ? "Page" : "Torrent", "muted"),
+        element("span", e.kind === "page" ? "Page" : e.kind==='files'?`${e.files.length} files`:"Torrent", "muted"),
       );
+      if(e.kind==='files'){
+        row.classList.add('files-entry');
+        const select=document.createElement('select');select.className='select';select.setAttribute('aria-label',`Include ${name}`);select.add(new Option('Include files','include'));select.add(new Option('Link as torrent','link'));select.value=e.linked?'link':'include';select.onchange=()=>{e.linked=select.value==='link';this.changed();};row.append(select);
+        const details=element('details',''),summary=element('summary','Files');details.append(summary);for(const f of e.files)details.append(element('div',f.path.join('/')+' · '+f.length+' B','muted'));row.append(details);
+      }
       const up = button(
         "↑",
         () => {
@@ -518,6 +492,9 @@ export class PublishingUI {
     const actions=this.reading?$('own-top-actions'):$('own-publish').parentElement!;
     const before=this.reading?$('own-toggle'):$('own-publish');
     for(const id of ['own-retry','own-cancel']){const control=$(id);if(control.parentElement!==actions)actions.insertBefore(control,before);}
+    $('own-file-options').hidden=this.reading;$('own-add-files').hidden=this.reading;
+    const sourceEntries=s?.draft.pages.flatMap(p=>p.entries).filter((e):e is FilesEntry=>e.kind==='files');
+    $<HTMLInputElement>('own-copy-files').checked=sourceEntries?.[0]?.copy??true;
     $("own-new-page").hidden=this.reading;$("own-add-torrent").hidden=this.reading;
     const header=this.reader.header,topActions=$('own-top-actions');
     const target=this.reading?header.identity:this.ownHeadingRow;
@@ -605,13 +582,14 @@ export class PublishingUI {
     this.reader.content(`${this.id}/${p.id}`,tree,target=>{
       if(target.startsWith('magnet:'))return ()=>this.link(target);
       let name:string;try{name=decodeURIComponent(target).replace(/^\.\//,'');}catch{return null;}
-      const entry=p.entries.find(e=>(e.kind==='torrent'?e.name:s.draft.pages.find(p=>p.id===e.page)?.title+'.torrent')===name);
+      const entry=p.entries.find(e=>(e.kind!=='page'?e.name:s.draft.pages.find(p=>p.id===e.page)?.title+'.torrent')===name);
       if(entry?.kind==='page')return ()=>this.openPage(entry.page);
       if(entry?.kind==='torrent')return ()=>{const id=this.torrentIds.get(entry.data);if(id&&this.state?.transfers.some(t=>t.id===id))location.hash=this.readHref(p.id)+'/torrent/'+id;else void this.downloadOwn(entry);};
       return null;
     });
     const entries:ReaderEntry[]=p.entries.map((e,index)=>{
       if(e.kind==='page'){const page=s.draft.pages.find(p=>p.id===e.page);return {key:String(index),name:page?.title||'Page unavailable',kind:'page',href:page?this.readHref(e.page):undefined};}
+      if(e.kind==='files')return {key:String(index),name:e.name,kind:'file',size:e.files.reduce((n,f)=>n+f.length,0)};
       const id=this.torrentIds.get(e.data),t=this.state?.transfers.find(t=>t.id===id);
       return {key:String(index),name:e.name,kind:'torrent',size:t?.total,href:id?this.readHref(p.id)+'/torrent/'+id:undefined,label:t?undefined:'Download',disabled:!id,actionDisabled:!this.connected||!id||this.adding.has(e.data),action:()=>void this.downloadOwn(e)};
     });
@@ -788,15 +766,12 @@ export class PublishingUI {
   }
   private async export(full: boolean) {
     try {
-      const r = await fetch(`./api/publishing/backup?full=${full}`);
-      if (!r.ok) throw Error((await r.json()).error);
-      const blob = await r.blob(),
-        url = URL.createObjectURL(blob),
-        a = document.createElement("a");
-      a.href = url;
-      a.download = full ? "feedtorrent-publishing.tar" : "feedtorrent-keys.tar";
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('own-keys-status').textContent='Preparing backup…';
+      const r = await fetch(`./api/publishing/backup?full=${full}&prepare=true`);
+      const value=await r.json();if(!r.ok)throw Error(value.error);
+      const a=document.createElement('a');a.href=`./api/publishing/backup?full=${full}&token=${encodeURIComponent(value.token)}`;
+      a.download=full?'feedtorrent-publishing.tar':'feedtorrent-keys.tar';a.click();
+      $('own-keys-status').textContent='Backup ready';
     } catch (e) {
       $("own-keys-status").textContent = String(e);
     }

@@ -1,3 +1,4 @@
+import {CreationUI} from './creation.js';
 import {size} from './reader.js';
 import {OrganizationUI} from "./organization.js";
 import {LibraryUI} from "./library.js";
@@ -198,6 +199,7 @@ const organizationUI = new OrganizationUI(async c => {
   try { return await command(c); }
   catch (error) { await sync().catch(() => {}); throw error; }
 },async (id,revision)=>{await publishingUI.removePost(id,()=>command({type:'delete_post',post_kind:'own',id,revision}));await sync();},id=>postUI.removed(id));
+const creationUI=new CreationUI();
 async function action(c: Command) {
   try {
     notice("");
@@ -241,6 +243,7 @@ function render() {
   newsUI.render(state,connected);
   organizationUI.render(state,connected);
   renderCleanup();
+  creationUI.render(state,connected);
 }
 async function sync() {
   const r = await fetch("./api/snapshot");

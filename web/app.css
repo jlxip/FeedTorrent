@@ -333,3 +333,19 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .reader-dates {display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;max-width:720px;margin:8px 0 16px;color:var(--muted-foreground);font-size:12px;line-height:1.6;}
 .reader-dates>span {display:inline-flex;flex-wrap:wrap;gap:4px;}
 .reader-dates .badge {font-size:11px;white-space:normal;}
+
+.creation-options {display:flex;gap:24px;flex-wrap:wrap;margin-bottom:18px;}
+#creation-view .own-fields {margin-bottom:18px;}
+#source-entries {max-height:45vh;overflow-y:auto;margin-block:14px;}
+.source-row {display:flex;align-items:center;gap:10px;min-width:0;padding-block:6px;}
+.source-row .source-name {flex:1;min-width:0;overflow-wrap:anywhere;text-align:left;}
+#creation-library {display:grid;gap:14px;margin-bottom:14px;}
+#creation-entries .own-entry, #source-entries .source-row {flex-wrap:wrap;}
+#creation-share {margin-bottom:14px;}
+
+.creation-options > .field {min-width:0;flex:1 1 240px;}
+.creation-options .field-tooltip {max-width:min(280px,calc(100vw - 64px));}
+
+.own-entry.creation-entry, .own-entry.files-entry {display:flex;flex-wrap:wrap;}
+.creation-entry > .own-entry-name, .files-entry > .own-entry-name {flex:1 1 180px;}
+.creation-entry details, .files-entry details {min-width:0;overflow-wrap:anywhere;}

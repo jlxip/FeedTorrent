@@ -232,10 +232,10 @@ export async function tracker() {
     stop: () => new Promise((r) => server.close(r)),
   };
 }
-export async function dhtNetwork() {
+export async function dhtNetwork({verify} = {}) {
   const nodes = [];
   for (let i = 0; i < 3; i++) {
-    const n = new DHT({ bootstrap: false, host: "127.0.0.1" });
+    const n = new DHT({ bootstrap: false, host: "127.0.0.1", verify });
     n.on("error", () => {});
     await new Promise((r) => n.listen(0, "127.0.0.1", r));
     nodes.push(n);

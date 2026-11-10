@@ -1,4 +1,5 @@
 mod content;
+mod creation;
 mod desktop;
 mod lifecycle;
 mod organization;
@@ -139,6 +140,12 @@ struct Snapshot {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    #[serde(skip)]
+    AdoptCreated {
+        data: Vec<u8>,
+        stage: PathBuf,
+        external: String,
+    },
     PreviewRemoval {
         target: lifecycle::Target,
     },
@@ -282,6 +289,7 @@ struct Job {
 }
 #[derive(Clone)]
 struct App {
+    creation: Arc<creation::Service>,
     publishing: publishing::Client,
     jobs: mpsc::SyncSender<Job>,
     view: watch::Receiver<Snapshot>,
@@ -554,6 +562,63 @@ impl Engine {
     }
     fn apply(&mut self, command: Command) -> Result<()> {
         match command {
+            Command::AdoptCreated {
+                data,
+                stage,
+                external,
+            } => {
+                let id = self.native.inspect(TorrentSource::Torrent(&data))?;
+                if self.store.records.iter().any(|r| r.id == id) {
+                    bail!("This torrent is already in Library; existing files preserved");
+                }
+                let root = ensure_directory(Path::new(&self.store.settings.download_dir))?;
+                let target = root.join(&id);
+                if fs::canonicalize(stage.parent().context("Missing creation directory")?)? != root
+                    || !stage
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|s| s.starts_with(".create-"))
+                {
+                    bail!("Creation location changed; retry");
+                }
+                reject_symlinks(&stage)?;
+                if target.exists() || root.join(format!("{id}.source")).exists() {
+                    bail!("Torrent destination exists; files preserved");
+                }
+                let before = self.store.clone();
+                fs::rename(&stage, &target)?;
+                let _ = fs::remove_file(target.join(".creation-owner"));
+                let result = (|| -> Result<()> {
+                    if !external.is_empty() {
+                        publishing::save(
+                            &root.join(format!("{id}.external")),
+                            external.as_bytes(),
+                        )?;
+                    }
+                    self.reserve_source(data, false, None, "content", false, false)?;
+                    let r = self
+                        .store
+                        .records
+                        .iter_mut()
+                        .find(|r| r.id == id)
+                        .context("Created torrent unavailable")?;
+                    r.seed = true;
+                    r.active = true;
+                    self.persist()?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    let _ = self.native.remove(&id);
+                    let _ = fs::remove_dir_all(&target);
+                    for suffix in ["source", "resume", "info", "transfer.json", "external"] {
+                        let _ = fs::remove_file(root.join(format!("{id}.{suffix}")));
+                    }
+                    self.store = before;
+                    self.failures.remove(&id);
+                    self.persist()?;
+                    return Err(error);
+                }
+            }
             Command::OrganizePost {
                 revision,
                 key,
@@ -726,14 +791,17 @@ impl Engine {
                     if !f.ready {
                         bail!("File is not complete");
                     }
-                    r.path.join(&f.name)
+                    self.verified_path(&id, &f.name)?
                 } else {
-                    r.path.clone()
+                    let external = publishing::files::external(&r.path)?;
+                    external
+                        .values()
+                        .next()
+                        .and_then(|p| p.parent())
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| r.path.clone())
                 };
-                let canonical = fs::canonicalize(&path)?;
-                if !canonical.starts_with(fs::canonicalize(&r.path)?) {
-                    bail!("Unsafe file path");
-                }
+                let canonical = fs::canonicalize(path)?;
                 desktop::reveal(&canonical)?;
             }
             Command::Configure { mut settings } => {
@@ -1212,6 +1280,10 @@ async fn command(
 }
 async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
     let (content_type, bytes): (&str, &[u8]) = match name.as_str() {
+        "creation.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/creation.js"),
+        ),
         "main.js" => ("text/javascript", include_bytes!("../../web/dist/main.js")),
         "publishing.js" => (
             "text/javascript",
@@ -1334,6 +1406,9 @@ async fn main() -> Result<()> {
         organization: organization::View::default(),
         cleanup: vec![],
     };
+    creation::cleanup_staging(&downloads, &dir)?;
+    creation::cleanup_staging(&published, &dir)?;
+    let creation = creation::Service::new(&dir)?;
     let (publication_tx, publication_rx) = mpsc::sync_channel(16);
     let (publishing, publishing_thread) = publishing::start(&dir, publication_tx)?;
     let publication_view = publishing.view.clone();
@@ -1419,6 +1494,7 @@ async fn main() -> Result<()> {
     getrandom::fill(&mut token).map_err(|e| anyhow!("Cannot create session token: {e}"))?;
     let token = token.iter().map(|b| format!("{b:02x}")).collect();
     let app = Arc::new(App {
+        creation: creation.clone(),
         publishing: publishing.clone(),
         jobs,
         view,
@@ -1467,13 +1543,18 @@ async fn main() -> Result<()> {
         .route("/api/events", get(events))
         .route("/api/commands", post(command))
         .route(
+            "/api/creation",
+            post(creation::command).layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
+        )
+        .route("/api/torrent", get(creation::torrent_file))
+        .route(
             "/api/publishing",
             post(publishing::http::command).layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
         )
         .route("/api/publishing/backup", get(publishing::http::export))
         .route(
             "/api/publishing/import",
-            post(publishing::http::import).layer(DefaultBodyLimit::max(256 * 1024 * 1024)),
+            post(publishing::http::import).layer(DefaultBodyLimit::disable()),
         )
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
@@ -1495,6 +1576,7 @@ async fn main() -> Result<()> {
             {
                 let _ = tokio::signal::ctrl_c().await;
             }
+            creation.close().await;
             let _ = stop.send(());
         })
         .await?;

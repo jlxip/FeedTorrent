@@ -559,6 +559,9 @@ impl PostHost {
 impl Engine {
     pub(super) fn verified_path(&self, id: &str, name: &str) -> Result<PathBuf> {
         let root = &self.record(id)?.path;
+        if let Some(path) = publishing::files::external(root)?.get(name) {
+            return crate::creation::source_path(path);
+        }
         let path = root.join(name);
         if path.strip_prefix(root).is_err() {
             bail!("Unsafe catalog file path")

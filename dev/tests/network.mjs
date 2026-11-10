@@ -288,12 +288,14 @@ async function quota() {
       await exec("cc", ["-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror", "dev/fixtures/enospc.c", "-o", shim, ...(process.platform === "linux" ? ["-ldl"] : [])]);
       await writeFile(flag, "active");
     } else {
+      // APFS preserves sparse file length when data blocks run out. HFS+
+      // can fail preallocation and leave an empty file that later reads hit EOF.
       await exec("hdiutil", [
         "create",
         "-size",
-        "20m",
+        "128m",
         "-fs",
-        "HFS+",
+        "APFS",
         "-volname",
         "FeedTorrentQuota",
         "-quiet",
@@ -346,6 +348,13 @@ async function quota() {
       30000,
     );
     assert.match(failure.error, /space|disk|quota/i);
+    if (!injected) {
+      const partial = await stat(join(downloads, ref.id, "source/file-0.bin"));
+      const allocated = partial.blocks * 512;
+      assert.equal(partial.size, ref.originals[0].length);
+      assert(allocated > 0 && allocated < partial.size,
+        "The full-volume fixture must write only part of the sparse payload");
+    }
     check(injected ? "isolated native ENOSPC write injection" : "real filesystem full error", {
       error: failure.error,
       verified: failure.verified,

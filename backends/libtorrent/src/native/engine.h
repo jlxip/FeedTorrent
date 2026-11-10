@@ -8,6 +8,20 @@ struct NativeFile;
 struct NativeDhtRequest;
 struct NativePeerHints;
 struct NativeDhtEvent;
+struct NativeInput;
+class TorrentBuilder {
+public:
+  TorrentBuilder(rust::Str name, rust::Slice<const NativeInput> files);
+  TorrentBuilder(rust::Slice<const std::uint8_t> data, rust::Slice<const NativeInput> files);
+  ~TorrentBuilder();
+  std::uint64_t step();
+  rust::Vec<std::uint8_t> finish() const;
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl;
+};
+std::unique_ptr<TorrentBuilder> torrent_builder(rust::Str name, rust::Slice<const NativeInput> files);
+std::unique_ptr<TorrentBuilder> torrent_verifier(rust::Slice<const std::uint8_t> data, rust::Slice<const NativeInput> files);
 class Session {
 public:
   Session(rust::Str state, std::uint16_t port, rust::Str bootstrap,

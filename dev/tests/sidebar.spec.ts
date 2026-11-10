@@ -75,14 +75,13 @@ test('Sidebar navigation, mobile overlay and breakpoint resize', async ({page, b
         await expect(selected).toHaveCount(1);
         await expect(page.locator(link)).toHaveAttribute('aria-current','page');
       }
-      // The create action opens its dialog while dismissing the overlay.
+      // Create opens a durable editor and dismisses the mobile overlay.
       await toggle.click();
       await page.locator('#post-add').click();
       await expect(sidebar).toHaveAttribute('aria-hidden','true');
-      await expect(page.locator('#own-create-dialog')).toBeVisible();
-      await expect(page.locator('#own-create-title')).toBeFocused();
-      await page.locator('#own-create-dialog [data-close]').click();
-      await expect(toggle).toBeFocused();
+      await expect(page.locator('#creation-view')).toBeVisible();
+      await page.locator('#creation-delete').click();
+      await expect(page.locator('#creation-view')).toBeHidden();
 
       await page.locator('#settings-open').click();
       await expect(page.locator('#settings-dialog')).toBeVisible();
