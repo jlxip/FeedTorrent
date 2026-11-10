@@ -15,8 +15,7 @@ case "$host" in
     make test-ui UI_ARGS='publication-live.spec.ts news.spec.ts --project=chrome'
     ;;
   Linux)
-    node dev/node_modules/playwright/cli.js install --with-deps chrome firefox webkit
-    make check test
+    make check-native test-native host-wasm
     ;;
   OpenBSD)
     make check-native test-native

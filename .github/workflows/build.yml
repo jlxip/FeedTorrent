@@ -22,8 +22,12 @@ jobs:
         include:
           - os: macos-15
             target: macos-arm64
+            artifact: feedtorrent-macos-arm64
+            retention: '14'
           - os: ubuntu-24.04
             target: linux-amd64
+            artifact: candidate-linux-amd64
+            retention: '1'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     env:
@@ -81,15 +85,15 @@ jobs:
           key: ${{ steps.native-key.outputs.key }}
       - name: Validate and package
         run: sh dev/ci/run.sh
-      - name: Upload validated package
+      - name: Upload native-validated package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: feedtorrent-${{ matrix.target }}
+          name: ${{ matrix.artifact }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ matrix.retention }}
       - name: Retain failure diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -98,6 +102,140 @@ jobs:
           path: .runtime/tests/
           retention-days: 14
           if-no-files-found: ignore
+
+  linux-ui-build:
+    name: linux-ui-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NATIVE_JOBS: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Prepare toolchain
+        run: sh dev/ci/prepare.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.npm
+          key: downloads-linux-amd64-rust195-node24-${{ hashFiles('Cargo.lock', 'dev/package-lock.json') }}
+      - name: Identify native build
+        id: native-key
+        env:
+          NATIVE_CACHE_TARGET: linux-amd64
+        run: node dev/ci/native-cache-key.mjs
+      - name: Restore libtorrent
+        id: libtorrent-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .tools/native
+            .tools/libtorrent-build/CMakeCache.txt
+          key: ${{ steps.native-key.outputs.key }}
+      - name: Check restored libtorrent
+        if: steps.libtorrent-cache.outputs.cache-hit == 'true'
+        run: |
+          sh dev/scripts/native-deps.sh --verify-source
+          test -s .tools/native/lib/libtorrent-rasterbar.a
+          test -f .tools/native/include/libtorrent/version.hpp
+          grep -Fqx "prefix=$PWD/.tools/native" .tools/native/lib/pkgconfig/libtorrent-rasterbar.pc
+          grep -Fqx "CMAKE_INSTALL_PREFIX:PATH=$PWD/.tools/native" .tools/libtorrent-build/CMakeCache.txt
+          touch .tools/native/.ready
+      - name: Build UI test binary
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          make build
+          sha256sum target/release/feedtorrent > target/release/feedtorrent.sha256
+      - name: Share UI test binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-ui-binary
+          path: |
+            target/release/feedtorrent
+            target/release/feedtorrent.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  linux-ui:
+    name: linux-ui-${{ matrix.browser }}
+    needs: linux-ui-build
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, firefox, webkit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      UI_BROWSER: ${{ matrix.browser }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: downloads-linux-ui-node24-${{ hashFiles('dev/package-lock.json') }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-ui-binary
+          path: target/release
+      - name: Verify UI test binary
+        run: |
+          sha256sum -c target/release/feedtorrent.sha256
+          chmod +x target/release/feedtorrent
+      - name: Prepare browser tests
+        run: |
+          make test-deps
+          node dev/node_modules/playwright/cli.js install --with-deps "$UI_BROWSER"
+      - name: Test browser interface
+        run: node dev/scripts/ui.mjs "--project=$UI_BROWSER"
+      - name: Retain failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-linux-ui-${{ matrix.browser }}
+          path: .runtime/tests/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  linux-package:
+    name: linux-package
+    needs: [native, linux-ui]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: candidate-linux-amd64
+          path: dist
+      - name: Verify Linux package checksum
+        run: |
+          set -eu
+          cd dist
+          set -- *.sha256
+          test "$#" -eq 1
+          sha256sum -c "$1"
+      - name: Upload validated Linux package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: feedtorrent-linux-amd64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
 
   openbsd:
     name: openbsd-8.0-amd64
@@ -170,7 +308,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [native, openbsd]
+    needs: [native, linux-ui, linux-package, openbsd]
     if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-24.04
     permissions:
