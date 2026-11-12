@@ -1,3 +1,5 @@
+import {settingsButton} from './reader.js';
+import {torrentImages} from './images.js';
 import {Reader, ReaderHistory, size, type Crumb, type ReaderEntry} from './reader.js';
 import type {Command, ContentData, Snapshot, Transfer, PostEntry} from './types.js';
 
@@ -10,7 +12,7 @@ function glyph(kind:'pause'|'play'|'more'){
   return e;
 }
 type Menu=HTMLElement&{close:(focus?:boolean)=>void;refresh:()=>void};
-export interface ContentHost {call:(command:Command,refresh?:boolean)=>Promise<any>;remove:(id:string)=>void;download?:(id:string,command:Command)=>Promise<unknown>;follow?:(magnet:string)=>void;pin?:(id:string,pinned:boolean)=>Promise<unknown>|void;}
+export interface ContentHost {openMagnet:(uri:string)=>Promise<void>;call:(command:Command,refresh?:boolean)=>Promise<any>;remove:(id:string)=>void;download?:(id:string,command:Command)=>Promise<unknown>;follow?:(magnet:string)=>void;pin?:(id:string,pinned:boolean)=>Promise<unknown>|void;}
 export interface Summary {
   title:string;id?:string;t?:Transfer;connected:boolean;total?:number|null;error?:string;warning?:string;info?:string;source?:string;
   download?:()=>Promise<unknown>;action?:(c:Command)=>Promise<unknown>;remove?:()=>void;noTorrent?:boolean;busy?:boolean;
@@ -21,7 +23,7 @@ export class ContentHeader {
   readonly root=node('header','','content-heading');
   readonly identity=node('div','','content-identity');
   private defaultIdentity=node('div','','field-label reader-title');
-  private title=node('h2');private info=button('ⓘ');private help=node('span','','field-tooltip');
+  private title=node('h2');private gear:HTMLButtonElement;private info=button('ⓘ');private help=node('span','','field-tooltip');
   private sharing=node('section','','content-sharing');private controls=node('div','','content-controls');private meter=node('div','','content-meter');
   private totals=node('div','','content-totals');private status=node('span','','state');private percent=node('span');private amount=node('span','','muted');
   private bar=node('div','','progress');private fill=node('span');private toggle=button('');
@@ -30,10 +32,11 @@ export class ContentHeader {
   private down=node('span');private up=node('span');private peers=node('span');private error=node('div','','alert');private warning=node('div','','alert');private approve=button('Download once');
   private value:Summary={title:'',connected:false,noTorrent:true};private failure='';private id='';private pending=false;private generation=0;
   constructor(private prefix:string,identity?:HTMLElement){
+    this.gear=settingsButton(prefix);
     this.title.id=prefix+'-heading';this.title.tabIndex=-1;
     this.info.id=prefix+'-info';this.info.className='btn help-control';this.info.dataset.variant='ghost';this.info.dataset.size='icon-sm';
     this.help.id=prefix+'-help';this.help.hidden=true;this.help.setAttribute('role','tooltip');this.info.dataset.help=this.help.id;this.info.setAttribute('aria-describedby',this.help.id);
-    this.defaultIdentity.append(this.title,this.info,this.help);this.identity.append(this.defaultIdentity);
+    this.defaultIdentity.append(this.title,this.info,this.gear,this.help);this.identity.append(this.defaultIdentity);
     this.sharing.setAttribute('aria-label','Torrent activity');this.totals.append(this.status,this.percent,this.amount);
     this.bar.setAttribute('role','progressbar');this.bar.setAttribute('aria-valuemin','0');this.bar.setAttribute('aria-valuemax','1');this.bar.append(this.fill);this.meter.append(this.totals,this.bar);
     this.toggle.id=prefix+'-toggle';this.toggle.dataset.size='icon-sm';this.toggle.classList.add('content-toggle');
@@ -70,8 +73,9 @@ export class ContentHeader {
     if(this.identity.firstElementChild===identity)return;
     this.identity.replaceChildren(identity);
     if(!identity.querySelector('.help-control'))identity.append(this.info,this.help);
+    if(!identity.querySelector('.reader-settings'))identity.querySelector('.help-control')!.after(this.gear);
   }
-  restoreIdentity(){this.defaultIdentity.append(this.info,this.help);this.identity.replaceChildren(this.defaultIdentity);}
+  restoreIdentity(){this.defaultIdentity.append(this.info,this.gear,this.help);this.identity.replaceChildren(this.defaultIdentity);}
   private async run(fn:()=>Promise<unknown>|unknown){
     if(!this.value.connected||this.value.busy||this.pending)return;const generation=this.generation,focused=this.root.contains(document.activeElement)?document.activeElement as HTMLElement:null;this.failure='';this.pending=true;this.draw();
     try{await fn();}catch(e){if(generation===this.generation)this.failure=String(e);}finally{if(generation===this.generation){this.pending=false;this.draw();if(focused&&(document.activeElement===document.body||document.activeElement===focused))focused.focus({preventScroll:true});}}
@@ -121,7 +125,7 @@ export const torrentRoute=()=>{
   return {id:parts[at+1],parent:parts.slice(0,at).reverse().find(p=>/^[0-9a-f]{40}$/.test(p)),base:parts.slice(0,at).join('/')};
 };
 export interface PageOptions {
-  id:string;parent?:string;state:Snapshot|null;connected:boolean;crumbs:Crumb[];position?:ReaderHistory;
+  id:string;parent?:string;post?:string;state:Snapshot|null;connected:boolean;crumbs:Crumb[];position?:ReaderHistory;
   load?:(offset:number)=>Promise<ContentData>;download?:(data:ContentData)=>Promise<unknown>;signature?:string;source?:string;shown?:(data:ContentData)=>Promise<unknown>;entryDownload?:(entry:PostEntry)=>Promise<unknown>;
 }
 export class ContentPage {
@@ -157,7 +161,7 @@ export class ContentPage {
     this.reader.header.update({title,id:o.id,t,connected:o.connected,total:d?.total,error:this.error||d?.error,source:o.source,download,action:c=>this.host.call(c),remove:()=>this.host.remove(o.id),pin:this.host.pin,protectedNames:t?.protected_by?.map(id=>o.state?.transfers.find(t=>t.id===id)?.name||'catalog'),warning:d?.body_error});
     this.reader.breadcrumbs([...o.crumbs,{name:title,href:location.hash}],href=>o.position?.back(href));
     this.reader.dates(d);
-    this.reader.content(`${o.id}/${d?.body_state}`,d?.body||null,target=>()=>void this.relative(target));
+    this.reader.content(`${o.id}/${d?.body_state}`,d?.body||null,target=>()=>void this.relative(target),torrentImages(o.id,o.post,o.state));
     this.status.hidden=false;this.status.textContent=this.loading&&!d?'Loading…':!o.connected?'Server disconnected':d?.body_state==='metadata'?'Waiting for metadata.':d?.body_state==='pending'?'Markdown is not downloaded and verified.':'';this.status.hidden=!this.status.textContent;
     const entries:ReaderEntry[]=d?.kind==='catalog'&&t?(d.entries||[]).map(e=>{
       const entry:ReaderEntry={key:String(e.index),name:e.name,kind:e.kind,size:e.total??(e.kind==='file'?e.length:null),error:e.error};
@@ -192,7 +196,7 @@ export class ContentPage {
   private async relative(target:string){
     const o=this.options,d=this.data,route=location.hash;if(!o||!d)return;
     try{
-      if(target.startsWith('magnet:')){if(target.includes('urn:btpk:'))this.host.follow?.(target);else await this.run({type:'add_magnet',uri:target});return;}
+      if(target.startsWith('magnet:')){await this.host.openMagnet(target);return;}
       const name=decodeURIComponent(target).replace(/^\.\//,'');if(!name||name.startsWith('/')||name.split('/').includes('..'))throw Error('Link unavailable');
       let entry=d.entries.find(e=>e.source_name===name);
       for(let offset=0;!entry&&offset<d.count;offset+=100){const page=await this.host.call({type:'read_content',id:o.id,parent:o.parent,offset},false) as ContentData;if(location.hash!==route)return;entry=page.entries.find(e=>e.source_name===name);}

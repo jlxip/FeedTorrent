@@ -1,3 +1,4 @@
+import type {ImagePanel} from './images.js';
 export interface MarkdownNode {
   kind: string;
   text?: string;
@@ -8,6 +9,7 @@ export interface MarkdownNode {
 export function markdown(
   tree: MarkdownNode,
   relative?: (target: string) => (() => void) | null,
+  images?: ImagePanel,
 ): HTMLElement {
   const allowed = new Set([
     "p",
@@ -29,7 +31,15 @@ export function markdown(
     "br",
     "hr",
   ]);
-  const draw = (node: MarkdownNode): Node => {
+  const containsImage=(n:MarkdownNode):boolean=>n.kind==='image'||n.children.some(containsImage);
+  const draw = (node: MarkdownNode, imageLink?:()=>HTMLAnchorElement|null): Node => {
+    if(node.kind==='image'&&images)return images.draw(node,imageLink);
+    if(node.kind==='link'&&node.children.some(containsImage)){
+      const wrapper=document.createElement('span');
+      const link=()=>{const copy=markdown({...node,children:[]},relative);return copy.querySelector('a');};
+      for(const child of node.children){if(containsImage(child))wrapper.append(draw(child,link));else{const a=link();if(a){a.append(draw(child));wrapper.append(a);}else wrapper.append(draw(child));}}
+      return wrapper;
+    }
     if (node.kind === "text") return document.createTextNode(node.text || "");
     let element: HTMLElement = document.createElement(
       allowed.has(node.kind) ? node.kind : "span",
@@ -62,7 +72,7 @@ export function markdown(
       }
     }
     if (node.text) element.textContent = node.text;
-    for (const child of node.children || []) element.append(draw(child));
+    for (const child of node.children || []) element.append(draw(child,imageLink));
     return element;
   };
   const root = document.createElement("div");

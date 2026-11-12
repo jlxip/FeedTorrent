@@ -55,10 +55,10 @@ test('shared menu/settings removal preserves other routes, children and all foll
     await x.open('own:'+x.own);await page.locator('#post-remove-submit').click();await expect(page.locator('#post-remove-dialog')).toBeHidden();
     await expect(page).toHaveURL(/#\/new$/);await expect.poll(async()=>(await x.app.api()).organization.nodes.find(n=>n.key==='own:'+x.child).parent).toBe(null);
     expect((await x.app.api()).organization.nodes.find(n=>n.key==='own:'+x.child).archived).toBe(true);
-    const first=x.ids[0];await page.goto(x.app.url+'/#/posts/'+first);await page.locator('#post-settings').click();await expect(page.locator('#post-unfollow')).toHaveText('Delete post…');
-    await page.locator('#post-unfollow').click();await expect(page.locator('#post-remove-description')).toContainText('Delete this post');
-    await page.locator('#post-remove-dialog [data-close]').click();await expect(page.locator('#post-dialog')).toBeVisible();
-    await page.locator('#post-unfollow').click();await page.locator('#post-remove-submit').click();await expect(page.locator('#post-dialog')).toBeHidden();await expect(page).toHaveURL(/#\/library$/);
+    const first=x.ids[0];await page.goto(x.app.url+'/#/posts/'+first);await page.locator('#post-settings').click();await expect(page.locator('#reader-post-remove')).toHaveText('Delete post…');
+    await page.locator('#reader-post-remove').click();await expect(page.locator('#post-remove-description')).toContainText('Delete this post');
+    await page.locator('#post-remove-dialog [data-close]').click();await expect(page.locator('#reader-settings-dialog')).toBeVisible();
+    await page.locator('#reader-post-remove').click();await page.locator('#post-remove-submit').click();await expect(page.locator('#reader-settings-dialog')).toBeHidden();await expect(page).toHaveURL(/#\/library$/);
     for(const id of x.ids.slice(1)){
       await page.goto(x.app.url+'/#/new');await x.open('followed:'+id);await page.locator('#post-remove-submit').click();await expect(page.locator('#post-remove-dialog')).toBeHidden();await expect(page).toHaveURL(/#\/new$/);
     }

@@ -349,3 +349,12 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .own-entry.creation-entry, .own-entry.files-entry {display:flex;flex-wrap:wrap;}
 .creation-entry > .own-entry-name, .files-entry > .own-entry-name {flex:1 1 180px;}
 .creation-entry details, .files-entry details {min-width:0;overflow-wrap:anywhere;}
+
+/* Images use the reader's width; remote URLs are assigned only after consent. */
+.markdown-image {display:block;max-width:100%;margin:12px 0;overflow-wrap:anywhere;}
+.markdown-image img {display:block;max-width:100%;height:auto;}
+.markdown-image .image-description,.markdown-image .image-status {display:block;margin-bottom:6px;}
+
+.reader-settings {flex:none;}
+#reader-settings-form,#reader-following-settings {display:grid;gap:16px;}
+#reader-settings-status {margin:0;min-height:20px;}

@@ -90,6 +90,17 @@ try {
   await mkdir(b);
   app = await startApp(root, [], { cwd: a, defaultDownloads: true });
   assert.equal((await app.api()).settings.download_dir, "user/downloads");
+  for(const uri of [id.toUpperCase(),base32.toLowerCase(),`magnet:?dn=Example&xt=urn:btih:${base32}`]) {
+    const inspected=await app.command({type:'inspect_source',uri});
+    assert.equal(inspected.ok,true);
+    assert.equal(inspected.kind,'torrent');
+    assert.equal(inspected.id,id);
+    assert.match(inspected.uri,/^magnet:/);
+  }
+  for(const uri of ['magnet:?dn=Missing%20hash','magnet:?xt=urn:btih:invalid','magnet:?xt=urn:btmh:1220'+'a'.repeat(64)])
+    await assert.rejects(()=>app.command({type:'inspect_source',uri}));
+  assert.deepEqual((await app.api()).transfers,[]);
+  pass('inspection validates v1 identity for hex/Base32 magnets and rejects invalid/v2-only sources without adding transfers');
   await app.command({ type: "add_magnet", uri: `  ${id.toUpperCase()}\n` });
   await app.command({type:'add_magnet',uri:base32.toLowerCase()});
   assert.equal((await app.api()).transfers.length,1);
@@ -99,6 +110,11 @@ try {
     `magnet:?xt=urn:btih:${id}`,
   );
   await app.command({ type: "pause", id });
+  const beforeInspect=(await app.api()).transfers[0];
+  await app.command({type:'inspect_source',uri:`magnet:?xt=urn:btih:${base32}`});
+  const afterInspect=(await app.api()).transfers[0];
+  for(const field of ['id','active','pinned','held','save_path','seed'])assert.equal(afterInspect[field],beforeInspect[field]);
+  pass('inspecting an existing paused transfer preserves its settings and Pin');
   await app.stop();
   app = await startApp(root, [], { cwd: b, defaultDownloads: true });
   let s = await app.api();

@@ -1,7 +1,8 @@
+import {torrentImages} from './images.js';
 import type {MarkdownNode} from "./markdown.js";
 import {plainClick, ReaderHistory, size, type Crumb, type ReaderEntry} from "./reader.js";
 import {ContentReader,ContentPage,torrentRoute,type ContentHost} from './content.js';
-import type {CatalogPage, Command, Post, PostConfig, PostEntry, PostMode, Snapshot} from './types.js';
+import type {CatalogPage, Command, InspectedSource, PostConfig, PostEntry, PostMode, Snapshot} from './types.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
     document.getElementById(id)! as T;
@@ -23,7 +24,6 @@ const button = (label: string, action: () => void, variant = 'default', cls = ''
 interface Host extends ContentHost {
   call: (command: Command, refresh?: boolean) => Promise<any>;
   transfer: (id: string) => void;
-  removePost: (id:string,trigger:HTMLElement) => void;
   followed: () => void
 }
 interface PostDraft {
@@ -56,17 +56,14 @@ export class PostsUI {
   private viewRoute = '';
   private readKey = '';
   private readError = '';
-  private editing: string|null = null;
+  private linkedExisting: ((source:InspectedSource)=>Promise<string|null>)|null = null;
+  private followRequest = 0;
+  private submitting = false;
   private loading = false;
   private draft = emptyPostDraft();
-  private editDrafts = new Map<string, PostDraft>();
   constructor(private host: Host) {
     this.content=new ContentPage(this.reader,host);this.reader.header.mountStatus($('catalog-status'));
     $('post-refresh').onclick = () => {this.readKey='';this.readError='';void this.run({type: 'refresh_post', id: this.postId});};
-    $('post-settings').onclick = () => {
-      const f = this.post();
-      if (f) this.settings(f);
-    };
     $<HTMLInputElement>('post-unlimited').onchange = () => {
       const limit = $<HTMLInputElement>('post-limit');
       limit.disabled = $<HTMLInputElement>('post-unlimited').checked;
@@ -79,19 +76,16 @@ export class PostsUI {
       event.preventDefault();
       await this.submit();
     };
-    $('post-unfollow').onclick = () => {
-      if(this.editing)this.host.removePost(this.editing,$('post-unfollow'));
-    };
     // Keep unsent edits independently of which dismissal method is used.
     $('post-form').addEventListener('input', () => this.saveDraft());
     $('post-form').addEventListener('change', () => this.saveDraft());
-    window.addEventListener('hashchange', () => this.render(this.state,this.connected));
+    $('post-dialog').addEventListener('close',()=>{this.linkedExisting=null;++this.followRequest;});
+    window.addEventListener('hashchange', () => {
+      if(this.linkedExisting)$<HTMLDialogElement>('post-dialog').close();
+      this.render(this.state,this.connected);
+    });
     document.addEventListener('pointerdown',e=>{if(!$('post-history').contains(e.target as Node))$<HTMLDetailsElement>('post-history').open=false;});
     document.addEventListener('keydown',e=>{if(e.key==='Escape')$<HTMLDetailsElement>('post-history').open=false;});
-  }
-  removed(id:string){
-    this.editDrafts.delete(id);
-    if(this.editing===id){this.editing=null;$<HTMLDialogElement>('post-dialog').close();}
   }
   private saveDraft() {
     const draft: PostDraft = {
@@ -101,8 +95,7 @@ export class PostsUI {
       limit: $<HTMLInputElement>('post-limit').value,
       unlimited: $<HTMLInputElement>('post-unlimited').checked
     };
-    if (this.editing) this.editDrafts.set(this.editing, draft);
-    else this.draft = draft;
+    this.draft = draft;
   }
   private fillDraft(draft: PostDraft) {
     this.fill(draft.uri, {
@@ -111,13 +104,13 @@ export class PostsUI {
     });
     $<HTMLInputElement>('post-limit').value = draft.limit;
   }
-  follow(uri?: string) {
-    this.editing = null;
+  follow(uri?: string, existing?: (source:InspectedSource)=>Promise<string|null>) {
+    ++this.followRequest;
+    this.linkedExisting=existing||null;
     if (uri && uri !== this.draft.uri.trim()) this.draft = {...emptyPostDraft(), uri};
     this.fillDraft(this.draft);
     $('post-dialog-title').textContent = 'Follow post';
     $('post-submit').textContent = 'Follow post';
-    $('post-unfollow').hidden = true;
     $<HTMLInputElement>('post-magnet').readOnly = false;
     $<HTMLDialogElement>('post-dialog').showModal();
     $<HTMLInputElement>('post-magnet').focus();
@@ -133,22 +126,13 @@ export class PostsUI {
     $('follow-error').textContent = '';
     for (const field of $('post-form').querySelectorAll('[aria-invalid]')) field.removeAttribute('aria-invalid');
   }
-  private settings(f: Post) {
-    this.editing = f.id;
-    const draft = this.editDrafts.get(f.id);
-    if (draft) this.fillDraft(draft);
-    else this.fill(
-        f.magnet, {name: f.local_name, mode: f.mode, automatic_limit: f.automatic_limit});
-    $('post-dialog-title').textContent = 'Post settings';
-    $('post-submit').textContent = 'Save';
-    $('post-unfollow').hidden = false;
-    $<HTMLInputElement>('post-magnet').readOnly = true;
-    $<HTMLDialogElement>('post-dialog').showModal();
-  }
   private async submit() {
+    if(this.submitting)return;
+    this.submitting=true;
     $('follow-error').textContent = '';
     const submit = $<HTMLButtonElement>('post-submit');
     submit.disabled = true;
+    const request=this.followRequest,existing=this.linkedExisting;
     try {
       const unlimited = $<HTMLInputElement>('post-unlimited').checked;
       const mib = Number($<HTMLInputElement>('post-limit').value);
@@ -161,25 +145,29 @@ export class PostsUI {
         mode: $<HTMLSelectElement>('post-mode').value as PostMode,
         automatic_limit: unlimited ? null : mib * 1048576
       };
-      let id = this.editing;
-      if (id) {
-        await this.host.call({type: 'configure_post', id, config});
-        this.editDrafts.delete(id);
-      } else {
-        const uri = $<HTMLInputElement>('post-magnet').value.trim();
-        const inspected = await this.host.call({type: 'inspect_source', uri}, false);
-        if (inspected.kind !== 'post') {
-          $<HTMLInputElement>('post-magnet').setAttribute('aria-invalid', 'true');
-          throw Error('Enter a BEP 46 post magnet');
-        }
-        id = inspected.id as string;
-        if (!this.state?.posts.some(f => f.id === id)) {
-          await this.host.call({type: 'follow_post', uri, config});
-        }
-        this.host.followed();
-        this.draft = emptyPostDraft();
-        this.fillDraft(this.draft);
+      const uri = $<HTMLInputElement>('post-magnet').value.trim();
+      const inspected = await this.host.call({type: 'inspect_source', uri}, false) as InspectedSource;
+      if (inspected.kind !== 'post') {
+        $<HTMLInputElement>('post-magnet').setAttribute('aria-invalid', 'true');
+        throw Error('Enter a BEP 46 post magnet');
       }
+      const id = inspected.id;
+      if(existing){
+        const route=await existing(inspected);
+        if(request!==this.followRequest||!$<HTMLDialogElement>('post-dialog').open)return;
+        if(route){
+          this.draft=emptyPostDraft();this.fillDraft(this.draft);
+          $<HTMLDialogElement>('post-dialog').close();
+          location.hash=route;
+          return;
+        }
+      }
+      if (!this.state?.posts.some(f => f.id === id)) {
+        await this.host.call({type: 'follow_post', uri, config});
+      }
+      this.host.followed();
+      this.draft = emptyPostDraft();
+      this.fillDraft(this.draft);
       $<HTMLDialogElement>('post-dialog').close();
       this.signature = '';
       location.hash = `#/posts/${id}`;
@@ -187,6 +175,7 @@ export class PostsUI {
       $('follow-error').textContent = String(e);
       if (/BEP 46|InvalidMagnet|InvalidKey|magnet link|infohash/i.test(String(e))) $('post-magnet').setAttribute('aria-invalid', 'true');
     } finally {
+      this.submitting=false;
       submit.disabled = !this.connected;
     }
   }
@@ -214,7 +203,7 @@ export class PostsUI {
     $('transfer-view').hidden=!isLibrary;$('post-view').hidden=!active;
     $('transfers-nav').setAttribute('aria-current',isLibrary?'page':'false');
     this.postId=active?route[2]||'':'';
-    for(const id of ['post-submit','post-unfollow','post-refresh','post-settings'])$<HTMLButtonElement>(id).disabled=!connected||!state?.ready;
+    for(const id of ['post-submit','post-refresh'])$<HTMLButtonElement>(id).disabled=!connected||!state?.ready;
     if(!active){this.content.leave();this.position.leave();if(this.viewRoute){this.viewRoute='';this.request++;this.loading=false;}$('post-help').hidden=true;return;}
     if(this.viewRoute!==location.hash){
       const previous=this.viewRoute,departing=this.content.crumbs(),descended=!!previous&&location.hash.startsWith(previous+'/torrent/');
@@ -257,7 +246,7 @@ export class PostsUI {
       $('post-history').hidden=true;$('catalog-pages').hidden=true;$('catalog-status').textContent='';
       const crumbs=this.trail.length?[...this.trail]:[{name:f.name,href:`#/posts/${f.id}/${target}`}],parts=location.hash.split('/');
       for(let i=4;i<parts.length-1;i++)if(/^[0-9a-f]{40}$/.test(parts[i])&&!crumbs.some(c=>c.href===parts.slice(0,i+1).join('/')))crumbs.push({name:state?.transfers.find(t=>t.id===parts[i])?.name||'Catalog',href:parts.slice(0,i+1).join('/')});
-      this.content.render({id:nested.id,parent:nested.parent,state,connected,crumbs,position:this.position,source:f.name,entryDownload:f.catalogs.some(c=>c.id===nested.id)?e=>this.downloadContent(e.infohash!,{type:'download_entry',post:f.id,catalog:nested.id,index:e.index}):undefined,shown:async data=>{
+      this.content.render({id:nested.id,parent:nested.parent,post:this.postId,state,connected,crumbs,position:this.position,source:f.name,entryDownload:f.catalogs.some(c=>c.id===nested.id)?e=>this.downloadContent(e.infohash!,{type:'download_entry',post:f.id,catalog:nested.id,index:e.index}):undefined,shown:async data=>{
         const catalog=f.catalogs.find(c=>c.id===data.id),key=f.id+'/'+data.id;
         if(data.kind==='catalog'&&catalog?.ready&&!['metadata','pending','error'].includes(data.body_state)&&this.readKey!==key){this.readKey=key;await this.host.call({type:'mark_catalog_read',post:f.id,catalog:data.id,sequence:null});}
       },download:async data=>{
@@ -310,9 +299,9 @@ export class PostsUI {
     this.reader.breadcrumbs(this.trail,href=>{const index=this.trail.findIndex(c=>c.href===href);if(index>=0)this.pendingTrail=this.trail.slice(0,index+1);});
     this.reader.dates(page);
     this.reader.content(`${this.postId}/${this.catalogId}`,this.body,target=>{
-      if(target.startsWith('magnet:'))return ()=>{if(target.includes('urn:btpk:'))this.follow(target);else void this.run({type:'add_magnet',uri:target});};
+      if(target.startsWith('magnet:'))return ()=>void this.host.openMagnet(target);
       return ()=>void this.relative(target);
-    });
+    },torrentImages(this.catalogId,this.postId,this.state));
     const entries=(page?.entries||[]).map(e=>this.entry(e));
     this.reader.entries(entries,!!page?.catalog.ready&&this.bodyLoaded);
     const pager=$('catalog-pages');pager.hidden=!page||page.total<=100;

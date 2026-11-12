@@ -241,7 +241,8 @@ try {
   const rendered = JSON.stringify(body);
   assert(rendered.includes("<script>"));
   assert(!rendered.includes("Unpublished note"));
-  assert(!rendered.includes("no.invalid"));
+  assert(rendered.includes('"kind":"image"'));
+  assert(rendered.includes("https://no.invalid/a.svg"));
   assert(!rendered.includes("password"));
   pass(
     "second native instance resolves post magnet, downloads catalog and returns inert Markdown",

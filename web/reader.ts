@@ -1,4 +1,6 @@
+import type {Command,PostConfig,PostMode,Snapshot} from './types.js';
 import {markdown, type MarkdownNode} from './markdown.js';
+import {activeImages,ImagePanel,type ImageContext} from './images.js';
 export interface ReaderDates {created_at?:number|null;updated_at?:number|null;last_published?:boolean;}
 export type Crumb={name:string;href:string};
 export interface ReaderEntry {
@@ -68,7 +70,7 @@ export class Reader {
   private contents=node('section','','reader-contents');
   private list=node('div','','reader-entries');
   private empty=node('div','','empty');
-  private rows=new Map<string,HTMLElement>();private bodySignature='';private hasBody=false;
+  private rows=new Map<string,HTMLElement>();private bodySignature='';private hasBody=false;private images:ImagePanel|null=null;
   constructor(readonly root:HTMLElement,private prefix:string){
     this.crumbs.setAttribute('aria-label','Page');
     this.contents.append(node('h3','Contents'),this.list);
@@ -103,10 +105,12 @@ export class Reader {
       if(value?.last_published){const badge=node('span','Last published version','badge');badge.dataset.variant='secondary';this.dateRow.append(badge);}
     }
   }
-  content(key:string,tree:MarkdownNode|null,relative?:(target:string)=>(()=>void)|null){
-    const signature=JSON.stringify([key,tree]);if(signature===this.bodySignature)return;
+  content(key:string,tree:MarkdownNode|null,relative?:(target:string)=>(()=>void)|null,images?:ImageContext){
+    const signature=JSON.stringify([key,tree,images?.page]);if(signature===this.bodySignature&&!this.images?.disposed){if(images)this.images?.update(images);return;}
+    this.images?.dispose();this.images=images&&tree?new ImagePanel(images):null;
     this.bodySignature=signature;this.body.replaceChildren();this.hasBody=!!tree?.children?.length;
-    if(tree)this.body.append(markdown(tree,relative));
+    if(tree)this.body.append(markdown(tree,relative,this.images||undefined));
+    if(this.images){this.images.refresh();}
     this.body.querySelectorAll('a').forEach((a,index)=>a.id=`${this.prefix}-body-${index}`);
     this.body.hidden=!this.hasBody;
   }
@@ -151,3 +155,142 @@ export class Reader {
     this.contents.hidden=!entries.length;this.empty.hidden=!ready||!!entries.length||this.hasBody;
   }
 }
+
+type Field='name'|'mode'|'limit'|'policy';
+type Policy='inherit'|'always'|'ask';
+interface Draft {
+  name:string;mode:PostMode;limit:string;unlimited:boolean;policy:Policy;
+  dirty:Map<Field,number>;version:number;busy:boolean;error:string;timer?:ReturnType<typeof setTimeout>;
+}
+interface Target {id?:string;followed:boolean;route:string;}
+interface Host {call:(command:Command)=>Promise<unknown>;remove:(id:string,trigger:HTMLElement)=>void;}
+const $=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id)! as T;
+let snapshot:Snapshot|null=null,connected=false,host:Host;
+let selected:Target|null=null;
+const drafts=new Map<string,Draft>();
+const dialog=()=>$<HTMLDialogElement>('reader-settings-dialog');
+const followed=(id:string)=>snapshot?.posts.find(post=>post.id===id);
+function target():Target|null {
+  const [,kind,id]=location.hash.split('/');
+  if(kind==='own'&&snapshot?.publishing.posts.some(post=>post.id===id))return {id,followed:false,route:location.hash};
+  if(kind==='posts'&&id&&followed(id))return {id,followed:true,route:location.hash};
+  if(kind==='library'&&activeImages()?.hasExternal)return {followed:false,route:location.hash};
+  return null;
+}
+function rebase(id:string):Draft {
+  const post=followed(id),policy=snapshot?.image_preferences.posts[id]||'inherit';
+  let draft=drafts.get(id);
+  if(!draft){draft={name:'',mode:'current_catalog',limit:'8',unlimited:false,policy:'inherit',dirty:new Map(),version:0,busy:false,error:''};drafts.set(id,draft);}
+  if(!draft.dirty.has('name'))draft.name=post?.local_name||'';
+  if(!draft.dirty.has('mode'))draft.mode=post?.mode||'current_catalog';
+  if(!draft.dirty.has('limit')){draft.unlimited=post?.automatic_limit===null;draft.limit=String(post?.automatic_limit==null?8:post.automatic_limit/1048576);}
+  if(!draft.dirty.has('policy'))draft.policy=policy;
+  return draft;
+}
+function validLimit(draft:Draft){const mib=Number(draft.limit);return draft.unlimited||Number.isSafeInteger(mib)&&mib>=1&&Number.isSafeInteger(mib*1048576);}
+function fill(draft:Draft){
+  $<HTMLInputElement>('reader-post-name').value=draft.name;
+  $<HTMLSelectElement>('reader-post-mode').value=draft.mode;
+  $<HTMLInputElement>('reader-post-limit').value=draft.limit;
+  $<HTMLInputElement>('reader-post-unlimited').checked=draft.unlimited;
+  $<HTMLSelectElement>('reader-image-policy').value=draft.policy;
+}
+function refresh(){
+  const current=target();
+  for(const button of document.querySelectorAll<HTMLButtonElement>('.reader-settings')){
+    button.hidden=!current;button.disabled=!connected||!snapshot?.ready;
+    button.setAttribute('aria-label',current?.id?'Post settings':'Reader settings');
+  }
+  if(!dialog().open||!selected)return;
+  if(selected.route!==location.hash||selected.id&&(!current||current.id!==selected.id)){dialog().close();return;}
+  const post=selected.id?followed(selected.id):undefined,draft=selected.id?rebase(selected.id):null;
+  if(draft)fill(draft);
+  $('reader-following-settings').hidden=!selected.followed;
+  $('reader-image-policy-field').hidden=!selected.id;
+  $('reader-settings-title').textContent=selected.id?'Post settings':'Reader settings';
+  $<HTMLInputElement>('reader-post-magnet').value=post?.magnet||'';
+  const ready=connected&&!!snapshot?.ready;
+  for(const input of dialog().querySelectorAll<HTMLInputElement|HTMLSelectElement>('input:not([readonly]),select'))input.disabled=!ready;
+  $<HTMLInputElement>('reader-post-limit').disabled=!ready||!!draft?.unlimited;
+  const invalid=!!draft?.dirty.has('limit')&&!validLimit(draft);
+  $<HTMLInputElement>('reader-post-limit').setAttribute('aria-invalid',String(invalid));
+  const error=draft?.error||(invalid?'Enter a positive whole MiB limit':'');
+  $('reader-settings-error').textContent=error;
+  $('reader-settings-error').hidden=!error;
+  const status=$('reader-settings-status');status.hidden=!draft;
+  status.textContent=draft?.busy?'Saving…':draft?.dirty.size?'Not saved':'Saved';
+  const retry=$<HTMLButtonElement>('reader-settings-retry');retry.hidden=!draft?.error;retry.disabled=!ready||!!draft?.busy;
+  const remove=$<HTMLButtonElement>('reader-post-remove');remove.hidden=!selected.followed;remove.disabled=!ready;
+  $('reader-load-images').hidden=!activeImages()?.pendingExternal;
+}
+function changed(field:Field,immediate=false){
+  const id=selected?.id;if(!id)return;
+  const draft=rebase(id);
+  if(field==='name')draft.name=$<HTMLInputElement>('reader-post-name').value;
+  if(field==='mode')draft.mode=$<HTMLSelectElement>('reader-post-mode').value as PostMode;
+  if(field==='limit'){draft.limit=$<HTMLInputElement>('reader-post-limit').value;draft.unlimited=$<HTMLInputElement>('reader-post-unlimited').checked;}
+  if(field==='policy')draft.policy=$<HTMLSelectElement>('reader-image-policy').value as Policy;
+  draft.dirty.set(field,++draft.version);draft.error='';clearTimeout(draft.timer);
+  if(immediate)void flush(id);else draft.timer=setTimeout(()=>void flush(id),400);
+  refresh();
+}
+// Capture entity and field versions before awaiting; a later edit or page cannot
+// be cleared by the response to an earlier save.
+async function flush(id:string){
+  const draft=rebase(id);clearTimeout(draft.timer);
+  if(draft.busy||!draft.dirty.size)return;
+  if(!connected||!snapshot?.ready){draft.error='Server disconnected. Restart FeedTorrent to reconnect.';refresh();return;}
+  const post=followed(id),fields=[...draft.dirty].filter(([field])=>field!=='limit'||validLimit(draft));
+  const configFields=fields.filter(([field])=>field!=='policy'&&post);
+  const policy=fields.find(([field])=>field==='policy');
+  if(!configFields.length&&!policy)return;
+  draft.busy=true;draft.error='';refresh();
+  const saved=(entries:[Field,number][])=>{for(const [field,version] of entries)if(draft.dirty.get(field)===version)draft.dirty.delete(field);};
+  try{
+    if(post&&configFields.length){
+      const config:PostConfig={name:post.local_name,mode:post.mode,automatic_limit:post.automatic_limit};
+      for(const [field] of configFields){
+        if(field==='name')config.name=draft.name.trim();
+        if(field==='mode')config.mode=draft.mode;
+        if(field==='limit')config.automatic_limit=draft.unlimited?null:Number(draft.limit)*1048576;
+      }
+      await host.call({type:'configure_post',id,config});saved(configFields);
+    }
+    if(policy){
+      // Read the current draft only when its request starts, so the captured
+      // version and value always describe the same update.
+      const version=draft.dirty.get('policy');
+      if(version!==undefined){const value=draft.policy;await host.call({type:'set_image_preferences',update:{scope:'post',id,policy:value==='inherit'?null:value}});saved([['policy',version]]);}
+    }
+  }catch(error){draft.error=String(error);}
+  finally{draft.busy=false;rebase(id);refresh();}
+  if(!draft.error&&[...draft.dirty.keys()].some(field=>field!=='limit'||validLimit(draft)))void flush(id);
+}
+export function settingsButton(prefix:string){
+  const button=document.createElement('button');button.type='button';button.id=prefix+'-settings';button.className='btn reader-settings';button.dataset.variant='ghost';button.dataset.size='icon-sm';button.setAttribute('aria-label','Post settings');button.hidden=true;
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  for(const [key,value] of Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'2','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true'}))svg.setAttribute(key,value);
+  svg.innerHTML='<path d="m9.7 4.2.5-2.2h3.6l.5 2.2 1.5.9 2.2-.7 1.8 3.2-1.7 1.5v1.8l1.7 1.5-1.8 3.2-2.2-.7-1.5.9-.5 2.2h-3.6l-.5-2.2-1.5-.9-2.2.7-1.8-3.2 1.7-1.5V9.1L4.3 7.6l1.8-3.2 2.2.7z" transform="translate(0 2)"/><circle cx="12" cy="12" r="3"/>';
+  button.append(svg);return button;
+}
+export function initReaderSettings(value:Host){
+  host=value;
+  document.addEventListener('click',event=>{
+    if(!(event.target as Element).closest('.reader-settings'))return;
+    const current=target();if(!current||!connected||!snapshot?.ready)return;
+    selected=current;if(current.id)fill(rebase(current.id));dialog().showModal();refresh();
+  });
+  $('reader-settings-form').onsubmit=event=>{event.preventDefault();if(selected?.id)void flush(selected.id);};
+  $('reader-post-name').oninput=()=>changed('name');$('reader-post-limit').oninput=()=>changed('limit');
+  $('reader-post-mode').onchange=()=>changed('mode',true);$('reader-post-unlimited').onchange=()=>changed('limit',true);
+  $('reader-image-policy').onchange=()=>changed('policy',true);
+  $('reader-settings-retry').onclick=()=>{if(selected?.id)void flush(selected.id);};
+  $('reader-load-images').onclick=()=>{const images=activeImages();if(selected?.route===location.hash&&images?.pendingExternal){images.loadExternal();dialog().close();}};
+  $('reader-post-remove').onclick=()=>{const id=selected?.id;if(id)host.remove(id,$('reader-post-remove'));};
+  dialog().addEventListener('close',()=>{const id=selected?.id;selected=null;if(id&&!drafts.get(id)?.error)void flush(id);});
+  window.addEventListener('hashchange',()=>{if(dialog().open)dialog().close();refresh();});
+  document.addEventListener('reader-images-change',refresh);
+}
+export function readerSettingsState(state:Snapshot|null,online:boolean){snapshot=state;connected=online;refresh();}
+
+export function readerSettingsRemoved(id:string){clearTimeout(drafts.get(id)?.timer);drafts.delete(id);if(selected?.id===id){selected=null;dialog().close();}}

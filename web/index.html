@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light dark" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: http: https:; object-src 'none'; base-uri 'none'"
     />
     <title>FeedTorrent</title>
     <link rel="stylesheet" href="./basecoat.css" />
@@ -48,6 +48,7 @@
         </nav>
       </aside>
     <main>
+      <div id="notice" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
       <section id="news-view" hidden aria-labelledby="news-heading">
         <div class="list-heading"><h2 id="news-heading">New posts</h2><button type="button" class="btn" data-variant="ghost" id="news-refresh">Refresh</button></div>
         <div id="news-error" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
@@ -58,7 +59,6 @@
         <nav id="news-pages" class="catalog-pages" aria-label="Updates pages"><button type="button" class="btn" data-variant="ghost" id="news-previous">Previous</button><span id="news-range" class="muted"></span><button type="button" class="btn" data-variant="ghost" id="news-next">Next</button></nav>
       </section>
       <section id="transfer-view" hidden>
-      <div id="notice" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
       <div id="network-warning" class="alert" data-variant="default" role="status" hidden><section></section></div>
       <section id="library-catalog" aria-labelledby="library-heading">
         <div class="list-heading"><h2 id="library-heading" tabindex="-1">Library</h2><span id="count"></span></div>
@@ -72,7 +72,7 @@
       <div id="library-tooltip" class="library-tooltip" role="tooltip" hidden><div class="tooltip-line"><span class="tooltip-state"></span><span class="tooltip-percent muted"></span></div><div class="tooltip-amount muted"></div><div class="tooltip-line"><span class="tooltip-down"></span><span class="tooltip-up"></span></div><div class="tooltip-peers muted"></div><div class="tooltip-message" hidden></div><div class="tooltip-offline muted" hidden>Server disconnected</div></div>
       </section>
       <section id="post-view" hidden>
-        <div class="list-heading post-heading"><div class="field-label reader-title"><h2 id="post-title"></h2><button type="button" id="post-info" class="btn help-control" data-variant="ghost" data-size="icon-sm" data-help="post-help" aria-describedby="post-help" aria-label="About post">ⓘ</button><span id="post-help" class="field-tooltip" role="tooltip" hidden></span></div><div class="post-heading-actions"><details id="post-history" class="reader-history" hidden><summary class="btn" data-variant="outline">History ⌄</summary><div id="catalog-links"></div></details><button class="btn" data-variant="outline" id="post-refresh">Refresh</button><button class="btn" data-variant="outline" id="post-settings">Settings</button></div></div>
+        <div class="list-heading post-heading"><div class="field-label reader-title"><h2 id="post-title"></h2><button type="button" id="post-info" class="btn help-control" data-variant="ghost" data-size="icon-sm" data-help="post-help" aria-describedby="post-help" aria-label="About post">ⓘ</button><span id="post-help" class="field-tooltip" role="tooltip" hidden></span></div><div class="post-heading-actions"><details id="post-history" class="reader-history" hidden><summary class="btn" data-variant="outline">History ⌄</summary><div id="catalog-links"></div></details><button class="btn" data-variant="outline" id="post-refresh">Refresh</button></div></div>
         <div id="post-new-version" class="reader-version" hidden><span id="post-version-status"></span><button id="post-open-latest" class="btn" data-variant="outline">Open latest version</button></div>
         <p id="catalog-status" role="status" class="muted"></p>
         <div id="post-reader"></div><nav id="catalog-pages" class="catalog-pages" aria-label="Contents pages" hidden><button id="catalog-previous" class="btn" data-variant="ghost">Previous</button><span id="catalog-range" class="muted"></span><button id="catalog-next" class="btn" data-variant="ghost">Next</button></nav>
@@ -90,7 +90,7 @@
       </section>
       <section id="own-view" hidden>
         <div id="own-unavailable" class="empty" hidden><header><h3>Post unavailable</h3></header><a class="btn" data-variant="outline" href="#/library">Library</a></div>
-        <div class="list-heading"><div class="own-heading-group"><h2 id="own-heading">Own post</h2><button type="button" class="publication-indicator" id="own-indicator" data-state="draft" data-help="own-publication-help" aria-label="Draft" aria-describedby="own-publication-help"><span aria-hidden="true"></span></button><span class="field-tooltip publication-tooltip" id="own-publication-help" role="tooltip" hidden>Draft</span></div><div class="own-actions" id="own-top-actions"><button class="btn" data-variant="ghost" id="own-copy">Copy post magnet</button><button class="btn" id="own-toggle" data-variant="outline">Public view</button></div></div>
+        <div class="list-heading"><div class="own-heading-group"><h2 id="own-heading">Own post</h2><button type="button" class="publication-indicator" id="own-indicator" data-state="draft" data-help="own-publication-help" aria-label="Draft" aria-describedby="own-publication-help"><span aria-hidden="true"></span></button><span class="field-tooltip publication-tooltip" id="own-publication-help" role="tooltip" hidden>Draft</span><button type="button" id="own-info" class="btn help-control" data-variant="ghost" data-size="icon-sm" data-help="own-post-help" aria-label="About own post" aria-describedby="own-post-help">ⓘ</button><span id="own-post-help" class="field-tooltip" role="tooltip" hidden></span></div><div class="own-actions" id="own-top-actions"><button class="btn" data-variant="ghost" id="own-copy">Copy post magnet</button><button class="btn" id="own-toggle" data-variant="outline">Public view</button></div></div>
         <p class="sr-only" id="own-status" role="status" aria-live="polite"></p><div id="own-error" class="alert" data-variant="destructive" role="alert" hidden><section></section></div><nav class="breadcrumb" id="own-breadcrumb" aria-label="Page"></nav>
         <div id="own-editor" class="own-fields"><div class="field"><label for="own-title" class="label">Title</label><input id="own-title" maxlength="256" autocomplete="off" class="input" type="text" aria-describedby="own-error"></div><div class="field"><div class="field-label"><label class="label" for="own-body">Body</label><span class="muted">Markdown</span></div><textarea id="own-body" rows="9" spellcheck="false" class="textarea" aria-describedby="own-error"></textarea></div></div>
         <div id="own-file-options" class="creation-options" hidden><div class="field" data-orientation="horizontal"><input type="checkbox" class="input" id="own-post-mode" checked disabled><label class="label" for="own-post-mode">Post</label></div><div class="field" data-orientation="horizontal"><input type="checkbox" class="input" id="own-copy-files" checked><label class="label" for="own-copy-files">Copy files</label></div></div><div id="own-preview"></div><div id="own-contents-heading" class="list-heading"><h3>Contents</h3><div class="own-actions"><button class="btn" id="own-new-page" data-variant="outline">New page</button><button type="button" class="btn" id="own-add-files" data-variant="outline">Add files</button><button class="btn" id="own-add-torrent" data-variant="outline">Add .torrent</button><input id="own-torrent" type="file" accept=".torrent" hidden></div></div><div id="own-entries"></div>
@@ -242,10 +242,32 @@
           <input class="input" id="peer-port" type="number" min="0" max="65535" required aria-describedby="peer-port-help settings-error" />
         </div>
         <div class="field" data-orientation="horizontal"><input class="input" id="seed-by-default" type="checkbox" checked /><label for="seed-by-default" class="label">Seed by default</label></div>
+        <div class="field" data-orientation="horizontal"><input id="external-images-automatic" type="checkbox" class="input" /><label for="external-images-automatic" class="label">Load external images automatically</label></div>
         <p id="settings-error" class="transfer-error" role="alert"></p>
         <button type="button" class="btn" data-variant="outline" id="publishing-keys-open">Manage keys</button><div class="settings-status-slot"><p id="settings-save-status" class="muted" role="status" aria-live="polite" hidden></p></div>
       </form>
         <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
+      </div>
+    </dialog>
+    <dialog id="reader-settings-dialog" aria-labelledby="reader-settings-title" class="dialog">
+      <div class="dialog-surface">
+        <header><h2 id="reader-settings-title">Post settings</h2></header>
+        <form id="reader-settings-form" novalidate>
+          <div id="reader-following-settings"><div class="field"><label for="reader-post-magnet" class="label">Post magnet</label><input id="reader-post-magnet" readonly autocomplete="off" spellcheck="false" placeholder="magnet:?xs=urn:btpk:…" class="input" type="text" aria-describedby="reader-settings-error" /></div>
+        <div class="field"><label for="reader-post-name" class="label">Name</label><input id="reader-post-name" maxlength="256" autocomplete="off" placeholder="Optional" class="input" type="text" aria-describedby="reader-settings-error" /></div>
+        <div class="field"><div class="field-label"><label for="reader-post-mode" class="label">Download mode</label><button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="reader-post-mode-help" aria-label="About download mode" aria-describedby="reader-post-mode-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="reader-post-mode-help" class="field-tooltip" role="tooltip" hidden>Current catalog keeps the latest catalog. Mirror catalogs includes its history. Mirror all also downloads the listed torrents. Other post identities are excluded.</span></div>
+          <select id="reader-post-mode" class="select" aria-describedby="reader-post-mode-help reader-settings-error"><option value="current_catalog">Current catalog</option><option value="mirror_catalogs">Mirror catalogs</option><option value="mirror_all">Mirror all</option></select></div>
+        <div class="field"><div class="field-label"><label for="reader-post-limit" class="label">Automatic download limit · MiB</label><button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="reader-post-limit-help" aria-label="About automatic download limit" aria-describedby="reader-post-limit-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="reader-post-limit-help" class="field-tooltip" role="tooltip" hidden>Maximum size of each automatically downloaded torrent, including catalogs and Mirror all content. This is not a total storage quota. Download once does not change this limit.</span></div><input id="reader-post-limit" type="number" min="1" step="1" value="8" required class="input" aria-describedby="reader-post-limit-help reader-settings-error" /></div>
+        <div class="field" data-orientation="horizontal"><input id="reader-post-unlimited" type="checkbox" class="input" /><label for="reader-post-unlimited" class="label">No limit</label></div>
+</div>
+          <div class="field" id="reader-image-policy-field"><label for="reader-image-policy" class="label">External images</label><select id="reader-image-policy" class="select"><option value="inherit">Use global setting</option><option value="always">Always load</option><option value="ask">Ask</option></select></div>
+          <button type="button" class="btn" data-variant="outline" id="reader-load-images" hidden>Load external images now</button>
+          <p id="reader-settings-error" class="transfer-error" role="alert" hidden></p>
+          <button type="button" class="btn" data-variant="outline" id="reader-settings-retry" hidden>Retry</button>
+          <p id="reader-settings-status" class="muted" role="status" aria-live="polite"></p>
+          <button type="button" class="btn" data-variant="destructive" id="reader-post-remove" hidden>Delete post…</button>
+        </form>
+        <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
       </div>
     </dialog>
     <dialog id="post-dialog" aria-labelledby="post-dialog-title" class="dialog">
@@ -259,7 +281,7 @@
         <div class="field"><div class="field-label"><label for="post-limit" class="label">Automatic download limit · MiB</label><button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="post-limit-help" aria-label="About automatic download limit" aria-describedby="post-limit-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button><span id="post-limit-help" class="field-tooltip" role="tooltip" hidden>Maximum size of each automatically downloaded torrent, including catalogs and Mirror all content. This is not a total storage quota. Download once does not change this limit.</span></div><input id="post-limit" type="number" min="1" step="1" value="8" required class="input" aria-describedby="post-limit-help follow-error" /></div>
         <div class="field" data-orientation="horizontal"><input id="post-unlimited" type="checkbox" class="input" /><label for="post-unlimited" class="label">No limit</label></div>
         <p id="follow-error" class="transfer-error" role="alert"></p>
-        <div class="form-actions post-settings-actions"><button type="button" class="btn" data-variant="destructive" id="post-unfollow" hidden>Delete post…</button><button class="btn" id="post-submit" type="submit">Follow post</button></div>
+        <div class="form-actions post-settings-actions"><button class="btn" id="post-submit" type="submit">Follow post</button></div>
       </form>
         <button class="btn modal-close" data-variant="ghost" data-size="icon-sm" data-close type="button" aria-label="Close"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 6-12 12M6 6l12 12" /></svg></button>
       </div>

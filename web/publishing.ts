@@ -1,3 +1,5 @@
+import {settingsButton} from './reader.js';
+import {ownImages} from './images.js';
 import {pickServerFiles,type FilesEntry} from './creation.js';
 import {ContentReader,ContentPage,torrentRoute,type ContentHost} from './content.js';
 import type {MarkdownNode} from "./markdown.js";
@@ -104,6 +106,7 @@ export class PublishingUI {
     private transfer:(id:string)=>void,
     private host:ContentHost,
   ) {
+    $('own-info').after(settingsButton('own'));
     this.content=new ContentPage(this.reader,host);
     $("own-title").oninput = () => {
       const p = this.page();
@@ -486,6 +489,7 @@ export class PublishingUI {
   }
   private draw() {
     const s=this.session(),p=this.page();
+    $("own-post-help").textContent=[this.id,this.post()?.magnet].filter(Boolean).join("\n");
     $("own-editor").hidden=this.reading;$("own-preview").hidden=!this.reading;
     $("own-contents-heading").hidden=this.reading;$("own-entries").hidden=this.reading;$("own-editor-actions").hidden=this.reading;
     $("own-toggle").textContent=this.reading?'Edit':'Public view';
@@ -571,7 +575,7 @@ export class PublishingUI {
       const entry=p.entries.find((e):e is Extract<Entry,{kind:'torrent'}>=>e.kind==='torrent'&&this.torrentIds.get(e.data)===rootId);
       if(!entry){this.content.leave();this.reader.header.update({title:'Torrent unavailable',connected:this.connected,noTorrent:true});this.reader.dates(null);this.reader.content('unavailable',null);this.reader.entries([],false);this.reader.breadcrumbs([...trail,{name:'Torrent unavailable',href:location.hash}]);return;}
       const crumbs=[...trail];for(let i=6;i<parts.length-1;i++)if(/^[0-9a-f]{40}$/.test(parts[i]))crumbs.push({name:this.state?.transfers.find(t=>t.id===parts[i])?.name||'Catalog',href:parts.slice(0,i+1).join('/')});
-      this.content.render({id:nested.id,parent:nested.id===rootId?undefined:nested.parent,state:this.state,connected:this.connected,crumbs,position:this.position,source:this.post()?.title,signature:`${s.revision}/${s.edits}/${s.saved}`,
+      this.content.render({id:nested.id,parent:nested.id===rootId?undefined:nested.parent,post:this.id,state:this.state,connected:this.connected,crumbs,position:this.position,source:this.post()?.title,signature:`${s.revision}/${s.edits}/${s.saved}`,
         load:(offset)=>nested.id!==rootId?this.host.call({type:'read_content',id:nested.id,parent:nested.parent,offset},false):this.state?.transfers.some(t=>t.id===nested.id)?this.host.call({type:'read_content',id:nested.id,offset},false):api({action:'inspect_entry',id:this.id,page:p.id,infohash:nested.id}),
         download:nested.id===rootId?()=>this.downloadOwn(entry):undefined});return;
     }
@@ -586,7 +590,7 @@ export class PublishingUI {
       if(entry?.kind==='page')return ()=>this.openPage(entry.page);
       if(entry?.kind==='torrent')return ()=>{const id=this.torrentIds.get(entry.data);if(id&&this.state?.transfers.some(t=>t.id===id))location.hash=this.readHref(p.id)+'/torrent/'+id;else void this.downloadOwn(entry);};
       return null;
-    });
+    },ownImages(this.id,p.id,s.revision,s.edits,s.saved));
     const entries:ReaderEntry[]=p.entries.map((e,index)=>{
       if(e.kind==='page'){const page=s.draft.pages.find(p=>p.id===e.page);return {key:String(index),name:page?.title||'Page unavailable',kind:'page',href:page?this.readHref(e.page):undefined};}
       if(e.kind==='files')return {key:String(index),name:e.name,kind:'file',size:e.files.reduce((n,f)=>n+f.length,0)};

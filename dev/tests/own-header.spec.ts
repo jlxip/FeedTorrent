@@ -50,12 +50,12 @@ test('own Public view unifies actions, wraps safely and preserves controls acros
    }
   }
   await page.goto(app.url+'/#/own/'+id+'/read/7');await expect(heading).toHaveText('Notes');await expect(page.locator('#own-preview .reader-dates time')).toHaveCount(2);await layout('root');
-  await page.evaluate(()=>{const w=window as any;w.controls=['own-copy','own-toggle','own-retry','own-cancel','own-indicator','own-reader-info'].map(id=>document.getElementById(id));w.moves=0;new MutationObserver(records=>{for(const r of records)for(const n of r.removedNodes)if(w.controls.some((c:Node)=>c&&(n===c||n.contains(c))))w.moves++}).observe(document.getElementById('own-view')!,{subtree:true,childList:true})});
+  await page.evaluate(()=>{const w=window as any;w.controls=['own-copy','own-toggle','own-retry','own-cancel','own-indicator','own-info','own-settings'].map(id=>document.getElementById(id));w.moves=0;new MutationObserver(records=>{for(const r of records)for(const n of r.removedNodes)if(w.controls.some((c:Node)=>c&&(n===c||n.contains(c))))w.moves++}).observe(document.getElementById('own-view')!,{subtree:true,childList:true})});
   await actions.locator('#own-copy').click();await expect.poll(()=>page.evaluate(()=>(window as any).copied)).toBe(own.magnet);
   await emit();expect(await page.evaluate(()=>(window as any).moves)).toBe(0);
   await toggle.click();await expect(page.locator('#own-editor')).toBeVisible();await expect(page.locator('#own-view>.list-heading #own-top-actions')).toBeVisible();await toggle.click();await expect(identity.locator('#own-toggle')).toBeVisible();
   await page.locator('#own-indicator').hover();await expect(page.locator('#own-publication-help')).toContainText('Published Version 0');await heading.click();await expect(page.locator('#own-publication-help')).toBeHidden();
-  await page.locator('#own-reader-info').hover();await expect(page.locator('#own-reader-help')).toBeVisible();await heading.click();await expect(page.locator('#own-reader-help')).toBeHidden();
+  await page.locator('#own-info').hover();await expect(page.locator('#own-post-help')).toBeVisible();await heading.click();await expect(page.locator('#own-post-help')).toBeHidden();
   await page.locator('#own-preview').getByRole('link',{name:longTitle,exact:true}).click();await expect(heading).toHaveText(longTitle);await layout('nested-long');
   Object.assign(own,{state:'Publication pending',phase:'Retrying',operation:42,pending_revision:own.revision,pending_sequence:'1',next_retry_at:1794009600});await emit();await expect(actions.locator('#own-retry')).toBeVisible();await layout('pending-long',true);
   await actions.locator('#own-retry').click();expect(calls.some(c=>c.action==='retry_publication'&&c.operation===42)).toBe(true);await emit();await expect(actions.locator('#own-retry')).toBeEnabled();await emit();await expect(actions.locator('#own-retry')).toBeEnabled();

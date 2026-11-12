@@ -236,6 +236,13 @@ pub enum Command {
     RemovePost {
         id: String,
     },
+    #[serde(skip)]
+    ReadImage {
+        id: String,
+        page: u64,
+        revision: u64,
+        path: String,
+    },
     InspectEntry {
         id: String,
         page: u64,

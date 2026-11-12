@@ -550,6 +550,18 @@ impl Manager {
                 view["source"] = serde_json::json!(data);
                 Ok(view)
             }
+            Command::ReadImage {
+                id,
+                page,
+                revision,
+                path,
+            } => {
+                let f = lib.posts.get(&id).context("Own post not found")?;
+                if f.revision != revision {
+                    bail!("Draft changed")
+                }
+                crate::images::draft_source(&f.draft, page, &path)
+            }
             Command::GetPost { id } => {
                 let f = lib.posts.get(&id).context("Own post not found")?;
                 let mut value = reader_dates(dir, f);
@@ -924,7 +936,10 @@ impl Manager {
     fn message(&mut self, message: Message) {
         match message {
             Message::Command(command, reply) => {
-                let writes = !matches!(&command, Command::Preview { .. } | Command::GetPost { .. });
+                let writes = !matches!(
+                    &command,
+                    Command::Preview { .. } | Command::GetPost { .. } | Command::ReadImage { .. }
+                );
                 let result = self.command(command);
                 if writes && result.is_ok() {
                     self.error.clear();

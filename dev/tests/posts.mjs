@@ -35,8 +35,13 @@ try {
   fx = await postFixture(root);
   const args = ['--dht-bootstrap', fx.bootstrap];
   app = await startApp(join(root, 'app'), args);
-  assert.equal(
-      (await app.command({type: 'inspect_source', uri: fx.postMagnet})).kind, 'post');
+  const inspected=await app.command({type:'inspect_source',uri:fx.postMagnet+'&dn=Equivalent'});
+  assert.deepEqual(inspected,{ok:true,kind:'post',magnet:fx.postMagnet,id:fx.postId});
+  assert.deepEqual((await app.api()).posts,[]);
+  assert.deepEqual((await app.api()).transfers,[]);
+  assert.equal(fx.head.requests,0);
+  assert.equal(fx.contentRequests,0);
+  pass('post identification returns canonical identity without following or fetching metadata/content');
   await app.command(
       {type: 'follow_post', uri: fx.postMagnet, config: config('current_catalog', 1)});
   let t = await wait(

@@ -1,3 +1,5 @@
+import {initReaderSettings,readerSettingsState,readerSettingsRemoved} from './reader.js';
+import {imageState} from './images.js';
 import {CreationUI} from './creation.js';
 import {size} from './reader.js';
 import {OrganizationUI} from "./organization.js";
@@ -5,7 +7,7 @@ import {LibraryUI} from "./library.js";
 import {NewsUI} from "./news.js";
 import {PublishingUI} from "./publishing.js";
 import {PostsUI} from "./posts.js";
-import type { Snapshot, Command, Settings, RemovalTarget, RemovalPreview } from "./types.js";
+import type { Snapshot, Command, InspectedSource, Settings, RemovalTarget, RemovalPreview } from "./types.js";
 const $ = <T extends Element = HTMLElement>(s: string) =>
   document.querySelector<T>(s)!;
 let state: Snapshot | null = null,
@@ -186,19 +188,20 @@ $('#delete-files').addEventListener('change',()=>{if(removalTarget?.kind==='torr
 async function downloadContent(id:string,c:Command){
   try{return await command(c);}catch(e){await sync();if(!state?.transfers.some(t=>t.id===id))throw e;}
 }
-const contentHost={download:downloadContent,call:(c:Command,refresh=true)=>refresh?command(c):send(c),remove:removeTorrent,pin:(id:string,pinned:boolean)=>pinTorrent(id,pinned),follow:(magnet:string)=>postUI.follow(magnet)};
+const contentHost={openMagnet:openMagnetLink,download:downloadContent,call:(c:Command,refresh=true)=>refresh?command(c):send(c),remove:removeTorrent,pin:(id:string,pinned:boolean)=>pinTorrent(id,pinned),follow:(magnet:string)=>postUI.follow(magnet)};
 const libraryUI = new LibraryUI({...contentHost,action:c=>void action(c)});
 function showLibrary(id?: string) { libraryUI.open(id); }
 const newsUI = new NewsUI((c,refresh=true)=>refresh?command(c):send(c));
-const postUI=new PostsUI({...contentHost,transfer:(id)=>showLibrary(id),followed:()=>opened(),removePost:(id,trigger)=>organizationUI.openRemove('followed:'+id,trigger)});
-const publishingUI=new PublishingUI(uri=>{if(uri.includes('urn:btpk:'))postUI.follow(uri);else{$<HTMLInputElement>('#magnet').value=uri;$<HTMLButtonElement>('#open-button').click();updateOpenButtons();}},async (data,id,post)=>{
+const postUI=new PostsUI({...contentHost,transfer:(id)=>showLibrary(id),followed:()=>opened()});
+const publishingUI=new PublishingUI(uri=>void openMagnetLink(uri),async (data,id,post)=>{
   try{await command({type:'add_torrent',data,origin:{kind:'own',id:post}});}
   catch(e){await sync();if(!state?.transfers.some(t=>t.id===id))throw e;}
 },id=>showLibrary(id),contentHost);
 const organizationUI = new OrganizationUI(async c => {
   try { return await command(c); }
   catch (error) { await sync().catch(() => {}); throw error; }
-},async (id,revision)=>{await publishingUI.removePost(id,()=>command({type:'delete_post',post_kind:'own',id,revision}));await sync();},id=>postUI.removed(id));
+},async (id,revision)=>{await publishingUI.removePost(id,()=>command({type:'delete_post',post_kind:'own',id,revision}));await sync();},id=>readerSettingsRemoved(id));
+initReaderSettings({call:c=>command(c),remove:(id,trigger)=>organizationUI.openRemove('followed:'+id,trigger)});
 const creationUI=new CreationUI();
 async function action(c: Command) {
   try {
@@ -224,6 +227,8 @@ function renderCleanup(){
   }
 }
 function render() {
+  imageState(state);
+  if($<HTMLDialogElement>('#settings-dialog').open&&imageSettingsVersion===savedImageSettingsVersion)$<HTMLInputElement>('#external-images-automatic').checked=!!state?.image_preferences?.automatic;
   const transfers = state?.transfers || [];
   libraryUI.render(state, connected);
   for (const b of document.querySelectorAll<HTMLButtonElement>("body > header button:not(#sections-button)"))
@@ -244,6 +249,7 @@ function render() {
   organizationUI.render(state,connected);
   renderCleanup();
   creationUI.render(state,connected);
+  readerSettingsState(state,connected);
 }
 async function sync() {
   const r = await fetch("./api/snapshot");
@@ -252,13 +258,59 @@ async function sync() {
   connected = true;
   render();
 }
-$("#open-button").onclick = () => {
+let magnetRequest=0;
+let linkedOpen:number|null=null;
+function existingMagnetRoute(source:InspectedSource):string|null {
+  const same=(id:string)=>id.toLowerCase()===source.id.toLowerCase();
+  if(source.kind==='post'){
+    const own=state?.publishing.posts.find(p=>same(p.id));
+    if(own)return `#/own/${own.id}/read`;
+    const followed=state?.posts.find(p=>same(p.id));
+    if(followed)return `#/posts/${followed.id}`;
+  }else{
+    const torrent=state?.transfers.find(t=>same(t.id));
+    if(torrent)return `#/library/${torrent.id}`;
+  }
+  return null;
+}
+async function refreshMagnetRoute(source:InspectedSource){
+  await sync();
+  return existingMagnetRoute(source);
+}
+async function openMagnetLink(uri:string){
+  const request=++magnetRequest,origin=location.hash;
+  const current=()=>request===magnetRequest&&origin===location.hash;
+  try{
+    const source=await send({type:'inspect_source',uri}) as InspectedSource;
+    if(!current())return;
+    const route=await refreshMagnetRoute(source);
+    if(!current()||document.querySelector('dialog[open]'))return;
+    notice('');
+    if(route){location.hash=route;return;}
+    if(source.kind==='post')postUI.follow(source.magnet,refreshMagnetRoute);
+    else{
+      $<HTMLInputElement>('#magnet').value=source.uri;
+      $('#magnet-error').textContent='';
+      $('#magnet').removeAttribute('aria-invalid');
+      linkedOpen=request;
+      showOpenDialog();
+    }
+  }catch(error){if(current())notice(String(error));}
+}
+window.addEventListener('hashchange',()=>{
+  ++magnetRequest;
+  if(linkedOpen!==null)$<HTMLDialogElement>('#open-dialog').close();
+});
+$('#open-dialog').addEventListener('close',()=>{linkedOpen=null;});
+function showOpenDialog() {
   openTabs.select($<HTMLButtonElement>("#magnet-tab"));
   updateOpenButtons();
   $<HTMLDialogElement>("#open-dialog").showModal();
   $<HTMLInputElement>("#magnet").focus();
-};
+}
+$("#open-button").onclick = () => {++magnetRequest;linkedOpen=null;showOpenDialog();};
 $("#magnet").oninput = () => {
+  linkedOpen=null;
   $("#magnet-error").textContent = "";
   updateOpenButtons();
 };
@@ -283,7 +335,13 @@ $("#magnet-form").onsubmit = async (event) => {
   updateOpenButtons();
   try {
     const uri=$<HTMLInputElement>("#magnet").value.trim();
-    const source=await send({type:"inspect_source",uri});
+    const link=linkedOpen;
+    const source=await send({type:"inspect_source",uri}) as InspectedSource;
+    if(link!==null){
+      const route=await refreshMagnetRoute(source);
+      if(link!==linkedOpen||!$<HTMLDialogElement>('#open-dialog').open)return;
+      if(route){opened();location.hash=route;return;}
+    }
     if(source.kind==="post"){
       $<HTMLDialogElement>("#open-dialog").close();
       if(state?.posts.some(f=>f.id===source.id)){opened();location.hash=`#/posts/${source.id}`;}else{postUI.follow(source.magnet);}
@@ -324,6 +382,7 @@ $("#torrent-form").onsubmit = async (event) => {
 };
 let settingsSave: Promise<boolean> = Promise.resolve(true);
 let settingsEditVersion = 0;
+let imageSettingsVersion=0,savedImageSettingsVersion=0;
 function settingsStatus(value: string) {
   $("#settings-save-status").textContent = value;
   $("#settings-save-status").hidden = !value;
@@ -343,6 +402,7 @@ function saveSettings(): Promise<boolean> {
     return Promise.resolve(false);
   }
   const version = settingsEditVersion;
+  const automatic=$<HTMLInputElement>('#external-images-automatic').checked,imageVersion=imageSettingsVersion;
   const settings: Settings = {
     download_dir: folder.value,
     peer_port: Number(port.value),
@@ -350,14 +410,18 @@ function saveSettings(): Promise<boolean> {
   };
   // Serialize writes so a slower response cannot overwrite a newer edit.
   settingsSave = settingsSave.then(async () => {
-    if (JSON.stringify(settings) === JSON.stringify(state?.settings)) return true;
+    if (JSON.stringify(settings) === JSON.stringify(state?.settings)&&imageVersion<=savedImageSettingsVersion) return true;
     if (version === settingsEditVersion) {
       settingsStatus("Saving…");
       $("#settings-error").textContent = "";
     }
     try {
       const changedPort = settings.peer_port !== state?.settings.peer_port;
-      await command({ type: "configure", settings });
+      if(JSON.stringify(settings)!==JSON.stringify(state?.settings))await command({ type: "configure", settings });
+      if(imageVersion>savedImageSettingsVersion){
+        if(automatic!==!!state?.image_preferences?.automatic)await command({type:'set_image_preferences',update:{scope:'global',automatic}});
+        savedImageSettingsVersion=imageVersion;
+      }
       if (version === settingsEditVersion) settingsStatus("Saved");
       if (changedPort) notice("Restart FeedTorrent to apply the listening port.");
       return true;
@@ -376,9 +440,11 @@ async function closeSettings() {
 }
 $("#settings-open").onclick = () => {
   if (!state) return;
+  savedImageSettingsVersion=imageSettingsVersion;
   $<HTMLInputElement>("#download-dir").value = state.settings.download_dir;
   $<HTMLInputElement>("#peer-port").value = String(state.settings.peer_port);
   $<HTMLInputElement>("#seed-by-default").checked = state.settings.seed_by_default;
+  $<HTMLInputElement>("#external-images-automatic").checked = !!state.image_preferences?.automatic;
   $("#settings-error").textContent = "";
   for (const input of document.querySelectorAll<HTMLInputElement>("#settings-form input"))
     input.removeAttribute("aria-invalid");
@@ -388,6 +454,7 @@ $("#settings-open").onclick = () => {
 for (const input of document.querySelectorAll<HTMLInputElement>("#settings-form input")) {
   input.addEventListener("input", () => {
     settingsEditVersion++;
+    if(input.id==='external-images-automatic')++imageSettingsVersion;
     input.removeAttribute("aria-invalid");
     settingsStatus("");
     $("#settings-error").textContent = "";

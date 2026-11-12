@@ -46,6 +46,31 @@ pub fn link_target(input: &str) -> Option<String> {
     }
     None
 }
+pub fn image_target(input: &str) -> Option<String> {
+    if input.is_empty() || input.chars().any(|c| c.is_control() || c == '\\') {
+        return None;
+    }
+    let path = input.split(['?', '#']).next()?;
+    if path.to_ascii_lowercase().ends_with(".torrent") {
+        return None;
+    }
+    if input
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+        || input
+            .get(..8)
+            .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+    {
+        return Some(input.into());
+    }
+    if !input.starts_with('/')
+        && !input.contains(':')
+        && !input.split('/').any(|p| matches!(p, "" | "." | ".."))
+    {
+        return Some(input.into());
+    }
+    None
+}
 pub fn parse(input: &str) -> Result<Node> {
     if input.len() > super::publishing::MAX_BODY {
         return Err(err("Markdown exceeds 1 MiB"));
@@ -77,12 +102,14 @@ pub fn parse(input: &str) -> Result<Node> {
                     Tag::Emphasis => "em",
                     Tag::Strong => "strong",
                     Tag::Link { .. } => "link",
-                    Tag::Image { .. } => "span",
+                    Tag::Image { .. } => "image",
                     _ => "span",
                 };
                 let mut node = Node::new(kind);
                 if let Tag::Link { dest_url, .. } = tag {
                     node.target = link_target(&dest_url)
+                } else if let Tag::Image { dest_url, .. } = tag {
+                    node.target = image_target(&dest_url)
                 }
                 stack.push(node);
             }
@@ -124,9 +151,36 @@ mod tests {
         let n=parse("# Hi\n\n<script>alert(1)</script>\n\n![alt](https://evil.invalid/image.svg) [x](javascript:alert%281%29)").unwrap();
         let s = serde_json::to_string(&n).unwrap();
         assert!(s.contains("<script>"));
-        assert!(!s.contains("evil.invalid"));
+        assert!(s.contains("evil.invalid"));
+        assert!(s.contains("\"kind\":\"image\""));
+        assert!(
+            image_target("magnet:?xt=urn:btih:1111111111111111111111111111111111111111").is_none()
+        );
+        assert!(image_target("image.torrent").is_none());
         assert!(!s.contains("javascript:"));
         assert!(link_target("//evil.invalid").is_none());
         assert!(link_target("../escape").is_none());
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    #[test]
+    fn image_destinations_keep_spaces_and_reject_non_image_schemes() {
+        let tree = super::parse("![Photo](<photos/a b.png>)").unwrap();
+        assert_eq!(
+            tree.children[0].children[0].target.as_deref(),
+            Some("photos/a b.png")
+        );
+        assert!(super::image_target("HTTPS://example.invalid/a.png").is_some());
+        for target in [
+            "../a.png",
+            "//example.invalid/a.png",
+            "data:image/png;base64,x",
+            "javascript:alert(1)",
+            "image.torrent",
+        ] {
+            assert!(super::image_target(target).is_none());
+        }
     }
 }

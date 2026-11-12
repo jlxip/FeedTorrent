@@ -79,35 +79,38 @@ test(
         expect(fx.contentRequests).toBe(0);
         await expect(page.locator('#entry-detail')).toHaveCount(0);
         await page.locator('#post-settings').click();
-        await expect(page.locator('#post-unfollow')).toHaveAttribute('data-variant','destructive');
-        await page.locator('#post-name').fill('Pending settings');
-        await page.locator('#post-mode').selectOption('mirror_catalogs');
-        await page.locator('#post-limit').fill('17');
+        await expect(page.locator('#reader-post-remove')).toHaveAttribute('data-variant','destructive');
+        await page.locator('#reader-post-name').fill('Pending settings');
+        await page.locator('#reader-post-mode').selectOption('mirror_catalogs');
+        await page.locator('#reader-post-limit').fill('17');
         await page.mouse.click(2, 2);
-        await expect(page.locator('#post-dialog')).toBeHidden();
-        expect((await app.api()).posts[0].local_name).toBe('My reading list');
+        await expect(page.locator('#reader-settings-dialog')).toBeHidden();
+        await expect.poll(async()=>(await app.api()).posts[0].local_name).toBe('Pending settings');
         await page.locator('#post-settings').click();
-        await expect(page.locator('#post-name')).toHaveValue('Pending settings');
-        await expect(page.locator('#post-mode')).toHaveValue('mirror_catalogs');
-        await expect(page.locator('#post-limit')).toHaveValue('17');
-        await page.locator('#post-name').fill('My reading list');
-        await page.locator('#post-mode').selectOption('current_catalog');
-        await page.locator('#post-limit').fill('8');
+        await expect(page.locator('#reader-post-name')).toHaveValue('Pending settings');
+        await expect(page.locator('#reader-post-mode')).toHaveValue('mirror_catalogs');
+        await expect(page.locator('#reader-post-limit')).toHaveValue('17');
+        await page.locator('#reader-post-name').fill('My reading list');
+        await page.locator('#reader-post-mode').selectOption('current_catalog');
+        await page.locator('#reader-post-limit').fill('8');
         await page.getByRole('button', {name: 'About download mode'}).hover();
-        await expect(page.locator('#post-mode-help')).toBeVisible();
-        await page.locator('#post-dialog-title').click();
-        await expect(page.locator('#post-mode-help')).not.toBeVisible();
-        await expect(page.locator('#post-dialog')).toBeVisible();
-        await page.locator('#post-unlimited').check();
-        await expect(page.locator('#post-limit')).toBeDisabled();
-        await page.locator('#post-submit').click();
-        await expect(page.locator('#post-dialog')).toBeHidden();
+        await expect(page.locator('#reader-post-mode-help')).toBeVisible();
+        await page.locator('#reader-settings-title').click();
+        await expect(page.locator('#reader-post-mode-help')).not.toBeVisible();
+        await expect(page.locator('#reader-settings-dialog')).toBeVisible();
+        await page.locator('#reader-post-unlimited').check();
+        await expect(page.locator('#reader-post-limit')).toBeDisabled();
+        await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
+        await page.locator('#reader-settings-dialog [data-close]').click();
+        await expect(page.locator('#reader-settings-dialog')).toBeHidden();
         await page.locator('#open-button').click();
         await page.locator('#magnet').fill(nextMagnet);
         await page.locator('#magnet-form button[type=submit]').click();
+        await expect(page.locator('#post-dialog')).toBeVisible();
         await expect(page.locator('#post-name')).toHaveValue('Unsent next post');
         await expect(page.locator('#post-magnet')).toHaveValue(nextMagnet);
         await page.mouse.click(2, 2);
+        await expect(page.locator('#post-dialog')).toBeHidden();
         await page.setViewportSize({width: 320, height: 740});
         await expect
             .poll(
@@ -116,19 +119,19 @@ test(
             .toBe(true);
         await page.screenshot({path: info.outputPath('post-320.png'), fullPage: true});
         await page.locator('#post-settings').click();
-        await expect(page.locator('#post-name')).toHaveValue('My reading list');
-        await expect(page.locator('#post-mode')).toHaveValue('current_catalog');
+        await expect(page.locator('#reader-post-name')).toHaveValue('My reading list');
+        await expect(page.locator('#reader-post-mode')).toHaveValue('current_catalog');
         await expect
             .poll(
                 () => page.evaluate(
                     () => document.documentElement.scrollWidth <= innerWidth))
             .toBe(true);
         await page.getByRole('button', {name: 'About automatic download limit'}).click();
-        await expect(page.locator('#post-limit-help')).toBeVisible();
+        await expect(page.locator('#reader-post-limit-help')).toBeVisible();
         await page.screenshot(
             {path: info.outputPath('post-settings-320.png'), fullPage: true});
-        await page.locator('#post-dialog-title').click();
-        await page.locator('#post-dialog [data-close]').click();
+        await page.locator('#reader-settings-title').click();
+        await page.locator('#reader-settings-dialog [data-close]').click();
         await page.locator('.catalog-row')
             .first()
             .getByRole('button', {name: 'Download', exact: true})
@@ -148,8 +151,9 @@ test(
         await page.locator(`#post-tree [data-post="${fx.postId}"]`).click();
         await expect(page.locator('#post-title')).toHaveText('My reading list');
         await page.locator('#post-settings').click();
-        await page.locator('#post-mode').selectOption('mirror_all');
-        await page.locator('#post-submit').click();
+        await page.locator('#reader-post-mode').selectOption('mirror_all');
+        await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
+        await page.locator('#reader-settings-dialog [data-close]').click();
         await expect(page.locator('#post-help')).toContainText('Mirror all');
         const archive = await fx.catalog(
             'Archive', [{path: ['old.txt'], data: Buffer.from('archived item')}],
@@ -161,8 +165,9 @@ test(
             });
         await fx.publish(revision);
         await page.locator('#post-settings').click();
-        await page.locator('#post-mode').selectOption('mirror_catalogs');
-        await page.locator('#post-submit').click();
+        await page.locator('#reader-post-mode').selectOption('mirror_catalogs');
+        await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
+        await page.locator('#reader-settings-dialog [data-close]').click();
         await page.locator('#post-refresh').click();
         await page.locator('#post-open-latest').click();
         await expect(page.locator('#post-reader .reader-entries')).toContainText('new.txt');
@@ -175,7 +180,7 @@ test(
         await page.getByRole('link', {name: 'Previous version', exact: true}).click();
         await expect(page.locator('.catalog-row')).toHaveCount(3);
         await page.locator('#post-settings').click();
-        await page.locator('#post-unfollow').click();
+        await page.locator('#reader-post-remove').click();
         await page.locator('#post-remove-submit').click();
         await expect(page.locator('#transfer-view')).toBeVisible();
         await expect(page.locator('#count')).toHaveText('0 torrents');

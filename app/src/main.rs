@@ -1,6 +1,7 @@
 mod content;
 mod creation;
 mod desktop;
+mod images;
 mod lifecycle;
 mod organization;
 mod post_state;
@@ -86,6 +87,8 @@ struct Store {
     settings: Settings,
     records: Vec<Record>,
     #[serde(default)]
+    image_preferences: images::Preferences,
+    #[serde(default)]
     retention: lifecycle::Graph,
 }
 #[derive(Clone, Default, Debug, Serialize)]
@@ -122,6 +125,7 @@ struct Transfer {
 #[derive(Clone, Debug, Serialize)]
 struct Snapshot {
     engine: &'static str,
+    image_preferences: images::Preferences,
     transfers: Vec<Transfer>,
     settings: Settings,
     dht_nodes: u32,
@@ -214,6 +218,14 @@ enum Command {
         parent: Option<String>,
         #[serde(default)]
         offset: usize,
+    },
+    #[serde(skip)]
+    ReadImage {
+        id: String,
+        path: String,
+    },
+    SetImagePreferences {
+        update: images::Update,
     },
     InspectSource {
         uri: String,
@@ -328,6 +340,7 @@ fn default_store() -> Store {
             seed_by_default: true,
         },
         records: vec![],
+        image_preferences: images::Preferences::default(),
         retention: lifecycle::Graph::default(),
     }
 }
@@ -407,6 +420,7 @@ impl Engine {
             engine: "libtorrent-rasterbar 2.1.2",
             transfers: vec![],
             settings: store.settings.clone(),
+            image_preferences: store.image_preferences.clone(),
             dht_nodes: 0,
             listen_port: 0,
             warning: String::new(),
@@ -804,6 +818,15 @@ impl Engine {
                 let canonical = fs::canonicalize(path)?;
                 desktop::reveal(&canonical)?;
             }
+            Command::ReadImage { .. } => bail!("Read-only command dispatched incorrectly"),
+            Command::SetImagePreferences { update } => {
+                let previous = self.store.image_preferences.clone();
+                self.store.image_preferences.update(update)?;
+                if let Err(error) = self.persist() {
+                    self.store.image_preferences = previous;
+                    return Err(error);
+                }
+            }
             Command::Configure { mut settings } => {
                 settings.download_dir = directory_setting(&settings.download_dir)?;
                 if fs::canonicalize(&settings.download_dir)?
@@ -989,6 +1012,7 @@ impl Engine {
             engine: "libtorrent-rasterbar 2.1.2",
             transfers,
             settings: self.store.settings.clone(),
+            image_preferences: self.store.image_preferences.clone(),
             dht_nodes: native.dht_nodes,
             listen_port: native.listen_port,
             warning: [native.warning, self.storage_warning.clone()]
@@ -1091,7 +1115,7 @@ async fn index(State(app): State<Arc<App>>) -> Response {
         .parse()
         .unwrap(),
     );
-    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY,"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'".parse().unwrap());
+    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY,"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: http: https:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'".parse().unwrap());
     response
 }
 async fn snapshot(State(app): State<Arc<App>>) -> Json<Snapshot> {
@@ -1149,12 +1173,6 @@ async fn command(
         if let Ok(key) = feedtorrent_bep::bep46::parse_magnet(uri) {
             return Json(serde_json::json!({"ok":true,"kind":"post","magnet":feedtorrent_bep::bep46::format_magnet(&key),"id":feedtorrent_posts::hex(&key.target())})).into_response();
         }
-        return match normalize_magnet_input(uri) {
-            Ok(uri) => {
-                Json(serde_json::json!({"ok":true,"kind":"torrent","uri":uri})).into_response()
-            }
-            Err(e) => api_error(StatusCode::BAD_REQUEST, e),
-        };
     }
     if let Command::DeletePost {
         post_kind,
@@ -1289,6 +1307,10 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
             "text/javascript",
             include_bytes!("../../web/dist/publishing.js"),
         ),
+        "images.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/images.js"),
+        ),
         "markdown.js" => (
             "text/javascript",
             include_bytes!("../../web/dist/markdown.js"),
@@ -1393,6 +1415,7 @@ async fn main() -> Result<()> {
         engine: "libtorrent-rasterbar 2.1.2",
         transfers: vec![],
         settings: store.settings.clone(),
+        image_preferences: store.image_preferences.clone(),
         dht_nodes: 0,
         listen_port: 0,
         warning: String::new(),
@@ -1438,6 +1461,11 @@ async fn main() -> Result<()> {
             match receiver.recv_timeout(Duration::from_millis(200)) {
                 Ok(job) => {
                     let result = match job.command {
+                        Command::ReadImage{id,path}=>engine.image_source(&id,&path),
+                        Command::InspectSource{uri}=>normalize_magnet_input(&uri).map_err(Into::into).and_then(|uri| {
+                            let id=engine.native.inspect(TorrentSource::Magnet(&uri))?;
+                            Ok(serde_json::json!({"ok":true,"kind":"torrent","uri":uri,"id":id}))
+                        }),
                         Command::PreviewRemoval{target}=>engine.removal_preview(target),
                         Command::BeginPostDelete{target,revision}=>engine.begin_removal(target,&revision),
                         Command::FinishPostDelete{job}=>engine.finish_post_removal(job),
@@ -1540,6 +1568,7 @@ async fn main() -> Result<()> {
         .route("/", get(index))
         .route("/{name}", get(asset))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/image", get(images::resource))
         .route("/api/events", get(events))
         .route("/api/commands", post(command))
         .route(
