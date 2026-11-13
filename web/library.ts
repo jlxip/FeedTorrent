@@ -1,4 +1,4 @@
-import type {Command, Snapshot, Transfer} from './types.js';
+import type {Command, Snapshot, Transfer, LibraryPost} from './types.js';
 import {ContentReader, ContentPage, torrentRoute, type ContentHost} from './content.js';
 import {ReaderHistory,canRestoreFocus} from './reader.js';
 
@@ -30,6 +30,7 @@ function progress(t:Transfer, e:HTMLElement) {
 const percent=(t:Transfer)=>`${Math.floor(Math.max(0,Math.min(1,t.progress))*100)}%`;
 const total=(t:Transfer)=>t.files.length?bytes(t.approval_size??t.total):'—';
 const amount=(t:Transfer)=>`${bytes(t.verified)} / ${total(t)}${t.approval_size!==null&&t.approval_size!==t.total?' incl. padding':''}`;
+type Item={key:string;name:string;href:string;post?:LibraryPost;transfer?:Transfer};
 type Position={scroll:number;focus:string|null;token:string};
 interface Host extends ContentHost {action:(c:Command)=>void;}
 
@@ -42,6 +43,7 @@ export class LibraryUI {
   private sidebarRoute='';
   private restoringSidebar=false;
   private cards=new Map<string,HTMLElement>();
+  private items:Item[]=[];
   private reader=new ContentReader($('library-reader'),'library-reader',undefined,'torrent');
   private position=new ReaderHistory($('library-detail'),'torrentReader',$('torrent-heading'));
   private content:ContentPage;
@@ -110,9 +112,19 @@ export class LibraryUI {
     $('library-catalog').hidden=!catalog;$('library-detail').hidden=!active||catalog;
     if(!active){this.content.leave();this.position.leave();return;}
     const transfers=state?.transfers||[];
-    $('count').textContent=`${transfers.length} torrent${transfers.length===1?'':'s'}`;
-    $('empty').hidden=!!transfers.length||!state?.ready;
-    this.drawCards(transfers);
+    const groups=state?.library_posts||[],emitted=new Set<string>(),items:Item[]=[];
+    for(const t of transfers){
+      const owners=groups.filter(p=>p.catalog_ids.includes(t.id));
+      if(!owners.length)items.push({key:t.id,name:t.name,href:`#/library/${t.id}`,transfer:t});
+      for(const p of owners){const key=`post-${p.post_kind}-${p.id}`;if(emitted.has(key))continue;emitted.add(key);
+        items.push({key,name:p.name,href:p.post_kind==='own'?`#/own/${p.id}/read`:`#/posts/${p.id}`,post:p,transfer:transfers.find(t=>t.id===p.representative)});
+      }
+    }
+    const order=new Map(this.items.map((item,index)=>[item.key,index]));
+    this.items=items.sort((a,b)=>(order.get(a.key)??Infinity)-(order.get(b.key)??Infinity));
+    $('count').textContent=`${items.length} item${items.length===1?'':'s'}`;
+    $('empty').hidden=!!items.length||!state?.ready;
+    this.drawCards();
     if(!catalog){this.position.enter();this.drawDetail();}else{this.content.leave();this.position.leave();}
     this.drawTooltip();
     if(this.restoring&&state){
@@ -127,31 +139,35 @@ export class LibraryUI {
       });
     }
   }
-  private drawCards(transfers:Transfer[]) {
+  private drawCards() {
     const list=$('transfers');
-    for(const [id,card] of this.cards)if(!transfers.some(t=>t.id===id)){if(id===this.tooltipId)this.hideTooltip();card.remove();this.cards.delete(id);}
+    for(const [id,card] of this.cards)if(!this.items.some(item=>item.key===id)){if(id===this.tooltipId)this.hideTooltip();card.remove();this.cards.delete(id);}
     let position=0;
-    for(const t of transfers){
-      let card=this.cards.get(t.id);
+    for(const item of this.items){
+      const t=item.transfer,id=item.key;
+      let card=this.cards.get(id);
       if(!card){
-        card=node('article','','card transfer');card.dataset.size='sm';card.dataset.id=t.id;
+        card=node('article','','card transfer');card.dataset.size='sm';card.dataset.id=id;
         const header=node('header'),title=node('h3'),link=document.createElement('a');
-        link.className='transfer-name';link.id=`library-open-${t.id}`;link.href=`#/library/${encodeURIComponent(t.id)}`;title.append(link);
-        const info=document.createElement('button');info.type='button';info.className='btn card-action library-info';info.dataset.variant='ghost';info.dataset.size='icon-sm';info.dataset.libraryInfo=t.id;info.append(icon('info'));
+        link.className='transfer-name';link.id=`library-open-${id}`;link.href=item.href;title.append(link);
+        const info=document.createElement('button');info.type='button';info.className='btn card-action library-info';info.dataset.variant='ghost';info.dataset.size='icon-sm';info.dataset.libraryInfo=id;info.append(icon('info'));
         header.append(title,info);
-        const summary=node('section','','library-card-summary');summary.append(icon(t.kind==='catalog'?'rss':t.files.length>1?'folder':'file'),node('span','','muted library-size'));
+        const summary=node('section','','library-card-summary');summary.append(icon('file'),node('span','','muted library-size'));
         const footer=node('footer'),status=node('div','','library-card-status'),badge=node('span','','badge state');badge.dataset.variant='secondary';status.append(badge,node('span','','muted library-percent'));
         const bar=node('div','','progress');bar.setAttribute('role','progressbar');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','1');bar.append(node('span'));
-        footer.append(status,bar);card.append(header,summary,footer);this.cards.set(t.id,card);list.append(card);
+        footer.append(status,bar);card.append(header,summary,footer);this.cards.set(id,card);list.append(card);
       }
       const at=list.children.item(position++);if(at!==card)list.insertBefore(card,at);
-      card.querySelector('.transfer-name')!.textContent=t.name;
-      card.querySelector('.library-info')!.setAttribute('aria-label',`Status of ${t.name}`);
-      card.querySelector('.library-size')!.textContent=total(t);
-      const badge=card.querySelector<HTMLElement>('.state')!;badge.textContent=t.state;badge.dataset.variant=t.error?'destructive':'secondary';
-      card.querySelector('.library-percent')!.textContent=percent(t);
-      const bar=card.querySelector<HTMLElement>('.progress')!;progress(t,bar);bar.classList.toggle('complete',t.progress>=1);
-      bar.setAttribute('aria-hidden',String(t.progress>=1));
+      const link=card.querySelector<HTMLAnchorElement>('.transfer-name')!;link.textContent=item.name;link.href=item.href;
+      card.querySelector('.library-info')!.setAttribute('aria-label',`Status of ${item.name}`);
+      const kind=item.post||t?.kind==='catalog'||t?.kind==='owned_catalog'?'rss':t&&t.files.length>1?'folder':'file';
+      const summary=card.querySelector<HTMLElement>('.library-card-summary')!;
+      if(summary.dataset.icon!==kind){summary.firstElementChild!.replaceWith(icon(kind));summary.dataset.icon=kind;}
+      card.querySelector('.library-size')!.textContent=t?total(t):'—';
+      const badge=card.querySelector<HTMLElement>('.state')!;badge.textContent=t?.state||item.post?.state||'';badge.dataset.variant=(t?.error||item.post?.error)?'destructive':'secondary';
+      card.querySelector('.library-percent')!.textContent=t?percent(t):'';
+      const bar=card.querySelector<HTMLElement>('.progress')!;bar.hidden=!t;
+      if(t){progress(t,bar);bar.classList.toggle('complete',t.progress>=1);bar.setAttribute('aria-hidden',String(t.progress>=1));}
     }
   }
   private drawDetail() {
@@ -178,14 +194,14 @@ export class LibraryUI {
   }
   private drawTooltip() {
     if(!this.tooltipId)return;
-    const t=this.state?.transfers.find(t=>t.id===this.tooltipId);if(!t){this.hideTooltip();return;}
+    const item=this.items.find(item=>item.key===this.tooltipId);if(!item){this.hideTooltip();return;}const t=item.transfer;
     const tip=$('library-tooltip');tip.hidden=false;
-    tip.querySelector('.tooltip-state')!.textContent=t.state;tip.querySelector('.tooltip-percent')!.textContent=percent(t);
-    tip.querySelector('.tooltip-amount')!.textContent=amount(t);
-    tip.querySelector('.tooltip-down')!.textContent=this.connected?`↓ ${bytes(t.down)}/s`:'↓ —';
-    tip.querySelector('.tooltip-up')!.textContent=this.connected?`↑ ${bytes(t.up)}/s`:'↑ —';
-    tip.querySelector('.tooltip-peers')!.textContent=this.connected?`${t.peers} peers`:'— peers';
-    const message=[t.error,t.warning|| (t.held&&t.files.length?'Download approval required.':'')].filter(Boolean).join('\n');
+    tip.querySelector('.tooltip-state')!.textContent=t?.state||item.post?.state||'';tip.querySelector('.tooltip-percent')!.textContent=t?percent(t):'';
+    tip.querySelector('.tooltip-amount')!.textContent=t?amount(t):'—';
+    tip.querySelector('.tooltip-down')!.textContent=this.connected&&t?`↓ ${bytes(t.down)}/s`:'↓ —';
+    tip.querySelector('.tooltip-up')!.textContent=this.connected&&t?`↑ ${bytes(t.up)}/s`:'↑ —';
+    tip.querySelector('.tooltip-peers')!.textContent=this.connected&&t?`${t.peers} peers`:'— peers';
+    const message=[t?.error||item.post?.error,t?.warning|| (t?.held&&t.files.length?'Download approval required.':'')].filter(Boolean).join('\n');
     const warning=tip.querySelector<HTMLElement>('.tooltip-message')!;warning.textContent=message;warning.hidden=!message;
     tip.querySelector<HTMLElement>('.tooltip-offline')!.hidden=this.connected;this.positionTooltip();
   }

@@ -152,7 +152,8 @@ export class CreationUI {
   private status(){const d=this.current;if(!d)return;const working=!['Draft','Created','Bound'].includes(d.phase);
     for(const input of $('creation-view').querySelectorAll<HTMLInputElement|HTMLTextAreaElement|HTMLButtonElement|HTMLSelectElement>('input,textarea,button,select'))input.disabled=!this.connected||working;
     $('creation-cancel').hidden=!working;$<HTMLButtonElement>('creation-cancel').disabled=!this.connected;
-    $('creation-submit').textContent=d.post?'Publish':d.error?'Retry':'Create torrent';
+    const submit=$('creation-submit'),label=d.post?'Publish':d.error?'Retry':'Create torrent';
+    if(submit.textContent!==label)submit.textContent=label;
     $('creation-status').textContent=working?`${d.phase}${d.total?` · ${size(d.done)} / ${size(d.total)}`:''}`:this.edits!==this.saved?'Saving…':'Draft saved';
     if(d.error)this.error(d.error);
   }

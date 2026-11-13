@@ -283,7 +283,7 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .content-meter>.progress {height:4px;}
 .content-meter>.progress>span {display:block;height:100%;background:var(--foreground);}
 .content-rates {display:flex;justify-content:space-between;gap:8px;white-space:nowrap;font-size:13px;}
-.content-sharing .alert {margin:4px 0 0;white-space:pre-line;}
+.content-sharing .alert {margin:4px 0 0;white-space:pre-line;min-width:0;overflow-wrap:anywhere;}
 .content-status {margin:2px 0 0;font-size:13px;}
 .content-status:empty {display:none;}
 .content-popover[data-popover] {right:0;left:auto;min-width:184px;max-width:calc(100vw - 24px);}
@@ -299,6 +299,20 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .library-back {margin-bottom:8px;}
 #post-view>.post-heading {justify-content:flex-end;margin-bottom:8px;}
 #post-approve {justify-self:start;margin:4px 0 0;}
+/* Activity occupies its own column without reserving its height above the page. */
+@media(min-width:1100px){
+ .reader:not(#own-preview) {display:flow-root;}
+ .reader:not(#own-preview)>.content-heading {display:contents;}
+ .reader:not(#own-preview)>.content-heading>.content-sharing {float:right;width:296px;margin:0 0 16px 16px;}
+ .reader:not(#own-preview)>.content-heading>.content-identity {float:left;margin-bottom:16px;}
+ .reader:not(#own-preview)>:not(.content-heading) {clear:left;}
+ .reader:not(#own-preview):has(>.content-heading>.content-sharing:not([hidden]))>.content-heading>.content-identity,
+ .reader:not(#own-preview):has(>.content-heading>.content-sharing:not([hidden]))>:not(.content-heading) {width:calc(100% - 312px);}
+ .reader:not(#own-preview):has(>.content-heading>.content-sharing:not([hidden]))>.reader-history {width:max-content;max-width:calc(100% - 312px);margin-right:312px;}
+}
+@media(min-width:768px) and (max-width:1099px){
+ .content-heading {grid-template-columns:minmax(0,1fr);align-items:start;}
+}
 /* Own-post actions share the identity row; nested torrent activity stays below. */
 #own-preview .content-heading {display:flex;flex-direction:column;align-items:stretch;gap:12px;}
 #own-preview .content-identity {display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;}
@@ -358,3 +372,24 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .reader-settings {flex:none;}
 #reader-settings-form,#reader-following-settings {display:grid;gap:16px;}
 #reader-settings-status {margin:0;min-height:20px;}
+
+.peer-list {min-width:0;display:grid;gap:3px;margin-top:5px;}
+.peer-scroll {overflow-y:auto;overflow-x:hidden;overflow-anchor:none;max-height:220px;}
+.peer-table {width:100%;table-layout:fixed;font-size:12px;}
+.peer-table th:first-child {width:50%;}
+.peer-table th,.peer-table td {padding:5px 3px;}
+.peer-table th:not(:first-child),.peer-table td:not(:first-child) {text-align:right;white-space:nowrap;}
+.peer-table td:first-child {overflow-wrap:anywhere;white-space:normal;}
+.content-heading:has(.peer-list:not([hidden])) {align-items:start;}
+.peer-country {margin-right:5px;padding:0;border:0;background:none;color:inherit;font:inherit;border-radius:2px;}
+.peer-country:focus-visible {outline:2px solid var(--ring);outline-offset:2px;}
+.peer-tooltip {position:fixed;z-index:100;display:grid;gap:3px;width:max-content;max-width:calc(100vw - 16px);padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--foreground);color:var(--background);font-size:12px;line-height:1.4;overflow-wrap:anywhere;box-shadow:0 2px 8px #0003;}
+.peer-tooltip a {text-decoration:underline;}
+.peer-status {font-size:12px;}
+
+.post-version-history {width:max-content;max-width:100%;}
+.post-version-history>div {left:0;right:auto;color:var(--popover-foreground);width:320px;max-width:calc(100vw - 32px);max-height:min(60vh,480px);overflow:auto;}
+.post-version-history>div>a {display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 10px;width:100%;height:auto;white-space:normal;overflow-wrap:anywhere;}
+.post-version-history>div>p {padding:8px;margin:0;overflow-wrap:anywhere;}
+
+#post-history.post-version-history>div {left:auto;right:0;}

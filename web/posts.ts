@@ -1,7 +1,7 @@
 import {torrentImages} from './images.js';
 import type {MarkdownNode} from "./markdown.js";
 import {plainClick, ReaderHistory, size, type Crumb, type ReaderEntry} from "./reader.js";
-import {ContentReader,ContentPage,torrentRoute,type ContentHost} from './content.js';
+import {ContentReader,ContentPage,PostHistory,torrentRoute,type ContentHost} from './content.js';
 import type {CatalogPage, Command, InspectedSource, PostConfig, PostEntry, PostMode, Snapshot} from './types.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
@@ -44,6 +44,7 @@ export class PostsUI {
   private offset = 0;
   private reader=new ContentReader($('post-reader'),'post',$('post-title').parentElement!);
   private content:ContentPage;
+  private localHistory:PostHistory;
   private position=new ReaderHistory($('post-view'),'postReader',$('post-title'));
   private trail:Crumb[]=[];
   private pendingTrail:Crumb[]|null=null;
@@ -62,7 +63,8 @@ export class PostsUI {
   private loading = false;
   private draft = emptyPostDraft();
   constructor(private host: Host) {
-    this.content=new ContentPage(this.reader,host);this.reader.header.mountStatus($('catalog-status'));
+    this.content=new ContentPage(this.reader,host);
+    this.localHistory=new PostHistory((c,refresh)=>this.host.call(c,refresh),$('post-history') as HTMLDetailsElement);this.reader.header.mountStatus($('catalog-status'));
     $('post-refresh').onclick = () => {this.readKey='';this.readError='';void this.run({type: 'refresh_post', id: this.postId});};
     $<HTMLInputElement>('post-unlimited').onchange = () => {
       const limit = $<HTMLInputElement>('post-limit');
@@ -84,8 +86,6 @@ export class PostsUI {
       if(this.linkedExisting)$<HTMLDialogElement>('post-dialog').close();
       this.render(this.state,this.connected);
     });
-    document.addEventListener('pointerdown',e=>{if(!$('post-history').contains(e.target as Node))$<HTMLDetailsElement>('post-history').open=false;});
-    document.addEventListener('keydown',e=>{if(e.key==='Escape')$<HTMLDetailsElement>('post-history').open=false;});
   }
   private saveDraft() {
     const draft: PostDraft = {
@@ -204,6 +204,7 @@ export class PostsUI {
     $('transfers-nav').setAttribute('aria-current',isLibrary?'page':'false');
     this.postId=active?route[2]||'':'';
     for(const id of ['post-submit','post-refresh'])$<HTMLButtonElement>(id).disabled=!connected||!state?.ready;
+    this.localHistory.update('followed',active&&!torrentRoute()?this.postId:null,state,connected);
     if(!active){this.content.leave();this.position.leave();if(this.viewRoute){this.viewRoute='';this.request++;this.loading=false;}$('post-help').hidden=true;return;}
     if(this.viewRoute!==location.hash){
       const previous=this.viewRoute,departing=this.content.crumbs(),descended=!!previous&&location.hash.startsWith(previous+'/torrent/');
@@ -230,14 +231,6 @@ export class PostsUI {
     $('post-version-status').textContent=latest?.ready?'New version available':latest?.state||'';
     $<HTMLButtonElement>('post-open-latest').disabled=!connected||!latest?.ready;
     $('post-open-latest').onclick=()=>{if(latest?.ready)this.go(latest.id,f.name,true,f.sequence);};
-    const links=$('catalog-links');const linkSig=JSON.stringify([c?.previous,c?.archive,target]);
-    if(links.dataset.signature!==linkSig){links.dataset.signature=linkSig;links.replaceChildren();
-      for(const [name,id] of [['Previous version',c?.previous],['Archive',c?.archive]] as const)if(id){
-        const a=document.createElement('a');a.href=`#/posts/${f.id}/${id}`;a.textContent=name;a.className='btn';a.dataset.variant='ghost';
-        a.onclick=e=>{if(plainClick(e)){this.prepare(id,name,true);$<HTMLDetailsElement>('post-history').open=false;}};links.append(a);
-      }
-    }
-    $('post-history').hidden=!links.children.length;
     const status=!connected?'Server disconnected':!target?'Resolving post…':!c?.ready?c?.state||'Waiting for metadata':'';
     $('catalog-status').textContent=status;
     this.showError(f.error||state?.post_error||c?.error||latest?.error||this.readError);

@@ -53,3 +53,22 @@ test('post file inclusion, linked option and key creation deferred to Publish',a
     await page.locator('#own-toggle').click();await expect(page.locator('#own-copy-files')).toBeChecked();await expect(page.locator('#own-post-mode')).toBeDisabled();await page.locator('#own-copy-files').uncheck();await expect(page.locator('#own-draft-status')).toContainText('Draft saved');
   }finally{await cleanup(root,app);if(network)await network.stop();}
 });
+
+test('background draft refresh preserves Publish between pointerdown and pointerup',async({page})=>{
+  const root=await temporary();let app:any,release:(()=>void)|undefined;
+  try{
+    app=await startApp(join(root,'app'));await page.goto(app.url);await page.locator('#post-add').click();
+    await page.locator('#creation-title').fill('Stable Publish');await expect(page.locator('#creation-status')).toHaveText('Draft saved');
+    let hold=true,ready:()=>void;const waiting=new Promise<void>(resolve=>ready=resolve);
+    await page.route('**/api/creation',async route=>{
+      if(route.request().postDataJSON().action!=='list'||!hold){await route.continue();return;}
+      hold=false;const response=await route.fetch();await new Promise<void>(resolve=>{release=resolve;ready();});await route.fulfill({response});
+    });
+    await waiting;
+    const button=page.locator('#creation-submit'),box=await button.boundingBox();expect(box).not.toBeNull();
+    await page.mouse.move(box!.x+box!.width/2,box!.y+box!.height/2);await page.mouse.down();
+    const response=page.waitForResponse(r=>r.url().endsWith('/api/creation')&&r.request().postDataJSON().action==='list');release!();await response;
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+    await page.mouse.up();await expect(page.locator('#creation-password-dialog')).toBeVisible();
+  }finally{release?.();await cleanup(root,app);}
+});

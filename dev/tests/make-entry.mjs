@@ -26,7 +26,8 @@ try {
   for (const file of ["basecoat-vega-1.0.2.min.css","lucide-0.468.0.min.js","basecoat-runtime-1.0.2.min.js","basecoat-tabs-1.0.2.min.js","basecoat-sidebar-1.0.2.min.js","basecoat-dropdown-menu-1.0.2.min.js"]) await writeFile(join(project,"web/vendor",file),file);
   await copyFile("dev/scripts/unit.mjs",join(project,"dev/scripts/unit.mjs"));
   await copyFile("dev/scripts/clippy.sh",join(project,"dev/scripts/clippy.sh"));
-  await writeFile(join(project,"dev/scripts/test-ports.mjs"),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"port-check\\n");if(process.env.PORT_CHECK_RESULT){console.error("Close any open FeedTorrent instances");process.exit(1)}\n');
+  await copyFile("dev/scripts/test-ports.mjs",join(project,"dev/scripts/test-ports-real.mjs"));
+  await writeFile(join(project,"dev/scripts/test-ports.mjs"),`import{appendFileSync}from"node:fs";import{needsPorts}from"./test-ports-real.mjs";const a=process.argv.slice(2),words=f=>(a[a.indexOf(f)+1]||'').trim().split(/\\s+/);if(needsPorts(words('--goals'),words('--native-suites'))){appendFileSync(process.env.BUILD_LOG,"port-check\\n");if(process.env.PORT_CHECK_RESULT){console.error("Close any open FeedTorrent instances");process.exit(1)}}\n`);
   await copyFile("dev/tests/runtime.mjs",join(project,"dev/tests/runtime.mjs"));
   await writeFile(join(project,"dev/scripts/ui.mjs"),"import{appendFileSync}from\"node:fs\";appendFileSync(process.env.BUILD_LOG,\"ui:\"+process.argv.slice(2).join(\" \")+\"\\n\");\n");
   await writeFile(join(project,"dev/scripts/test-deps.sh"),"#!/bin/sh\nprintf \"test-deps\\n\" >> \"$BUILD_LOG\"\n");

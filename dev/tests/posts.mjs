@@ -255,6 +255,21 @@ try {
   assert.equal(Object.values(state.checkpoint.posts).filter(p=>p.followed).length,0);
   assert.equal((await app.api()).posts.length,0);
   pass('single posts.json checkpoint preserves completed Delete post');
+  // A signed channel may advertise an ordinary torrent: its role is not proof
+  // of BEP49 metadata. Keep that user's transfer independent and out of History.
+  await app.command({type:'add_torrent',data:fx.content.bytes});
+  await fx.publish(fx.content,100);
+  await app.command({type:'follow_post',uri:fx.postMagnet,config:{name:'Unconfirmed catalog',mode:'current_catalog',automatic_limit:8388608}});
+  await wait(async()=>{const s=await app.api();const p=s.posts.find(p=>p.id===fx.postId);return p?.head===fx.content.id&&p.catalogs.some(c=>c.id===fx.content.id);},'ordinary torrent advertised as channel catalog');
+  const uncertain=await app.api();assert(uncertain.transfers.some(t=>t.id===fx.content.id&&t.pinned));
+  assert(!uncertain.library_posts.some(p=>p.catalog_ids.includes(fx.content.id)),'unconfirmed catalog must retain its standalone card');
+  assert(!uncertain.library_posts.some(p=>p.representative===fx.content.id),'unconfirmed metadata cannot supply representative metrics');
+  assert.deepEqual((await app.command({type:'read_post_history',post_kind:'followed',id:fx.postId})).versions,[]);
+  await app.deletePost('followed',fx.postId);await wait(async()=>!(await app.api()).cleanup.length,'invalid channel cleanup');
+  const unpin=await app.command({type:'preview_removal',target:{kind:'unpin',id:fx.content.id}});
+  await app.command({type:'set_pin',id:fx.content.id,pinned:false,revision:unpin.revision});
+  await wait(async()=>!(await app.api()).cleanup.length&&!(await app.api()).transfers.length,'standalone cleanup');
+  pass('unconfirmed catalog advertisements retain ordinary torrents and cannot fabricate post History');
   report.status = 'pass';
 } catch (e) {
   report.status = 'fail';

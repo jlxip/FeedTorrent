@@ -286,6 +286,9 @@ pub struct EntryView {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct CatalogView {
+    // Derived from parsed BEP49 metadata, independent of transfer readiness.
+    #[serde(skip)]
+    pub confirmed_catalog: bool,
     pub id: String,
     pub name: String,
     pub total: u64,

@@ -2,9 +2,11 @@ mod content;
 mod creation;
 mod desktop;
 mod images;
+mod library;
 mod lifecycle;
 mod local_http;
 mod organization;
+mod peers;
 mod post_state;
 mod posts;
 mod publishing;
@@ -129,6 +131,7 @@ struct Snapshot {
     engine: &'static str,
     image_preferences: images::Preferences,
     transfers: Vec<Transfer>,
+    library_posts: Vec<library::LibraryPost>,
     settings: Settings,
     dht_nodes: u32,
     listen_port: u16,
@@ -214,6 +217,13 @@ enum Command {
         #[serde(alias = "feed")]
         post: String,
         catalog: String,
+    },
+    ReadPostHistory {
+        post_kind: String,
+        id: String,
+    },
+    ReadPeers {
+        id: String,
     },
     ReadContent {
         id: String,
@@ -422,6 +432,7 @@ impl Engine {
         let view = Snapshot {
             engine: "libtorrent-rasterbar 2.1.2",
             transfers: vec![],
+            library_posts: vec![],
             settings: store.settings.clone(),
             image_preferences: store.image_preferences.clone(),
             dht_nodes: 0,
@@ -686,6 +697,8 @@ impl Engine {
             Command::InspectSource { .. }
             | Command::NewsPage { .. }
             | Command::CatalogPage { .. }
+            | Command::ReadPostHistory { .. }
+            | Command::ReadPeers { .. }
             | Command::ReadContent { .. }
             | Command::ReadCatalogBody { .. } => {
                 bail!("Read-only command dispatched incorrectly")
@@ -1014,6 +1027,7 @@ impl Engine {
         self.view = Snapshot {
             engine: "libtorrent-rasterbar 2.1.2",
             transfers,
+            library_posts: vec![],
             settings: self.store.settings.clone(),
             image_preferences: self.store.image_preferences.clone(),
             dht_nodes: native.dht_nodes,
@@ -1048,6 +1062,7 @@ impl Engine {
                 .map(|h| h.error.clone())
                 .unwrap_or_default(),
         };
+        self.view.library_posts = library::project(&self.view);
         Ok(())
     }
     fn checkpoint(&mut self) -> Result<()> {
@@ -1301,6 +1316,7 @@ async fn command(
 }
 async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
     let (content_type, bytes): (&str, &[u8]) = match name.as_str() {
+        "peers.js" => ("text/javascript", include_bytes!("../../web/dist/peers.js")),
         "creation.js" => (
             "text/javascript",
             include_bytes!("../../web/dist/creation.js"),
@@ -1417,6 +1433,7 @@ async fn main() -> Result<()> {
     let first = Snapshot {
         engine: "libtorrent-rasterbar 2.1.2",
         transfers: vec![],
+        library_posts: vec![],
         settings: store.settings.clone(),
         image_preferences: store.image_preferences.clone(),
         dht_nodes: 0,
@@ -1463,7 +1480,13 @@ async fn main() -> Result<()> {
             }
             match receiver.recv_timeout(Duration::from_millis(200)) {
                 Ok(job) => {
+                    let read_only_peers = matches!(
+                        &job.command,
+                        Command::ReadPeers { .. } | Command::ReadPostHistory { .. }
+                    );
                     let result = match job.command {
+                        Command::ReadPostHistory{post_kind,id}=>engine.read_post_history(&post_kind,&id),
+                        Command::ReadPeers{id}=>peers::read(&engine.native, &id),
                         Command::ReadImage{id,path}=>engine.image_source(&id,&path),
                         Command::InspectSource{uri}=>normalize_magnet_input(&uri).map_err(Into::into).and_then(|uri| {
                             let id=engine.native.inspect(TorrentSource::Magnet(&uri))?;
@@ -1481,10 +1504,12 @@ async fn main() -> Result<()> {
                         Command::CatalogPage{post,catalog,offset}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.page(&post,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total,"created_at":engine.catalog_dates(&p.catalog.id).and_then(|d|d.created_at),"updated_at":engine.catalog_dates(&p.catalog.id).map(|d|d.updated_at)})),
                         c=>engine.apply(c).map(|()|serde_json::json!({"ok":true})),
                     }.map_err(|e|format!("{e:#}"));
-                    if let Err(e) = engine.refresh() {
-                        engine.view.warning = format!("Engine: {e:#}");
+                    if !read_only_peers {
+                        if let Err(e) = engine.refresh() {
+                            engine.view.warning = format!("Engine: {e:#}");
+                        }
+                        views.send_replace(engine.view.clone());
                     }
-                    views.send_replace(engine.view.clone());
                     let _ = job.reply.send(result);
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,

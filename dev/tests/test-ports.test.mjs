@@ -1,7 +1,14 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:net';
-import {assertPortsAvailable} from '../scripts/test-ports.mjs';
+import {assertPortsAvailable,needsPorts} from '../scripts/test-ports.mjs';
+
+test('full validation checks ports while focused suites and standalone checks remain usable',()=>{
+  for(const goals of [['check','test'],['check-native','test-native'],['test-ports']]) assert(needsPorts(goals,[]));
+  assert(needsPorts(['test-integration'],['peers','http-ports']));
+  assert(!needsPorts(['test-integration'],['peers']));
+  assert(!needsPorts(['build','check-native','run'],['http-ports']));
+});
 
 async function reserve(port=0) {
   const server=createServer();

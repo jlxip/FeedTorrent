@@ -29,7 +29,33 @@ fn inspect(source: TorrentSource<'_>) -> Result<String> {
         TorrentSource::Torrent(bytes) => ffi::inspect_torrent(bytes).map_err(error),
     }
 }
+/// A known peer, its connection status and payload rates in bytes per second.
+#[derive(Debug)]
+pub struct Peer {
+    pub address: String,
+    pub port: u16,
+    pub connected: bool,
+    pub down: u64,
+    pub up: u64,
+}
 impl LibtorrentBackend {
+    /// Read connection details without refreshing or persisting torrent state.
+    pub fn read_peers(&self, id: &str) -> Result<Vec<Peer>> {
+        Ok(self
+            .session
+            .read_peers(id)
+            .map_err(error)?
+            .into_iter()
+            .map(|p| Peer {
+                address: p.address,
+                port: p.port,
+                connected: p.connected,
+                down: p.down,
+                up: p.up,
+            })
+            .collect())
+    }
+
     pub fn new(state_dir: &str, port: u16, bootstrap: &str, isolated: bool) -> Result<Self> {
         Self::create(state_dir, port, bootstrap, isolated, false)
     }

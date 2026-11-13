@@ -5,6 +5,8 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createPublicKey,verify} from 'node:crypto';
 import DHT from 'bittorrent-dht';
+import bencode from 'bencode';
+import {createHash} from 'node:crypto';
 import {temporary,startApp,wait,cleanup} from './helpers.mjs';
 import {evidencePath} from './runtime.mjs';
 export async function publicationFlow(){
@@ -63,6 +65,33 @@ export async function publicationFlow(){
   await app.stop();app=await startApp(join(root,'publisher'),args);
   await wait(async()=> (await own())?.state==='Canceled','canceled publication after restart');assert.equal((await own()).published_sequence,'1');assert.equal((await saved()).record.sequence,2);
   pass('wrong password seeds nothing; nested cancellation fences stale callbacks, keeps downloads active and preserves signed/confirmed sequences after restart');
+  // Three confirmed roots plus a nested page: presentation never hides payloads.
+  rejectPuts=false;const current=await pub({action:'get_post',id});
+  await pub({action:'publish',id,revision:current.revision,password});
+  await wait(async()=> (await own()).state==='Published','third confirmed version for Library',90000);
+  const library=(await app.api()).library_posts.find(p=>p.post_kind==='own'&&p.id===id);
+  const history=await app.command({type:'read_post_history',post_kind:'own',id});
+  assert.equal(history.versions.length,3);assert.equal(history.versions[0].id,library.representative);
+  assert(library.catalog_ids.length>history.versions.length,'nested page belongs in group, not version list');
+  assert(history.versions.every(v=>v.created_at===preparedAt&&typeof v.updated_at==='number'));
+  const beforeRead=await readFile(join(root,'publisher/state/publishing.json'));
+  await app.command({type:'read_post_history',post_kind:'own',id});
+  assert.deepEqual(await readFile(join(root,'publisher/state/publishing.json')),beforeRead);
+  const old=history.versions.at(-1).id;await app.command({type:'set_pin',id:old,pinned:true});
+  assert((await app.command({type:'read_post_history',post_kind:'own',id})).versions.find(v=>v.id===old).pinned);
+  const normalInfo={name:'standalone.bin',length:1,'piece length':16384,pieces:createHash('sha1').update('x').digest()};
+  const normal=createHash('sha1').update(bencode.encode(normalInfo)).digest('hex');
+  await app.command({type:'add_torrent',data:[...bencode.encode({info:normalInfo})]});
+  const grouped=(await app.api()).library_posts.find(p=>p.id===id);assert(!grouped.catalog_ids.includes(normal));
+  const removal=await app.command({type:'preview_removal',target:{kind:'post',post_kind:'own',id}});
+  await app.command({type:'delete_post',post_kind:'own',id,revision:removal.revision});
+  await wait(async()=>!(await app.api()).cleanup.length,'Library post cleanup');
+  assert(!(await app.api()).library_posts.some(p=>p.id===id));
+  assert((await app.api()).transfers.some(t=>t.id===old&&t.pinned));
+  await assert.rejects(()=>app.command({type:'read_post_history',post_kind:'own',id}),/unavailable/);
+  await app.stop();app=await startApp(join(root,'publisher'),args);
+  assert((await app.api()).transfers.some(t=>t.id===old&&t.pinned));assert.equal((await app.api()).library_posts.length,0);
+  pass('Library derives three confirmed roots, excludes subpages from history, preserves verified dates, readonly persistence, Pin and standalone recovery after post removal');
   report.status='pass';
  }finally{
   if(reader)await reader.stop();await cleanup(root,app);await Promise.all(nodes.map(n=>new Promise(r=>n.destroy(r))));

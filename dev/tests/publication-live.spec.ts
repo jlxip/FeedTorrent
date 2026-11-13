@@ -15,7 +15,7 @@ test('real Publish acceptance opens the same page and confirmed DHT publication 
   await expect(page).toHaveURL(new RegExp('#/own/'+id+'/read/1$'));await expect(page.locator('#own-preview')).toContainText('Live body');await expect(page.locator('#own-publish-password')).toHaveValue('');
   await wait(async()=> (await app.api()).publishing.posts.find(p=>p.id===id)?.published_sequence==='0','live browser DHT ACK',90000);
   for(const tab of[page,second]){await expect(tab.locator('#own-indicator')).toHaveAttribute('data-state','published');await tab.locator('#own-indicator').hover();await expect(tab.locator('#own-publication-help')).toContainText('Published Version 0');}
-  await page.locator('#transfers-nav').click();await expect(page.locator('#transfers article')).toHaveCount((await app.api()).transfers.length);await page.locator(`#post-tree a[data-post="${id}"]`).click();await expect(page.locator('#own-preview')).toContainText('Live body');
+  await page.locator('#transfers-nav').click();const library=await app.api();const grouped=new Set(library.library_posts.flatMap(p=>p.catalog_ids));await expect(page.locator('#transfers article')).toHaveCount(library.library_posts.length+library.transfers.filter(t=>!grouped.has(t.id)).length);await page.locator(`#post-tree a[data-post="${id}"]`).click();await expect(page.locator('#own-preview')).toContainText('Live body');
   expect(external).toEqual([]);await second.close();
  }finally{await cleanup(root,app);if(network)await network.stop();}
 });

@@ -21,7 +21,7 @@ async function followed(page){
  await page.addInitScript(()=>{class Events extends EventTarget{onerror:any=null;constructor(){super();(window as any).__readerEvents=this;}};(window as any).EventSource=Events;});
  await page.route('**/api/snapshot',r=>r.fulfill({json:snapshot}));
  await page.route('**/api/commands',async route=>{
-  const c=route.request().postDataJSON();commands.push(c);
+  const c=route.request().postDataJSON();if(c.type==='read_peers'){await route.fulfill({json:{id:c.id,peers:[]}});return;}commands.push(c);
   if(c.type==='read_content'){await route.fulfill({json:{id:c.id,name:c.id===hash(3)?'Wiring notes':'Readable model name',total:4096,kind:c.id===hash(3)?'catalog':'torrent',files:[],entries:c.id===hash(3)?[{...entries[2],index:0,name:'child.txt',source_name:'child.txt'}]:[],count:c.id===hash(3)?1:0,offset:0,body:c.id===hash(3)?text('Child page'):null,body_state:c.id===hash(3)?'ready':'absent',body_error:'',error:''}});}
   else if(c.type==='catalog_page'){
    const data=c.catalog===hash(1)?entries:[{...entries[2],index:0,name:c.catalog===hash(2)?'new.txt':'child.txt',source_name:'child.txt'}];
@@ -102,12 +102,12 @@ test('following a catalog waits for metadata before offering download approval',
  const x=await followed(page);
  try{
   const catalog=x.f.catalogs[0];catalog.ready=false;catalog.state='Waiting for metadata';catalog.total=0;
-  const transfer={...x.snapshot.transfers[0],id:catalog.id,name:catalog.id,state:'Waiting for metadata',held:true,verified:0,total:0,progress:0,files:[],warning:'Peer: End of file [asio.misc:2]'};
+  const transfer={...x.snapshot.transfers[0],id:catalog.id,name:catalog.id,state:'Waiting for metadata',held:true,verified:0,total:0,progress:0,files:[],warning:'Tracker unavailable'};
   x.snapshot.transfers.push(transfer);
   await page.goto(x.app.url+'/#/posts/'+x.f.id);
   const warning=page.locator('#post-reader .content-sharing .alert[role="status"]');
   await expect(page.locator('#post-reader .state')).toHaveText('Waiting for metadata');
-  await expect(warning).toContainText('Peer: End of file');
+  await expect(warning).toContainText('Tracker unavailable');
   await expect(warning).not.toContainText('Download approval required.');
   await expect(page.locator('#post-approve')).toBeHidden();
 

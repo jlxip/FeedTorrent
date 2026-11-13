@@ -1,7 +1,8 @@
+import {PeerList} from './peers.js';
 import {settingsButton} from './reader.js';
 import {torrentImages} from './images.js';
 import {Reader, ReaderHistory, size, type Crumb, type ReaderEntry} from './reader.js';
-import type {Command, ContentData, Snapshot, Transfer, PostEntry} from './types.js';
+import type {Command, ContentData, Snapshot, Transfer, PostEntry, PostHistoryData} from './types.js';
 
 const node=(tag:string,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(label:string)=>{const b=document.createElement('button');b.type='button';b.className='btn';b.textContent=label;return b;};
@@ -20,6 +21,7 @@ export interface Summary {
   approval?:{id:string;ready:boolean};
 }
 export class ContentHeader {
+  readonly peerList=new PeerList();
   readonly root=node('header','','content-heading');
   readonly identity=node('div','','content-identity');
   private defaultIdentity=node('div','','field-label reader-title');
@@ -32,6 +34,7 @@ export class ContentHeader {
   private down=node('span');private up=node('span');private peers=node('span');private error=node('div','','alert');private warning=node('div','','alert');private approve=button('Download once');
   private value:Summary={title:'',connected:false,noTorrent:true};private failure='';private id='';private pending=false;private generation=0;
   constructor(private prefix:string,identity?:HTMLElement){
+    this.peerList.setCounter(this.peers);
     this.gear=settingsButton(prefix);
     this.title.id=prefix+'-heading';this.title.tabIndex=-1;
     this.info.id=prefix+'-info';this.info.className='btn help-control';this.info.dataset.variant='ghost';this.info.dataset.size='icon-sm';
@@ -52,7 +55,7 @@ export class ContentHeader {
     this.controls.append(this.meter,this.toggle,this.menu);const rates=node('div','','content-rates muted');rates.append(this.down,this.up,this.peers);
     this.error.id=prefix+'-error';this.error.dataset.variant='destructive';this.error.setAttribute('role','alert');this.error.append(node('section'));
     this.warning.setAttribute('role','status');this.warning.append(node('section'));this.approve.id=prefix+'-approve';
-    this.sharing.append(this.controls,rates,this.error,this.warning,this.approve);this.root.append(this.identity,this.sharing);
+    this.sharing.append(this.controls,rates,this.peerList.root,this.error,this.warning,this.approve);this.root.append(this.identity,this.sharing);
     // WebKit touch may omit click on non-interactive text. Let Basecoat close
     // this menu on an outside touch, without changing its mouse/key handling.
     document.addEventListener('pointerdown',event=>{if(event.pointerType==='touch'&&!this.menu.contains(event.target as Node))this.menu.close?.(false);});
@@ -90,6 +93,7 @@ export class ContentHeader {
     const info=this.identity.querySelector<HTMLButtonElement>('.help-control')||this.info,help=this.identity.querySelector<HTMLElement>('.field-tooltip:not(.publication-tooltip)')||this.help;
     info.setAttribute('aria-label',`About ${m.title}`);help.textContent=[m.id,t?.save_path,m.source,m.info].filter(Boolean).join('\n');info.hidden=!help.textContent;
     this.sharing.hidden=!!m.noTorrent;
+    this.peerList.update(m.noTorrent?null:t?.id||null,m.connected);
     const total=t?.files.length?t.approval_size??t.total:m.total;
     this.status.textContent=!m.connected?'Server disconnected':t?.state||'Not downloaded';
     this.percent.textContent=t?`${Math.floor(Math.max(0,Math.min(1,t.progress))*100)}%`:total!==undefined&&total!==null?'0%':'';
@@ -105,7 +109,7 @@ export class ContentHeader {
     const inherited=!t?.pinned&&!!t?.protected_by?.length;
     this.pinTip.textContent='Keep in Library even if the original post is deleted.'+(inherited?' Protected by Pin on '+(m.protectedNames||['another catalog']).join(', ')+'. Unpin that catalog first.':'');
     this.remove.setAttribute('aria-description',t?.protected_by?.length?'Protected by Pin. Unpin its source before deleting.':'');
-    this.down.textContent=`↓ ${m.connected?size(t?.down||0)+'/s':'—'}`;this.up.textContent=`↑ ${m.connected?size(t?.up||0)+'/s':'—'}`;this.peers.textContent=m.connected?`${t?.peers||0} peers`:'— peers';
+    this.down.textContent=`↓ ${m.connected?size(t?.down||0)+'/s':'—'}`;this.up.textContent=`↑ ${m.connected?size(t?.up||0)+'/s':'—'}`;
     const approvalReady=!!(m.approval?.ready||(t?.held&&t.files.length));
     const error=[m.error,t?.error,this.failure].filter(Boolean).join('\n'),warning=[m.warning,t?.warning,approvalReady?'Download approval required.':''].filter(Boolean).join('\n');
     this.error.firstElementChild!.textContent=error;this.error.hidden=!error;this.warning.firstElementChild!.textContent=warning;this.warning.hidden=!warning;
@@ -119,6 +123,47 @@ export class ContentReader extends Reader {
     super(root,prefix);this.header=new ContentHeader(headerPrefix,identity);root.insertBefore(this.header.root,this.body);this.header.init();
   }
 }
+/** Local published roots, fetched only while the post's History is open. */
+export class PostHistory {
+  readonly root:HTMLDetailsElement;
+  private list=node('div');private key='';private route='';private signature='';private request=0;
+  private kind:'own'|'followed'='own';private id='';private connected=false;
+  constructor(private call:(c:Command,refresh?:boolean)=>Promise<any>,root?:HTMLDetailsElement){
+    this.root=root||document.createElement('details');this.root.classList.add('reader-history','post-version-history');this.root.hidden=true;
+    const summary=node('summary','History','btn');summary.dataset.variant='ghost';this.root.replaceChildren(summary,this.list);
+    this.root.addEventListener('toggle',()=>{if(this.root.open)void this.load();else this.request++;});
+    document.addEventListener('pointerdown',e=>{if(!this.root.contains(e.target as Node))this.root.open=false;});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')this.root.open=false;});
+    window.addEventListener('hashchange',()=>{this.request++;this.root.open=false;});
+  }
+  update(kind:'own'|'followed',id:string|null,state:Snapshot|null,connected:boolean){
+    const group=id?state?.library_posts?.find(p=>p.post_kind===kind&&p.id===id):undefined;
+    const route=location.hash,key=group?`${kind}/${id}`:'';
+    if(key!==this.key||route!==this.route){this.request++;this.root.open=false;this.list.replaceChildren();this.signature='';}
+    this.key=key;this.route=route;this.kind=kind;this.id=id||'';this.root.hidden=!group;this.connected=connected;
+    const signature=JSON.stringify([group,group?.catalog_ids.map(id=>{const t=state?.transfers.find(t=>t.id===id);return t&&[t.id,t.state,t.progress,t.total,t.pinned,t.error];}),connected]);
+    if(this.signature!==signature){this.signature=signature;if(this.root.open)void this.load();}
+  }
+  private async load(){
+    const request=++this.request,key=this.key,route=this.route;
+    this.list.replaceChildren(node('p',this.connected?'Loading…':'Server disconnected','muted'));
+    if(!key||!this.connected)return;
+    try{
+      const data=await this.call({type:'read_post_history',post_kind:this.kind,id:this.id},false) as PostHistoryData;
+      if(request!==this.request||key!==this.key||route!==location.hash||!this.root.open)return;
+      if(data.id!==this.id||data.post_kind!==this.kind||!Array.isArray(data.versions))throw Error('History unavailable');
+      const rows=data.versions.map(v=>{
+        const link=node('a','','btn') as HTMLAnchorElement;link.dataset.variant='ghost';link.href=`#/library/${v.id}`;
+        const stamp=v.updated_at??v.created_at,valid=typeof stamp==='number'&&Number.isSafeInteger(stamp)&&stamp>=0&&stamp<=253402300799;
+        link.append(node('span',valid?new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(stamp*1000)):'Unknown date'),node('span',v.total===0&&!v.ready?'—':size(v.total)));
+        if(v.pinned)link.append(node('span','Pin','badge'));if(v.error||!v.ready)link.append(node('span',v.error||v.state,'muted'));
+        return link;
+      });
+      this.list.replaceChildren(...rows);if(!rows.length)this.list.append(node('p','No local published versions','muted'));
+    }catch{if(request===this.request&&route===location.hash&&this.root.open)this.list.replaceChildren(node('p','History unavailable','muted'));}
+  }
+}
+
 export const torrentRoute=()=>{
   const parts=location.hash.split('/'),at=parts.lastIndexOf('torrent');
   if(at<0||at+2!==parts.length||!/^[0-9a-f]{40}$/.test(parts[at+1]))return null;
@@ -133,6 +178,7 @@ export class ContentPage {
   private status=node('p','','content-status muted');private pager=node('nav','','catalog-pages');private previous=button('Previous');private next=button('Next');private range=node('span','','muted');
   private history=node('details','','reader-history') as HTMLDetailsElement;private historyLinks=node('div');
   constructor(private reader:ContentReader,private host:ContentHost){
+    reader.header.peerList.setReader(id=>host.call({type:'read_peers',id},false));
     reader.header.mountStatus(this.status);this.status.setAttribute('role','status');this.pager.setAttribute('aria-label','Contents pages');this.pager.append(this.previous,this.range,this.next);reader.root.append(this.pager);
     this.previous.onclick=()=>this.move(-100);this.next.onclick=()=>this.move(100);
     const summary=node('summary','History','btn');summary.dataset.variant='ghost';this.history.append(summary,this.historyLinks);this.historyLinks.setAttribute('aria-label','Catalog history');reader.root.insertBefore(this.history,reader.body);

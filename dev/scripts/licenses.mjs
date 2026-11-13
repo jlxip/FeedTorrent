@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import { execFileSync } from "node:child_process";
 import { mkdir, copyFile, readdir, writeFile, readFile, access } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -42,7 +43,11 @@ const metadata = JSON.parse(
     "1",
   ]),
 );
-const packages = [];
+const geoip = JSON.parse(await readFile(join(root, "app/data/dbip-country-lite.json"), "utf8"));
+if (createHash("sha256").update(await readFile(join(root,"app/data",geoip.file))).digest("hex") !== geoip.sha256) throw Error("DB-IP database checksum mismatch");
+for (const name of ["DB-IP-NOTICE", "CC-BY-4.0.txt", "dbip-country-lite.json"])
+  await copyFile(join(root, "app/data", name), join(notices, name));
+const packages = [{name:"DB-IP Country Lite",version:geoip.edition,license:geoip.license,source:geoip.source,sha256:geoip.sha256}];
 for (const p of metadata.packages.sort(
   (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version),
 )) {

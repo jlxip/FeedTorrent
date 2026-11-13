@@ -10,12 +10,15 @@
 #include <libtorrent/bencode.hpp>
 #include <libtorrent/entry.hpp>
 #include <libtorrent/create_torrent.hpp>
+#include <libtorrent/extensions.hpp>
 #include <libtorrent/extensions/ut_metadata.hpp>
 #include <libtorrent/extensions/ut_pex.hpp>
 #include <libtorrent/hasher.hpp>
 #include <libtorrent/hex.hpp>
 #include <libtorrent/load_torrent.hpp>
 #include <libtorrent/magnet_uri.hpp>
+#include <libtorrent/peer_info.hpp>
+#include <libtorrent/peer_connection_handle.hpp>
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
@@ -26,6 +29,7 @@
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/write_resume_data.hpp>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -237,10 +241,43 @@ static void item_event(NativeDhtEvent &event, lt::entry const &value) {
   event.has_value = true;
   event.value = binary(encoded(value));
 }
+static lt::tcp::endpoint peer_endpoint(lt::tcp::endpoint const &endpoint) {
+  auto address = endpoint.address();
+  if (address.is_v6() && address.to_v6().is_v4_mapped())
+    address = lt::make_address_v4(lt::v4_mapped, address.to_v6());
+  return {address, endpoint.port()};
+}
+struct KnownPeers {
+  std::mutex mutex;
+  std::set<lt::tcp::endpoint> endpoints;
+  void remember(lt::tcp::endpoint const &endpoint) {
+    auto peer = peer_endpoint(endpoint);
+    if (peer.port() == 0 || peer.address().is_unspecified() || peer.address().is_multicast()) return;
+    std::lock_guard<std::mutex> lock(mutex);
+    endpoints.insert(peer);
+  }
+  std::set<lt::tcp::endpoint> snapshot() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return endpoints;
+  }
+};
+struct PeerObserver final : lt::torrent_plugin {
+  std::shared_ptr<KnownPeers> known;
+  explicit PeerObserver(std::shared_ptr<KnownPeers> peers) : known(std::move(peers)) {}
+  void on_add_peer(lt::tcp::endpoint const &endpoint, lt::peer_source_flags_t,
+                   lt::add_peer_flags_t flags) override {
+    if (!(flags & lt::torrent_plugin::filtered)) known->remember(endpoint);
+  }
+  std::shared_ptr<lt::peer_plugin> new_connection(lt::peer_connection_handle const &peer) override {
+    known->remember(peer.remote());
+    return {};
+  }
+};
 struct Session::Impl {
   fs::path dir;
   std::unique_ptr<lt::session> session;
   std::map<std::string, lt::torrent_handle> handles;
+  std::map<std::string, std::shared_ptr<KnownPeers>> known_peers;
   std::map<std::string, fs::path> transfer_roots;
   std::map<std::string, std::pair<bool, std::int64_t>> dates;
   std::map<std::string, std::string> errors, warnings;
@@ -342,21 +379,6 @@ struct Session::Impl {
         warnings[hash(t->handle.info_hashes())] = t->message();
       if (auto *t = lt::alert_cast<lt::tracker_reply_alert>(a))
         warnings.erase(hash(t->handle.info_hashes()));
-      if (auto *t = lt::alert_cast<lt::peer_disconnected_alert>(a)) {
-        if (t->error && t->handle.is_valid() &&
-            !t->handle.status().is_finished &&
-            t->handle.info_hashes().has_v1() &&
-            t->error != lt::errors::self_connection &&
-            t->error != lt::errors::upload_upload_connection &&
-            t->error != lt::errors::torrent_paused &&
-            t->error != lt::errors::torrent_finished &&
-            t->error != lt::errors::duplicate_peer_id) {
-          warnings[hash(t->handle.info_hashes())] =
-              "Peer: " + t->error.message() + " [" +
-              t->error.category().name() + ":" +
-              std::to_string(t->error.value()) + "]";
-        }
-      }
       if (auto *t = lt::alert_cast<lt::listen_failed_alert>(a))
         warning = "Listen: " + t->error.message();
       if (auto *t = lt::alert_cast<lt::dht_error_alert>(a))
@@ -522,8 +544,15 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
     p.flags |= lt::torrent_flags::upload_mode;
     impl->metadata_guard.insert(key);
   }
+  auto known = std::make_shared<KnownPeers>();
+  // Startup can consume resume hints before torrent extensions are attached.
+  for (auto const &peer : p.peers) known->remember(peer);
+  p.extensions.push_back([known](lt::torrent_handle const &, lt::client_data_t) {
+    return std::make_shared<PeerObserver>(known);
+  });
   auto h = impl->session->add_torrent(std::move(p));
   impl->handles[key] = h;
+  impl->known_peers[key] = std::move(known);
   impl->transfer_roots[key] = fs::path(str(path)).parent_path();
   impl->dates[key] = magnet ? std::make_pair(false, std::int64_t(0)) : creation_date(bytes);
   if (active)
@@ -565,6 +594,7 @@ void Session::remove(rust::Str id) {
     throw std::runtime_error(
         "Timed out detaching transfer; files were preserved");
   impl->handles.erase(key);
+  impl->known_peers.erase(key);
   impl->dates.erase(key);
   impl->metadata_guard.erase(key);
   impl->approval_guard.erase(key);
@@ -576,6 +606,34 @@ void Session::remove(rust::Str id) {
     fs::remove(impl->transfer_roots.at(key) / (key + ".resume"));
     impl->transfer_roots.erase(key);
   }
+}
+rust::Vec<NativePeer> Session::read_peers(rust::Str id) const {
+  auto it = impl->handles.find(str(id));
+  if (it == impl->handles.end()) throw std::runtime_error("Torrent unavailable");
+  std::vector<lt::peer_info> peers;
+  // This synchronous network-thread call must happen outside the observer lock.
+  it->second.get_peer_info(peers);
+  auto endpoints = impl->known_peers.at(str(id))->snapshot();
+  std::map<lt::tcp::endpoint, lt::peer_info const *> connected;
+  for (auto const &p : peers) {
+    if (p.flags & lt::peer_info::i2p_socket) continue;
+    auto endpoint = peer_endpoint(p.remote_endpoint());
+    endpoints.insert(endpoint);
+    if (!(p.flags & (lt::peer_info::connecting | lt::peer_info::handshake)))
+      connected[endpoint] = &p;
+  }
+  rust::Vec<NativePeer> out;
+  for (auto const &endpoint : endpoints) {
+    NativePeer row;
+    row.address = endpoint.address().to_string();
+    row.port = endpoint.port();
+    auto live = connected.find(endpoint);
+    row.connected = live != connected.end();
+    row.down = row.connected ? std::max(live->second->payload_down_speed, 0) : 0;
+    row.up = row.connected ? std::max(live->second->payload_up_speed, 0) : 0;
+    out.push_back(std::move(row));
+  }
+  return out;
 }
 NativeSnapshot Session::snapshot() {
   impl->alerts();
@@ -612,9 +670,6 @@ NativeSnapshot Session::snapshot() {
     t.error = impl->errors[id];
     if (s.errc)
       t.error = s.errc.message();
-    // A completed seed normally closes upload-only peer connections.
-    if (s.is_finished && impl->warnings[id].rfind("Peer:", 0) == 0)
-      impl->warnings.erase(id);
     t.warning = impl->warnings[id];
     t.finished = s.is_finished;
     if (!t.error.empty())

@@ -1,7 +1,7 @@
 import {settingsButton} from './reader.js';
 import {ownImages} from './images.js';
 import {pickServerFiles,type FilesEntry} from './creation.js';
-import {ContentReader,ContentPage,torrentRoute,type ContentHost} from './content.js';
+import {ContentReader,ContentPage,PostHistory,torrentRoute,type ContentHost} from './content.js';
 import type {MarkdownNode} from "./markdown.js";
 import {ReaderHistory,type ReaderEntry} from "./reader.js";
 import type { Snapshot } from "./types.js";
@@ -91,6 +91,7 @@ export class PublishingUI {
   private ownHeadingRow=this.ownIdentity.parentElement!;
   private reader=new ContentReader($("own-preview"),'own-reader');
   private content:ContentPage;
+  private localHistory:PostHistory;
   private position=new ReaderHistory($("own-preview"),'ownReader',$("own-heading"));
   private readRoute='';
   private torrentIds=new WeakMap<number[],string>();
@@ -108,6 +109,7 @@ export class PublishingUI {
   ) {
     $('own-info').after(settingsButton('own'));
     this.content=new ContentPage(this.reader,host);
+    this.localHistory=new PostHistory((c,refresh)=>this.host.call(c,refresh));this.localHistory.root.id='own-local-history';this.reader.root.insertBefore(this.localHistory.root,this.reader.body);
     $("own-title").oninput = () => {
       const p = this.page();
       if (p) {
@@ -489,6 +491,7 @@ export class PublishingUI {
   }
   private draw() {
     const s=this.session(),p=this.page();
+    this.localHistory.update('own',this.reading&&!torrentRoute()?this.id:null,this.state,this.connected);
     $("own-post-help").textContent=[this.id,this.post()?.magnet].filter(Boolean).join("\n");
     $("own-editor").hidden=this.reading;$("own-preview").hidden=!this.reading;
     $("own-contents-heading").hidden=this.reading;$("own-entries").hidden=this.reading;$("own-editor-actions").hidden=this.reading;
@@ -631,6 +634,7 @@ export class PublishingUI {
     for (const id of ["post-add", "publishing-keys-open"])
       $<HTMLButtonElement>(id).disabled = !connected || !state?.ready;
     if (!active) {
+      this.localHistory.update('own',null,state,connected);
       this.content.leave();this.position.leave();this.readRoute="";
       $("own-publication-help").hidden = true;
       this.id = "";

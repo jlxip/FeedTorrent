@@ -3,6 +3,7 @@
 #include <memory>
 namespace ft {
 struct NativeSnapshot;
+struct NativePeer;
 struct NativeDescription;
 struct NativeFile;
 struct NativeDhtRequest;
@@ -36,6 +37,7 @@ public:
   void resume(rust::Str id);
   void remove(rust::Str id);
   NativeSnapshot snapshot();
+  rust::Vec<NativePeer> read_peers(rust::Str id) const;
   void checkpoint();
   void shutdown();
   rust::Vec<std::uint8_t> info_bytes(rust::Str id) const;

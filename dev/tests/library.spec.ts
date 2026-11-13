@@ -21,7 +21,7 @@ test('Library replaces Transfers, preserves legacy history and opens manual magn
     expect(await page.evaluate(()=>history.length)).toBe(length+1);
     await expect(page.locator('#transfer-view h2').first()).toHaveText('Library');
     await expect(page.locator('#empty')).toHaveText('No torrents');
-    await expect(page.locator('#count')).toHaveText('0 torrents');
+    await expect(page.locator('#count')).toHaveText('0 items');
     await page.goBack();await expect(page).toHaveURL(/#\/new$/);
     await page.goForward();await expect(page).toHaveURL(/#\/library$/);
     await page.locator('#new-nav').click();
@@ -30,7 +30,7 @@ test('Library replaces Transfers, preserves legacy history and opens manual magn
     await page.locator('#magnet-form button[type=submit]').click();
     await expect(page.locator('#open-dialog')).toBeHidden();
     await expect(page).toHaveURL(/#\/library$/);
-    await expect(page.locator('#count')).toHaveText('1 torrent');
+    await expect(page.locator('#count')).toHaveText('1 item');
     const row=page.locator(`[data-id="${id}"]`);
     await expect(row).toBeVisible();await expect(row.getByRole('progressbar')).toHaveAttribute('aria-valuenow','0');
     await expect(page.locator('#file-section')).toBeHidden();

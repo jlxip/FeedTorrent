@@ -23,7 +23,7 @@ async function fixture(page, count=6) {
   });
   await page.route('**/api/snapshot',route=>route.fulfill({json:snapshot}));
   await page.route('**/api/commands',async route=>{
-    const c=route.request().postDataJSON();if(c.type!=='read_content')commands.push(c);
+    const c=route.request().postDataJSON();if(c.type==='read_peers'){await route.fulfill({json:{id:c.id,peers:[]}});return;}if(c.type!=='read_content')commands.push(c);
     if(c.type==='read_content'){const t=snapshot.transfers.find(t=>t.id===c.id);if(!t){await route.fulfill({status:400,json:{error:'Torrent unavailable'}});return;}await route.fulfill({json:{id:t.id,name:t.name,total:t.files.length?t.total:null,kind:'torrent',files:t.files.map((f,index)=>({...f,index})),entries:[],count:0,offset:0,body:null,body_state:t.files.length?'absent':'metadata',body_error:'',error:''}});return;}
     if(c.type==='preview_removal'){await route.fulfill({json:{revision:'fixture-1',target:c.target,deleting:[c.target.id],shared:[],protected:[],bytes:4294967296,names:[],shared_names:[],protected_names:[],used_by:[]}});return;}
     if(c.type==='remove'&&refuse){await route.fulfill({status:503,json:{error:'Removal refused by fixture'}});return;}

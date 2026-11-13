@@ -36,6 +36,13 @@ pub mod ffi {
         files: Vec<NativeFile>,
         finished: bool,
     }
+    struct NativePeer {
+        address: String,
+        port: u16,
+        connected: bool,
+        down: u64,
+        up: u64,
+    }
     struct NativeSnapshot {
         transfers: Vec<NativeTransfer>,
         dht_nodes: u32,
@@ -106,6 +113,7 @@ pub mod ffi {
         fn resume(self: Pin<&mut Session>, id: &str) -> Result<()>;
         fn remove(self: Pin<&mut Session>, id: &str) -> Result<()>;
         fn snapshot(self: Pin<&mut Session>) -> Result<NativeSnapshot>;
+        fn read_peers(self: &Session, id: &str) -> Result<Vec<NativePeer>>;
         fn checkpoint(self: Pin<&mut Session>) -> Result<()>;
         fn shutdown(self: Pin<&mut Session>) -> Result<()>;
         fn info_bytes(self: &Session, id: &str) -> Result<Vec<u8>>;

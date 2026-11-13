@@ -12,6 +12,8 @@ export interface TorrentFile {
   verified: number;
   ready: boolean;
 }
+export interface Peer {address:string;port:number;connected:boolean;down:number;up:number;country:string|null;}
+export interface PeersData {id:string;peers:Peer[];}
 export interface Transfer {
   id: string;
   name: string;
@@ -42,7 +44,11 @@ export type SourceOrigin={kind:'own';id:string}|{kind:'catalog';parent:string};
 export type RemovalTarget={kind:'post';post_kind:'own'|'followed';id:string}|{kind:'unpin';id:string}|{kind:'torrent';id:string;delete_files:boolean};
 export interface RemovalPreview {revision:string;target:RemovalTarget;deleting:string[];shared:string[];protected:string[];bytes:number;names:string[];shared_names:string[];protected_names:string[];used_by?:string[];}
 export interface Cleanup {id:number;target:RemovalTarget;detached:boolean;remaining:string[];error:string;}
+export interface LibraryPost {post_kind:'own'|'followed';id:string;name:string;representative:string|null;catalog_ids:string[];state:string;error:string;}
+export interface PostVersion {id:string;name:string;total:number;created_at:number|null;updated_at:number|null;state:string;error:string;ready:boolean;pinned:boolean;}
+export interface PostHistoryData {post_kind:'own'|'followed';id:string;versions:PostVersion[];}
 export interface Snapshot {
+  library_posts:LibraryPost[];
   image_preferences:ImagePreferences;
   cleanup:Cleanup[];
   publishing:PublishingState;
@@ -68,7 +74,7 @@ export interface ContentData {
   body_state:'metadata'|'absent'|'pending'|'ready'|'error';body_error:string;error:string;
   source?:number[];source_uri?:string;source_index?:number;previous?:string|null;archive?:string|null;
 }
-export type Command = {type:'set_image_preferences';update:{scope:'global';automatic:boolean}|{scope:'post';id:string;policy:'always'|'ask'|null}}|{type:'preview_removal';target:RemovalTarget}|{type:'delete_post';post_kind:'own'|'followed';id:string;revision:string}|{type:'set_pin';id:string;pinned:boolean;revision?:string}|{type:'retry_cleanup';id:number}|PostCommand|{type:'read_content';id:string;parent?:string;offset:number}|{
+export type Command = {type:'read_post_history';post_kind:'own'|'followed';id:string}|{type:'read_peers';id:string}|{type:'set_image_preferences';update:{scope:'global';automatic:boolean}|{scope:'post';id:string;policy:'always'|'ask'|null}}|{type:'preview_removal';target:RemovalTarget}|{type:'delete_post';post_kind:'own'|'followed';id:string;revision:string}|{type:'set_pin';id:string;pinned:boolean;revision?:string}|{type:'retry_cleanup';id:number}|PostCommand|{type:'read_content';id:string;parent?:string;offset:number}|{
   type: 'add_magnet';
   uri: string;
   origin?:SourceOrigin

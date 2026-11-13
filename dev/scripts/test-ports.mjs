@@ -2,6 +2,11 @@ import {createServer} from 'node:net';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
+export function needsPorts(goals,suites) {
+  return goals.some(goal=>['test','test-native','test-ports'].includes(goal)) ||
+    (goals.includes('test-integration') && suites.includes('http-ports'));
+}
+
 export async function assertPortsAvailable(ports = [8790,8791,8792]) {
   const reserved=[],occupied=[];
   try {
@@ -29,6 +34,7 @@ export async function assertPortsAvailable(ports = [8790,8791,8792]) {
 }
 
 if (process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
-  try { await assertPortsAvailable(); }
+  const args=process.argv.slice(2),words=flag=>(args[args.indexOf(flag)+1]||'').trim().split(/\s+/);
+  try { if (!args.length || needsPorts(words('--goals'),words('--native-suites'))) await assertPortsAvailable(); }
   catch (error) { console.error(error.message);process.exitCode=1; }
 }

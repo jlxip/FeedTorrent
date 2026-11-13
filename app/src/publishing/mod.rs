@@ -27,6 +27,8 @@ use native::{Native, NativeReply, Seed};
 const MAX_LIBRARY: usize = 256 * 1024 * 1024;
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct View {
+    #[serde(skip)]
+    pub(crate) published_roots: BTreeMap<String, Option<String>>,
     pub has_key: bool,
     pub public_key: String,
     pub posts: Vec<OwnView>,
@@ -508,6 +510,11 @@ fn view(lib: &Library, error: String) -> View {
         })
         .collect();
     View {
+        published_roots: lib
+            .posts
+            .iter()
+            .map(|(id, p)| (id.clone(), confirmed(p).map(|p| p.root)))
+            .collect(),
         retention,
         entries,
         busy: BTreeSet::new(),

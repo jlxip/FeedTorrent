@@ -8,25 +8,18 @@ WASM_CHECK = cargo check --locked --offline -p feedtorrent-bep -p feedtorrent-po
 UI_TEST = node dev/scripts/ui.mjs
 UI_ARGS =
 UNIT_ARGS = --workspace
-ALL_NATIVE_SUITES = bep44 bep50 network tls edge-cases open-cwd posts publishing key-vault retention organization storage creation images http-ports
+ALL_NATIVE_SUITES = bep44 bep50 network peers tls edge-cases open-cwd posts publishing key-vault retention organization storage creation images http-ports
 
 NATIVE_SUITES = $(ALL_NATIVE_SUITES)
 
 all: build
 
-.PHONY: all root build deps native-deps web native licenses run test test-native test-unit test-integration test-build test-platform test-ui test-ports check check-native check-rust check-web check-wasm test-safari test-deps verify-source clean host-wasm host-ui
-# Gate shared preparation too, so parallel check/test goals cannot start work
-# before the fixed-port requirement has been checked. Focused suites stay usable.
-HTTP_PORT_GOALS = $(filter test test-native,$(MAKECMDGOALS))
-ifneq ($(filter http-ports,$(NATIVE_SUITES)),)
-HTTP_PORT_GOALS += $(filter test-integration,$(MAKECMDGOALS))
-endif
-ifneq ($(strip $(HTTP_PORT_GOALS)),)
-root $(NPM_READY) $(NATIVE_READY) web native-deps: | test-ports
-endif
+.PHONY: all root build deps native-deps web native licenses run test test-native test-unit test-integration test-integration-body test-build test-platform test-ui test-ports check check-native check-rust check-web check-wasm test-safari test-deps verify-source clean host-wasm host-ui
+# GNU Make and BSD make expose requested goals under different names. Keep
+# preparation in a child graph so the preflight finishes before parallel work.
 test-ports:
 	@$(CHECK_ROOT)
-	@node dev/scripts/test-ports.mjs
+	@node dev/scripts/test-ports.mjs --goals "$(MAKECMDGOALS) $(.TARGETS)" --native-suites "$(NATIVE_SUITES)"
 root:
 	@$(CHECK_ROOT)
 
@@ -62,15 +55,19 @@ test-deps: $(NPM_READY)
 	@$(CHECK_ROOT)
 	NATIVE_JOBS="$(NATIVE_JOBS)" sh dev/scripts/test-deps.sh
 
-test: test-native host-wasm host-ui
-test-native: test-unit test-integration test-build test-platform
+test: test-ports
+	$(MAKE) test-unit test-integration-body test-build test-platform host-wasm host-ui
+test-native: test-ports
+	$(MAKE) test-unit test-integration-body test-build test-platform
 test-unit: web native-deps
 	node dev/scripts/unit.mjs $(UNIT_ARGS)
 test-build: $(NPM_READY) root
 	node dev/tests/make-entry.mjs
 	python3 dev/tests/validation-env.py
 	node --test dev/tests/package.test.mjs dev/tests/release.test.mjs dev/tests/pre-commit.test.mjs dev/tests/test-deps.test.mjs dev/tests/disk-image.test.mjs dev/tests/test-ports.test.mjs
-test-integration: build test-deps
+test-integration: test-ports
+	$(MAKE) test-integration-body
+test-integration-body: build test-deps
 	@test -n "$(NATIVE_SUITES)" || { echo 'No native suites selected.' >&2; exit 2; }
 	@set -e; for suite in $(NATIVE_SUITES); do case " $(ALL_NATIVE_SUITES) " in *" $$suite "*) ;; *) echo "Unknown native suite: $$suite" >&2; exit 2;; esac; done
 	cargo build --locked --release -p feedtorrent-libtorrent -p feedtorrent-pubsub-udp --examples
@@ -80,8 +77,10 @@ test-platform: build test-deps
 test-ui: build test-deps
 	$(UI_TEST) $(UI_ARGS)
 
-check: check-native host-wasm
-check-native: check-rust check-web
+check: test-ports
+	$(MAKE) check-rust check-web host-wasm
+check-native: test-ports
+	$(MAKE) check-rust check-web
 check-rust: web native-deps
 	cargo fmt --all -- --check
 	sh dev/scripts/clippy.sh

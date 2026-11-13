@@ -1309,6 +1309,7 @@ impl PostManager {
             (id.into(), 0, None, None, 0)
         };
         CatalogView {
+            confirmed_catalog: v.meta.is_some(),
             id: id.into(),
             name,
             total,
