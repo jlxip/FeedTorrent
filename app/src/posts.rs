@@ -760,7 +760,7 @@ mod tests {
         let args = Args {
             data_dir: Some(dir.clone()),
             download_dir: None,
-            http_port: 0,
+            http_port: Some(0),
             peer_port: Some(0),
             no_open: true,
             isolated: true,
@@ -829,7 +829,7 @@ mod tests {
         let args = Args {
             data_dir: Some(dir.clone()),
             download_dir: Some(dir.join("downloads")),
-            http_port: 0,
+            http_port: Some(0),
             peer_port: Some(0),
             no_open: true,
             isolated: true,
@@ -899,7 +899,7 @@ mod tests {
         let args = Args {
             data_dir: Some(path.clone()),
             download_dir: Some(path.join("downloads")),
-            http_port: 0,
+            http_port: Some(0),
             peer_port: Some(0),
             no_open: true,
             isolated: true,

@@ -3,6 +3,7 @@ mod creation;
 mod desktop;
 mod images;
 mod lifecycle;
+mod local_http;
 mod organization;
 mod post_state;
 mod posts;
@@ -46,8 +47,9 @@ struct Args {
     data_dir: Option<PathBuf>,
     #[arg(long)]
     download_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 0)]
-    http_port: u16,
+    /// Web port (8790-8792); defaults to the first available port.
+    #[arg(long)]
+    http_port: Option<u16>,
     #[arg(long)]
     peer_port: Option<u16>,
     #[arg(long)]
@@ -308,6 +310,7 @@ struct App {
     origin: String,
     host: String,
     token: String,
+    session_cookie: String,
 }
 fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let temp = path.with_extension("tmp");
@@ -1074,7 +1077,7 @@ async fn guard(State(app): State<Arc<App>>, request: Request<Body>, next: Next) 
     }
     let api = request.uri().path().starts_with("/api/");
     if api {
-        let expected = format!("ft_session={}", app.token);
+        let expected = format!("{}={}", app.session_cookie, app.token);
         let cookie = h
             .get(header::COOKIE)
             .and_then(|v| v.to_str().ok())
@@ -1109,8 +1112,8 @@ async fn index(State(app): State<Arc<App>>) -> Response {
     response.headers_mut().insert(
         header::SET_COOKIE,
         format!(
-            "ft_session={}; HttpOnly; SameSite=Strict; Path=/",
-            app.token
+            "{}={}; HttpOnly; SameSite=Strict; Path=/",
+            app.session_cookie, app.token
         )
         .parse()
         .unwrap(),
@@ -1372,6 +1375,7 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let http_ports = local_http::ports(args.http_port, args.isolated)?;
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
     let dir = match args.data_dir.as_deref() {
         Some(path) => ensure_directory(path)?,
@@ -1407,8 +1411,7 @@ async fn main() -> Result<()> {
     if downloads == published {
         bail!("Downloads and published must be different directories")
     }
-    let listener =
-        tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, args.http_port)).await?;
+    let listener = local_http::bind(&http_ports).await?;
     let address = listener.local_addr()?;
     let origin = format!("http://{address}");
     let first = Snapshot {
@@ -1528,6 +1531,7 @@ async fn main() -> Result<()> {
         view,
         origin: origin.clone(),
         host: address.to_string(),
+        session_cookie: format!("ft_session_{}", address.port()),
         token,
     });
     let recovery = app.clone();

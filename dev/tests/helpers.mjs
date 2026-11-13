@@ -39,10 +39,13 @@ export async function startApp(root, extra = [], options = {}) {
     join(root, "downloads"),
     "--peer-port",
     "0",
+    "--http-port",
+    "0",
   ];
+  if (options.defaultHttp) defaults.splice(defaults.indexOf("--http-port"), 2);
   if (options.openBrowser) defaults.splice(defaults.indexOf("--no-open"), 1);
-  for (const flag of ["--download-dir", "--peer-port", "--data-dir"]) {
-    if (extra.includes(flag)) {
+  for (const flag of ["--download-dir", "--peer-port", "--data-dir", "--http-port"]) {
+    if (extra.includes(flag) && defaults.includes(flag)) {
       const index = defaults.indexOf(flag);
       defaults.splice(index, 2);
     }

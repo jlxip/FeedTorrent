@@ -26,6 +26,7 @@ try {
   for (const file of ["basecoat-vega-1.0.2.min.css","lucide-0.468.0.min.js","basecoat-runtime-1.0.2.min.js","basecoat-tabs-1.0.2.min.js","basecoat-sidebar-1.0.2.min.js","basecoat-dropdown-menu-1.0.2.min.js"]) await writeFile(join(project,"web/vendor",file),file);
   await copyFile("dev/scripts/unit.mjs",join(project,"dev/scripts/unit.mjs"));
   await copyFile("dev/scripts/clippy.sh",join(project,"dev/scripts/clippy.sh"));
+  await writeFile(join(project,"dev/scripts/test-ports.mjs"),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"port-check\\n");if(process.env.PORT_CHECK_RESULT){console.error("Close any open FeedTorrent instances");process.exit(1)}\n');
   await copyFile("dev/tests/runtime.mjs",join(project,"dev/tests/runtime.mjs"));
   await writeFile(join(project,"dev/scripts/ui.mjs"),"import{appendFileSync}from\"node:fs\";appendFileSync(process.env.BUILD_LOG,\"ui:\"+process.argv.slice(2).join(\" \")+\"\\n\");\n");
   await writeFile(join(project,"dev/scripts/test-deps.sh"),"#!/bin/sh\nprintf \"test-deps\\n\" >> \"$BUILD_LOG\"\n");
@@ -40,6 +41,7 @@ try {
   await writeFile(join(project,'dev/tests/pre-commit.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:pre-commit\\n");\n');
   await writeFile(join(project,'dev/tests/test-deps.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:test-deps\\n");\n');
   await writeFile(join(project,'dev/tests/disk-image.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:disk-image\\n");\n');
+  await writeFile(join(project,'dev/tests/test-ports.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:test-ports\\n");\n');
   const log = join(root,"calls"); env.BUILD_LOG=log; env.PATH=bin+":"+env.PATH;
   await writeFile(join(bin,"npm"), '#!/bin/sh\nprintf "npm\\n" >> "$BUILD_LOG"\n', {mode:0o755});
   await writeFile(join(project,"dev/scripts/native-deps.sh"), '#!/bin/sh\nif [ "${1:-}" = --verify-source ]; then printf "verify\\n" >> "$BUILD_LOG"; else mkdir -p .tools/native; printf "native:%s\\n" "$NATIVE_JOBS" >> "$BUILD_LOG"; fi\n');
@@ -61,6 +63,23 @@ fi
   const count = async prefix => (await calls()).filter(x=>x.startsWith(prefix)).length;
   const age = file => utimes(join(project,file),new Date(0),new Date(0));
   const stamp = async file => (await stat(join(project,file),{bigint:true})).mtimeNs;
+  env.PORT_CHECK_RESULT='1';
+  for(const goals of [["check","test"],["check-native","test-native"],["test-integration"]]) {
+    await writeFile(log,"");
+    assert.throws(()=>make(["-j4",...goals]),error=>{
+      assert.match(error.stderr.toString(),/Close any open FeedTorrent instances/);return true;
+    });
+    assert.deepEqual(await calls(),["port-check"],"occupied ports must stop preparation, checks and tests, even in parallel");
+  }
+  // Focused integration without http-ports must still run with the app open.
+  await writeFile(log,"");make(["test-integration","NATIVE_SUITES=publishing"]);
+  assert.equal(await count("port-check"),0);
+  delete env.PORT_CHECK_RESULT;
+  // Restore a fresh preparation state for the existing incremental-build checks.
+  await rm(join(project,".tools"),{recursive:true,force:true});
+  await rm(join(project,"dev/node_modules/.feedtorrent-ready"),{force:true});
+  await rm(join(project,"web/dist"),{recursive:true,force:true});
+  await writeFile(log,"");
   make(["NATIVE_JOBS=2"]);
   assert.equal(await count("npm"),1); assert.equal(await count("native:2"),1);
   const original = await readFile(join(project,"web/dist/main.js")), emitted = await stamp("web/dist/main.js"), web = await stamp("web/dist/.ready");
@@ -134,6 +153,7 @@ fi
   await writeFile(log,"");make(["test-ui","UI_ARGS=version.spec.ts --project=chrome"]);
   assert((await calls()).includes("ui:version.spec.ts --project=chrome"));assert.equal(await count("cargo:test"),0);
   await writeFile(log,"");make(["test"]);
+  assert.equal((await calls())[0],"port-check");assert.equal(await count("port-check"),1);
   assert((await calls()).includes("cargo:test --locked --workspace"));
   assert.equal(await count("cargo:build --locked --release"),2); // app and independent examples
   assert.equal(await count("test-deps"),1);

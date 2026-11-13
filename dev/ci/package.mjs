@@ -46,7 +46,7 @@ export async function smoke(binary){
   let child,exit;
   try{
     await mkdir(join(root,'home'));
-    child=spawn(binary,['--no-open','--isolated','--peer-port','0'],{cwd:root,env:{...process.env,HOME:join(root,'home'),PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
+    child=spawn(binary,['--no-open','--isolated','--peer-port','0','--http-port','0'],{cwd:root,env:{...process.env,HOME:join(root,'home'),PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
     let logs='';
     child.stdout.on('data',b=>{logs+=b});child.stderr.on('data',b=>{logs+=b});
     exit=once(child,'exit');
