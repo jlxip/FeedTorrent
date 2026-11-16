@@ -151,10 +151,12 @@ impl Service {
         });
         if result.is_err() {
             *state = serde_json::from_slice(&old)?;
+            // Also restore a replacement whose final directory sync failed.
+            let _ = publishing::save(&self.path, &old);
         }
         result
     }
-    fn get(&self, id: &str) -> Result<DraftView> {
+    pub(crate) fn get(&self, id: &str) -> Result<DraftView> {
         self.state
             .lock()
             .map_err(|_| anyhow!("Draft service stopped"))?
@@ -162,6 +164,23 @@ impl Service {
             .get(id)
             .cloned()
             .context("Draft unavailable")
+    }
+    pub(crate) fn import_draft(&self, id: &str, revision: u64, draft: Draft) -> Result<DraftView> {
+        draft.validate()?;
+        self.change(|s| {
+            let d = s.drafts.get_mut(id).context("Draft unavailable")?;
+            check(d, revision)?;
+            if d.result.is_some() {
+                bail!("Completed draft");
+            }
+            d.draft = draft;
+            d.revision = d
+                .revision
+                .checked_add(1)
+                .context("Draft revision exhausted")?;
+            d.error.clear();
+            Ok(d.clone())
+        })
     }
     fn progress(&self, id: &str, operation: u64, phase: &str, done: u64, total: u64) -> Result<()> {
         let mut state = self
@@ -233,14 +252,6 @@ pub enum Action {
     DeleteDraft {
         id: String,
         revision: u64,
-    },
-    Browse {
-        path: Option<String>,
-        #[serde(default)]
-        offset: usize,
-    },
-    Sources {
-        paths: Vec<String>,
     },
     CreateTorrent {
         id: String,
@@ -378,6 +389,9 @@ async fn dispatch(app: Arc<App>, action: Action) -> Result<Value> {
             copy_files,
             mut draft,
         } => service.change(|s| {
+            if post {
+                crate::file_imports::post_entries(&mut draft)?;
+            }
             draft.validate()?;
             let d = s.drafts.get_mut(&id).context("Draft unavailable")?;
             check(d, revision)?;
@@ -408,38 +422,6 @@ async fn dispatch(app: Arc<App>, action: Action) -> Result<Value> {
             s.drafts.remove(&id);
             Ok(json!({"ok":true}))
         }),
-        Action::Browse { path, offset } => {
-            tokio::task::spawn_blocking(move || browse(path, offset)).await?
-        }
-        Action::Sources { paths } => {
-            tokio::task::spawn_blocking(move || {
-                if paths.is_empty() || paths.len() > 1024 {
-                    bail!("Select between 1 and 1024 sources");
-                }
-                let mut entries = vec![];
-                for source in paths {
-                    let path = source_path(Path::new(&source))?;
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .context("Select a named file or directory")?
-                        .to_owned();
-                    let mut files = vec![];
-                    scan(&path, vec![name.clone()], &mut files)?;
-                    if files.is_empty() {
-                        bail!("Selected directory contains no regular files");
-                    }
-                    entries.push(Entry::Files {
-                        name,
-                        files,
-                        linked: false,
-                        copy: true,
-                    });
-                }
-                Ok(json!({"entries":entries}))
-            })
-            .await?
-        }
         Action::Cancel { id, operation } => {
             let d = service.get(&id)?;
             if d.operation != operation {
@@ -645,51 +627,6 @@ pub fn stamp(path: &Path) -> Result<String> {
         .as_nanos()
         .to_string())
 }
-fn scan(path: &Path, relative: Vec<String>, out: &mut Vec<SourceFile>) -> Result<()> {
-    if out.len() >= 100_000 || relative.len() > 64 {
-        bail!("Source selection is too large or deeply nested");
-    }
-    let m = fs::symlink_metadata(path)?;
-    if m.is_symlink() {
-        bail!("Symlinks are not supported: {}", path.display());
-    }
-    if m.is_file() {
-        out.push(SourceFile {
-            path: relative,
-            source: path.to_str().context("Non-UTF-8 source")?.into(),
-            length: m.len(),
-            modified: stamp(path)?,
-        });
-    } else if m.is_dir() {
-        let mut children = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-        children.sort_by_key(|e| e.file_name());
-        for e in children {
-            let mut r = relative.clone();
-            r.push(e.file_name().to_str().context("Non-UTF-8 filename")?.into());
-            scan(&e.path(), r, out)?;
-        }
-    } else {
-        bail!(
-            "Only regular files and directories are supported: {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-fn browse(path: Option<String>, offset: usize) -> Result<Value> {
-    let path = source_path(&path.map(PathBuf::from).unwrap_or(std::env::current_dir()?))?;
-    if !path.is_dir() {
-        bail!("Select a directory to browse");
-    }
-    let mut entries = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|e| e.file_name());
-    let total = entries.len();
-    let entries=entries.into_iter().skip(offset).take(500).map(|e|{
-        let m=fs::symlink_metadata(e.path())?;let disabled=m.is_symlink()||!m.is_dir()&&!m.is_file();
-        Ok(json!({"name":e.file_name().to_string_lossy(),"path":e.path(),"directory":m.is_dir(),"length":if m.is_file(){Some(m.len())}else{None},"disabled":disabled}))
-    }).collect::<Result<Vec<_>>>()?;
-    Ok(json!({"path":path,"parent":path.parent(),"entries":entries,"offset":offset,"total":total}))
-}
 pub fn verify_source(f: &SourceFile) -> Result<()> {
     let p = source_path(Path::new(&f.source))?;
     let m = fs::metadata(p)?;
@@ -745,37 +682,6 @@ pub fn prepare_common(
         .find(|p| p.id == d.draft.root)
         .context("Root page unavailable")?
         .title;
-    let files: Vec<_> = d
-        .draft
-        .pages
-        .iter()
-        .flat_map(|p| &p.entries)
-        .filter_map(|e| {
-            if let Entry::Files { files, .. } = e {
-                Some(files)
-            } else {
-                None
-            }
-        })
-        .flatten()
-        .cloned()
-        .collect();
-    if files.is_empty() {
-        bail!("Add files before creating a torrent");
-    }
-    let total = files.iter().try_fold(0u64, |n, f| {
-        n.checked_add(f.length).context("Total size overflow")
-    })?;
-    if total == 0 {
-        bail!("Torrent has no downloadable bytes");
-    }
-    let mut seen = BTreeSet::new();
-    for f in &files {
-        if !seen.insert(f.path.clone()) {
-            bail!("Duplicate torrent path: {}", f.path.join("/"));
-        }
-        verify_source(f)?;
-    }
     fs::create_dir_all(root)?;
     let stage = root.join(format!(".create-{}-{}", d.id, d.operation));
     fs::create_dir(&stage)?;
@@ -787,6 +693,52 @@ pub fn prepare_common(
                 .context("Non-UTF-8 data directory")?
                 .as_bytes(),
         )?;
+        let mut files = Vec::new();
+        for entry in d.draft.pages.iter().flat_map(|p| &p.entries) {
+            match entry {
+                Entry::Files {
+                    files: selected, ..
+                } => files.extend(selected.iter().cloned()),
+                Entry::Torrent {
+                    original: Some(file),
+                    ..
+                } => files.push(file.clone()),
+                Entry::Torrent {
+                    name,
+                    data,
+                    original: None,
+                } => {
+                    let path = stage
+                        .join(".legacy-originals")
+                        .join(files.len().to_string());
+                    fs::create_dir_all(path.parent().unwrap())?;
+                    publishing::save(&path, data)?;
+                    files.push(SourceFile {
+                        path: vec![name.clone()],
+                        source: path.to_str().context("Non-UTF-8 source")?.into(),
+                        length: data.len() as u64,
+                        modified: stamp(&path)?,
+                    });
+                }
+                Entry::Page { .. } => {}
+            }
+        }
+        if files.is_empty() {
+            bail!("Add files before creating a torrent");
+        }
+        let total = files.iter().try_fold(0u64, |n, f| {
+            n.checked_add(f.length).context("Total size overflow")
+        })?;
+        if total == 0 {
+            bail!("Torrent has no downloadable bytes");
+        }
+        let mut seen = BTreeSet::new();
+        for f in &files {
+            if !seen.insert(f.path.clone()) {
+                bail!("Duplicate torrent path: {}", f.path.join("/"));
+            }
+            verify_source(f)?;
+        }
         let mut inputs = vec![];
         let mut external = String::new();
         let mut copied = 0;
@@ -795,7 +747,11 @@ pub fn prepare_common(
                 bail!("Creation canceled; draft preserved");
             }
             let logical = format!("{title}/{}", f.path.join("/"));
-            let source = if d.copy_files {
+            let source = if d.copy_files
+                || Path::new(&f.source).starts_with(&stage)
+                || Path::new(&f.source)
+                    .starts_with(fs::canonicalize(owner)?.join("publishing-assets"))
+            {
                 let target = stage.join(&logical);
                 copy_stream(Path::new(&f.source), &target, cancel)?;
                 copied += f.length;
@@ -824,6 +780,9 @@ pub fn prepare_common(
             verify_source(f)?;
         }
         let metainfo = builder.finish()?;
+        if stage.join(".legacy-originals").exists() {
+            fs::remove_dir_all(stage.join(".legacy-originals"))?;
+        }
         let id = LibtorrentBackend::describe_torrent(&metainfo)?.id;
         Ok(Prepared {
             id,

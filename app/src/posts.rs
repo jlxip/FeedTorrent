@@ -695,14 +695,16 @@ impl Engine {
 }
 
 impl Engine {
-    pub(super) fn news_read(&mut self, post: &str, sequence: &str, read: bool) -> Result<()> {
+    pub(super) fn news_read(&mut self, post: &str, sequence: &str) -> Result<()> {
         let host = self.posts.as_mut().context("Post service unavailable")?;
         if host.disabled {
             bail!("Post checkpoint is invalid; original files preserved")
         }
-        let old = host.manager.set_news_read(post, sequence, read)?;
+        let Some(undo) = host.manager.mark_news_read(post, sequence)? else {
+            return Ok(());
+        };
         if let Err(error) = host.persist(&self.dir) {
-            host.manager.set_news_read(post, sequence, old)?;
+            host.manager.rollback_news_read(undo);
             // Never acknowledge an unpersisted reading decision. Retry its rollback
             // through the ordinary checkpoint barrier if the disk remains unavailable.
             let _ = host.persist(&self.dir);
@@ -848,17 +850,22 @@ mod tests {
         host.manager
             .receive_record(&id, pointer.record().clone(), 0)
             .unwrap();
+        let second =
+            feedtorrent_bep::bep46::TorrentPointer::sign(&signer, [9; 20], 2, vec![]).unwrap();
+        host.manager
+            .receive_record(&id, second.record().clone(), 1)
+            .unwrap();
         host.persist(&dir).unwrap();
         // A failed atomic replacement leaves both the disk and memory unread.
         fs::create_dir(dir.join("posts.tmp")).unwrap();
-        assert!(engine.news_read(&id, "1", true).is_err());
-        assert_eq!(engine.posts.as_ref().unwrap().manager.news_unread(), 1);
+        assert!(engine.news_read(&id, "2").is_err());
+        assert_eq!(engine.posts.as_ref().unwrap().manager.news_unread(), 2);
         let saved = crate::post_state::load(&dir).unwrap();
         let saved =
             PostManager::restore(&serde_json::to_vec(&saved.checkpoint.unwrap()).unwrap()).unwrap();
-        assert_eq!(saved.news_unread(), 1);
+        assert_eq!(saved.news_unread(), 2);
         fs::remove_dir(dir.join("posts.tmp")).unwrap();
-        engine.news_read(&id, "1", true).unwrap();
+        engine.news_read(&id, "2").unwrap();
         assert_eq!(engine.posts.as_ref().unwrap().manager.news_unread(), 0);
         engine.native.shutdown().unwrap();
         engine.posts.as_mut().unwrap().close();

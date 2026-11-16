@@ -87,10 +87,10 @@ pub async fn import(State(app): State<Arc<App>>, headers: HeaderMap, mut body: B
         Ok(p) => p,
         Err(_) => return api_error(StatusCode::BAD_REQUEST, "Backup password required"),
     };
-    if !app.creation.idle() {
+    if !app.creation.idle() || !app.imports.idle() {
         return api_error(
             StatusCode::BAD_REQUEST,
-            "Wait for torrent creation before importing",
+            "Wait for torrent creation and file imports before importing a backup",
         );
     }
     let mut random = [0; 16];

@@ -1,5 +1,11 @@
 use super::*;
 
+/// Opaque rollback for a synchronous host persistence transaction.
+pub struct NewsReadUndo {
+    entries: Vec<u64>,
+    revision: u64,
+}
+
 impl PostManager {
     pub(super) fn initialize_news(&mut self, legacy: bool) -> Result<()> {
         if legacy {
@@ -153,7 +159,12 @@ impl PostManager {
             .count()
     }
     /// An anchor freezes membership while paging; later posts stay outside it.
-    pub fn news_page(&self, offset: usize, anchor: Option<&str>) -> Result<NewsPage> {
+    pub fn news_page(
+        &self,
+        offset: usize,
+        anchor: Option<&str>,
+        hide_read: bool,
+    ) -> Result<NewsPage> {
         let anchor = match anchor {
             Some(a) => a.parse::<u64>().map_err(|_| err("Invalid news anchor"))?,
             None => self.state.news.next_order,
@@ -164,7 +175,7 @@ impl PostManager {
             .entries
             .iter()
             .rev()
-            .filter(|n| n.order <= anchor && self.followed(&n.post))
+            .filter(|n| n.order <= anchor && self.followed(&n.post) && (!hide_read || !n.read))
             .collect();
         let posts = self.views();
         let entries = rows
@@ -201,7 +212,7 @@ impl PostManager {
         })
     }
     /// Mutates local state only. The host must persist before confirming success.
-    pub fn set_news_read(&mut self, post: &str, sequence: &str, read: bool) -> Result<bool> {
+    pub fn mark_news_read(&mut self, post: &str, sequence: &str) -> Result<Option<NewsReadUndo>> {
         if !self.followed(post) {
             return Err(err("Post not followed"));
         }
@@ -212,15 +223,36 @@ impl PostManager {
             .state
             .news
             .entries
-            .iter_mut()
+            .iter()
             .find(|n| n.post == post && n.sequence == seq)
             .ok_or_else(|| err("News entry not found"))?;
-        let old = n.read;
-        if old != read {
-            n.read = read;
-            self.news_changed();
+        let through = n.sequence;
+        let mut undo = NewsReadUndo {
+            entries: Vec::new(),
+            revision: self.state.news.revision,
+        };
+        for n in &mut self.state.news.entries {
+            if n.post == post && n.sequence <= through && !n.read {
+                undo.entries.push(n.order);
+                n.read = true;
+            }
         }
-        Ok(old)
+        if undo.entries.is_empty() {
+            return Ok(None);
+        }
+        self.news_changed();
+        Ok(Some(undo))
+    }
+    pub fn rollback_news_read(&mut self, undo: NewsReadUndo) {
+        for n in &mut self.state.news.entries {
+            if undo.entries.contains(&n.order) {
+                n.read = false;
+            }
+        }
+        self.state.news.revision = undo.revision;
+        // A host may have failed after replacement (for example directory sync).
+        // Keep the rollback dirty so it also restores the persisted checkpoint.
+        self.dirty = true;
     }
     pub fn news_for_catalog(
         &self,

@@ -4,7 +4,7 @@ import {readFile,writeFile} from 'node:fs/promises';
 import {postFixture} from './post-fixtures.mjs';
 import {cleanup,startApp,temporary,wait} from './helpers.mjs';
 
-test('New posts follows signed roots, reads only displayed content and restores reading decisions',async({page})=>{
+test('New posts follows signed roots, reads openings before content and restores reading decisions',async({page})=>{
   const root=await temporary();let app,fx;
   try {
     fx=await postFixture(root);
@@ -19,26 +19,24 @@ test('New posts follows signed roots, reads only displayed content and restores 
     await expect(page.locator('#transfers-nav')).toHaveAttribute('aria-current','false');
     await expect(news.locator('.news-row')).toHaveCount(1);
     await expect(page.locator('#new-count')).toHaveText('1');
-    await expect(news.locator('.badge')).toHaveText('Unread');
+    await expect(news.locator('.news-read')).toBeHidden();
     const initial=(await app.command({type:'news_page',offset:0,anchor:null})).entries[0];
     await news.locator('.news-title').click();
     await expect(page.locator('#post-view')).toBeVisible();
     await expect(page.locator('#catalog-status')).toContainText('Awaiting approval');
-    expect((await app.api()).news_unread).toBe(1);
+    await wait(async()=> (await app.api()).news_unread===0,'opening without content counts as read');
     expect(fx.head.requests).toBe(0);
     await app.command({type:'approve_transfer',id:fx.head.id});
     await wait(async()=> (await app.api()).news_unread===0,'verified catalog without body counts as read');
     await page.goBack();
-    await expect(news.locator('.badge')).toHaveText('Read');
+    await expect(news.getByRole('img',{name:'Read',exact:true})).toBeVisible();
 
-    await news.locator('.news-toggle').click();
-    await expect(page.locator('#new-count')).toHaveText('1');
-    await page.reload();
-    await expect(news.locator('.badge')).toHaveText('Unread');
+    await expect(news.locator('.news-toggle')).toHaveCount(0);
+    await page.reload();await expect(news.getByRole('img',{name:'Read',exact:true})).toBeVisible();
     const latest=await fx.catalog('Latest page',[{path:['metadata','body.md'],data:Buffer.from('# Latest body\n\nSafe content.')}]);
     await app.command({type:'configure_post',id:fx.postId,config:{...config,automatic_limit:8388608}});
     await fx.publish(latest);await app.command({type:'refresh_post',id:fx.postId});
-    await wait(async()=> (await app.api()).news_unread===2,'new root leaves previous unread');
+    await wait(async()=> (await app.api()).news_unread===1,'new root stays unread');
     // The current page is anchored: no row insertion or forced scroll.
     await expect(news.locator('.news-row')).toHaveCount(1);
     await page.locator('#news-refresh').click();
@@ -51,13 +49,13 @@ test('New posts follows signed roots, reads only displayed content and restores 
     });
     await news.locator('.news-title').first().click();
     await expect(page.locator('#post-error')).toContainText('Body read failed by test');
-    expect((await app.api()).news_unread).toBe(2);
+    await wait(async()=> (await app.api()).news_unread===0,'body error still counts as opened');
     fail=false;await page.goBack();
     await news.locator('.news-title').first().click();
     await expect(page.locator('#post-reader .reader-body')).toContainText('Latest body');
-    await wait(async()=> (await app.api()).news_unread===1,'displayed Markdown read');
+    await wait(async()=> (await app.api()).news_unread===0,'opening is idempotent');
     await page.goBack();
-    await expect(news.locator('.badge').first()).toHaveText('Read');
+    await expect(news.getByRole('img',{name:'Read',exact:true}).first()).toBeVisible();
     await news.locator('.news-title').last().click();
     await expect(page).toHaveURL(new RegExp(fx.head.id));
     await expect(page.locator('#post-reader .reader-entries')).toContainText('note.txt');
@@ -73,14 +71,22 @@ test('New posts follows signed roots, reads only displayed content and restores 
     await app.stop();app=await startApp(appDir,args);
     await page.goto(app.url);
     await expect(news.locator('.news-row')).toHaveCount(2);
-    await expect(news.locator('.badge').first()).toHaveText('Read');
-    await expect(news.locator('.badge').last()).toHaveText('Read');
+    await expect(news.getByRole('img',{name:'Read',exact:true}).first()).toBeVisible();
+    await expect(news.getByRole('img',{name:'Read',exact:true}).last()).toBeVisible();
     expect((await app.api()).news_unread).toBe(0);
     expect(fx.contentRequests).toBe(0);
     expect(initial.sequence).toBe('1');
+    const offline=await fx.catalog('Read while disconnected',[{path:['metadata','body.md'],data:Buffer.from('# Pending read')}]);
+    await fx.publish(offline);await app.command({type:'refresh_post',id:fx.postId});await wait(async()=> (await app.api()).news_unread===1,'new version for offline read');
+    await page.locator('#news-refresh').click();await expect(news.locator('.news-row')).toHaveCount(3);
+    let rejectRead=true,attempts=0;
+    await page.route('**/api/commands',async route=>{if(route.request().postDataJSON()?.type==='mark_catalog_read'){attempts++;if(rejectRead){await route.fulfill({status:503,json:{error:'Reading state disconnected'}});return;}}await route.continue();});
+    await news.locator('.news-title').first().click();await expect.poll(()=>attempts).toBeGreaterThan(0);expect((await app.api()).news_unread).toBe(1);
+    await page.locator('#transfers-nav').click();rejectRead=false;await wait(async()=> (await app.api()).news_unread===0,'queued read survives navigation and retries');
+    await page.locator('#new-nav').click();await page.locator('#news-hide-read').check();await expect(news.locator('.news-row')).toHaveCount(0);await page.reload();await expect(page.locator('#news-hide-read')).toBeChecked();await expect(news.locator('.news-row')).toHaveCount(0);
     const durable=JSON.parse(await readFile(join(appDir,'state','posts.json'),'utf8'));
     expect(durable.checkpoint.posts[fx.postId]).toBeDefined();
-    expect(durable.checkpoint.news.entries).toHaveLength(2);
+    expect(durable.checkpoint.news.entries).toHaveLength(3);
   } finally {if(app)await app.stop();if(fx)await fx.stop();await cleanup(root);}
 });
 
@@ -99,7 +105,7 @@ test('New posts anchored pagination, history position and responsive Vega list',
         const bound=c.anchor===null?total:Number(c.anchor),all=Array.from({length:bound},(_,i)=>{
           const n=bound-i;return {post,sequence:String(BigInt('9007199254740993')+BigInt(n)),catalog:n.toString(16).padStart(40,'0'),post_name:'Followed source',name:`Catalog ${n}`,detected_ms:1793740000000-n,read:n%2===0,ready:false,state:'Waiting for metadata',error:''};
         });
-        await route.fulfill({json:{entries:all.slice(c.offset,c.offset+100),offset:c.offset,total:bound,anchor:String(bound)}});
+        const filtered=c.hide_read?all.filter(e=>!e.read):all;await route.fulfill({json:{entries:filtered.slice(c.offset,c.offset+100),offset:c.offset,total:filtered.length,anchor:String(bound)}});
       }else await route.continue();
     });
     await page.goto(app.url);
@@ -132,10 +138,13 @@ test('New posts anchored pagination, history position and responsive Vega list',
       if(width===320){await expect(page.locator('#sidebar')).toHaveAttribute('aria-hidden','true');}
       expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
       if(width===320){
-        const box=await page.locator('.news-toggle').first().boundingBox();expect(box!.height).toBeGreaterThanOrEqual(44);
+        const box=await page.locator('#news-refresh').boundingBox();expect(box!.height).toBeGreaterThanOrEqual(36);
       }
       await page.screenshot({path:info.outputPath(`news-${width}-${theme}.png`),animations:'disabled'});
     }
+    await page.locator('#news-hide-read').check();await expect(page.locator('#news-range')).toHaveText('1–53 / 53');
+    await expect(page.locator('.news-row')).toHaveCount(53);await expect(page.locator('.news-read:visible')).toHaveCount(0);
+    await page.reload();await expect(page.locator('#news-hide-read')).toBeChecked();await expect(page.locator('.news-row')).toHaveCount(53);
     await page.locator('#sections-button').click();
     await page.locator('#sections-button').click();
     expect(errors).toEqual([]);expect(external).toEqual([]);

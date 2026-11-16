@@ -164,8 +164,7 @@ export interface CatalogPage {
   total: number
 }
 export type PostCommand =
-|{type:"news_page";offset:number;anchor:string|null}
-|{type:"set_update_read";post:string;sequence:string;read:boolean}
+|{type:"news_page";offset:number;anchor:string|null;hide_read?:boolean}
 |{type:"mark_catalog_read";post:string;catalog:string;sequence:string|null}
 |{type:"read_catalog_body";post:string;catalog:string}|{
   type: 'inspect_source';

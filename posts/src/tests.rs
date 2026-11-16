@@ -886,20 +886,20 @@ fn news_tracks_observed_roots_not_signatures_and_survives_restart() {
     let (mut m, id) = setup(Mode::CurrentCatalog, Some(DEFAULT_LIMIT));
     m.receive_record(&id, record([1; 20], 1), 1).unwrap();
     m.observe_news(1000).unwrap();
-    let first = m.news_page(0, None).unwrap();
+    let first = m.news_page(0, None, false).unwrap();
     assert_eq!(first.entries.len(), 1);
     assert_eq!(first.entries[0].sequence, "1");
     assert!(!first.entries[0].read);
-    m.set_news_read(&id, "1", true).unwrap();
+    m.mark_news_read(&id, "1").unwrap();
     m.receive_record(&id, record([1; 20], 9007199254740993), 2)
         .unwrap();
     m.observe_news(900).unwrap();
-    assert_eq!(m.news_page(0, None).unwrap().total, 1);
+    assert_eq!(m.news_page(0, None, false).unwrap().total, 1);
     assert_eq!(m.news_unread(), 0);
     m.receive_record(&id, record([2; 20], 9007199254740994), 3)
         .unwrap();
     m.observe_news(800).unwrap();
-    let page = m.news_page(0, None).unwrap();
+    let page = m.news_page(0, None, false).unwrap();
     assert_eq!(page.entries[0].sequence, "9007199254740994");
     assert_eq!(page.entries[0].detected_ms, Some(800));
     assert_eq!(page.entries[1].detected_ms, Some(1000));
@@ -907,17 +907,17 @@ fn news_tracks_observed_roots_not_signatures_and_survives_restart() {
     let mut restored = PostManager::restore(&m.checkpoint().unwrap()).unwrap();
     restored.start(0);
     restored.observe_news(2000).unwrap();
-    assert_eq!(restored.news_page(0, None).unwrap().total, 2);
+    assert_eq!(restored.news_page(0, None, false).unwrap().total, 2);
     assert_eq!(restored.news_unread(), 1);
     restored.unfollow(&id).unwrap();
-    assert_eq!(restored.news_page(0, None).unwrap().total, 0);
-    assert!(restored.set_news_read(&id, "1", false).is_err());
+    assert_eq!(restored.news_page(0, None, false).unwrap().total, 0);
+    assert!(restored.mark_news_read(&id, "1").is_err());
     restored
         .follow(&format_magnet(&key()), Config::default(), 1)
         .unwrap();
     restored.observe_news(3000).unwrap();
-    assert_eq!(restored.news_page(0, None).unwrap().total, 2);
-    assert!(restored.news_page(0, None).unwrap().entries[1].read);
+    assert_eq!(restored.news_page(0, None, false).unwrap().total, 2);
+    assert!(restored.news_page(0, None, false).unwrap().entries[1].read);
 }
 
 #[test]
@@ -933,7 +933,7 @@ fn news_migration_imports_only_current_and_validates_local_references() {
     let mut upgraded = PostManager::restore(&serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert!(upgraded.dirty());
     upgraded.observe_news(456).unwrap();
-    let page = upgraded.news_page(0, None).unwrap();
+    let page = upgraded.news_page(0, None, false).unwrap();
     assert_eq!(page.total, 1);
     assert_eq!(page.entries[0].sequence, "3");
     assert_eq!(page.entries[0].detected_ms, Some(456));
@@ -953,19 +953,57 @@ fn news_paging_is_anchored_and_does_not_depend_on_the_event_queue() {
         m.receive_record(&id, record(h, seq), seq as u64).unwrap();
     }
     m.observe_news(1000).unwrap();
-    let first = m.news_page(0, None).unwrap();
+    let first = m.news_page(0, None, false).unwrap();
     assert_eq!(first.total, 145);
     assert_eq!(first.entries.len(), 100);
     assert_eq!(first.entries[0].sequence, "145");
     m.receive_record(&id, record([255; 20], 146), 147).unwrap();
     m.observe_news(1).unwrap();
-    let next = m.news_page(100, Some(&first.anchor)).unwrap();
+    let next = m.news_page(100, Some(&first.anchor), false).unwrap();
     assert_eq!(next.total, 145);
     assert_eq!(next.entries.len(), 45);
     assert_eq!(next.entries[0].sequence, "45");
     assert_eq!(next.entries[44].sequence, "1");
-    assert_eq!(m.news_page(0, None).unwrap().entries[0].sequence, "146");
-    assert!(m.news_page(0, Some("bad")).is_err());
-    assert!(m.set_news_read(&id, "9007199254740993", true).is_err());
-    assert!(m.news_page(usize::MAX, None).unwrap().entries.is_empty());
+    assert_eq!(
+        m.news_page(0, None, false).unwrap().entries[0].sequence,
+        "146"
+    );
+    assert!(m.news_page(0, Some("bad"), false).is_err());
+    assert!(m.mark_news_read(&id, "9007199254740993").is_err());
+    assert!(m
+        .news_page(usize::MAX, None, false)
+        .unwrap()
+        .entries
+        .is_empty());
+}
+
+#[test]
+fn reading_is_cumulative_idempotent_filtered_before_paging_and_reversible_on_failure() {
+    let (mut m, id) = setup(Mode::CurrentCatalog, Some(DEFAULT_LIMIT));
+    for seq in 1..=145 {
+        let mut h = [0; 20];
+        h[..8].copy_from_slice(&(seq as u64).to_le_bytes());
+        m.receive_record(&id, record(h, seq), seq as u64).unwrap();
+        m.observe_news(1000).unwrap();
+    }
+    let undo = m.mark_news_read(&id, "120").unwrap().unwrap();
+    assert_eq!(m.news_unread(), 25);
+    let p = m.news_page(0, None, true).unwrap();
+    assert_eq!(p.total, 25);
+    assert_eq!(p.entries.len(), 25);
+    assert!(p.entries.iter().all(|e| !e.read));
+    assert_eq!(p.entries.last().unwrap().sequence, "121");
+    assert!(m.mark_news_read(&id, "100").unwrap().is_none());
+    m.rollback_news_read(undo);
+    assert_eq!(m.news_unread(), 145);
+    m.mark_news_read(&id, "45").unwrap();
+    let restored = PostManager::restore(&m.checkpoint().unwrap()).unwrap();
+    let p = restored.news_page(0, None, true).unwrap();
+    assert_eq!(p.total, 100);
+    assert_eq!(p.entries.last().unwrap().sequence, "46");
+    assert!(restored
+        .news_page(100, None, true)
+        .unwrap()
+        .entries
+        .is_empty());
 }

@@ -1,6 +1,7 @@
 mod content;
 mod creation;
 mod desktop;
+mod file_imports;
 mod images;
 mod library;
 mod lifecycle;
@@ -200,12 +201,8 @@ enum Command {
         #[serde(default)]
         offset: usize,
         anchor: Option<String>,
-    },
-    SetUpdateRead {
-        #[serde(alias = "feed")]
-        post: String,
-        sequence: String,
-        read: bool,
+        #[serde(default)]
+        hide_read: bool,
     },
     MarkCatalogRead {
         #[serde(alias = "feed")]
@@ -314,6 +311,7 @@ struct Job {
 #[derive(Clone)]
 struct App {
     creation: Arc<creation::Service>,
+    imports: Arc<file_imports::Service>,
     publishing: publishing::Client,
     jobs: mpsc::SyncSender<Job>,
     view: watch::Receiver<Snapshot>,
@@ -658,25 +656,17 @@ impl Engine {
                 self.organization
                     .change(&self.dir, &revision, &key, &action, parent, before)?;
             }
-            Command::SetUpdateRead {
-                post,
-                sequence,
-                read,
-            } => return self.news_read(&post, &sequence, read),
             Command::MarkCatalogRead {
                 post,
                 catalog,
                 sequence,
             } => {
                 let host = self.posts.as_ref().context("Post service unavailable")?;
-                if !host.manager.page(&post, &catalog, 0)?.catalog.ready {
-                    bail!("Catalog has not been verified")
-                }
                 if let Some(seq) =
                     host.manager
                         .news_for_catalog(&post, &catalog, sequence.as_deref())
                 {
-                    return self.news_read(&post, &seq, true);
+                    return self.news_read(&post, &seq);
                 }
                 return Ok(());
             }
@@ -1321,6 +1311,14 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
             "text/javascript",
             include_bytes!("../../web/dist/creation.js"),
         ),
+        "actions.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/actions.js"),
+        ),
+        "file-imports.js" => (
+            "text/javascript",
+            include_bytes!("../../web/dist/file-imports.js"),
+        ),
         "main.js" => ("text/javascript", include_bytes!("../../web/dist/main.js")),
         "publishing.js" => (
             "text/javascript",
@@ -1498,7 +1496,7 @@ async fn main() -> Result<()> {
                         Command::AbortPostDelete{job}=>engine.cancel_removal(job),
                         Command::SetPin{id,pinned,revision}=>engine.set_pin(&id,pinned,revision.as_deref()),
                         Command::FailCleanup{job,error}=>engine.change_retention(|g|{g.jobs.get_mut(&job).context("Cleanup unavailable")?.error=error;Ok(())}).map(|()|serde_json::json!({"ok":true})),
-                        Command::NewsPage{offset,anchor}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.news_page(offset,anchor.as_deref()).map_err(Into::into)).and_then(|p|serde_json::to_value(p).map_err(Into::into)),
+                        Command::NewsPage{offset,anchor,hide_read}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.news_page(offset,anchor.as_deref(),hide_read).map_err(Into::into)).and_then(|p|serde_json::to_value(p).map_err(Into::into)),
                         Command::ReadContent{id,parent,offset}=>engine.read_content(&id,parent.as_deref(),offset),
                         Command::ReadCatalogBody{post,catalog}=>engine.catalog_body(&post,&catalog).map(|p|serde_json::json!({"path":p})),
                         Command::CatalogPage{post,catalog,offset}=>engine.posts.as_ref().context("Post service unavailable").and_then(|h|h.manager.page(&post,&catalog,offset).map_err(Into::into)).map(|p|serde_json::json!({"catalog":p.catalog,"entries":p.entries,"offset":p.offset,"total":p.total,"created_at":engine.catalog_dates(&p.catalog.id).and_then(|d|d.created_at),"updated_at":engine.catalog_dates(&p.catalog.id).map(|d|d.updated_at)})),
@@ -1550,6 +1548,7 @@ async fn main() -> Result<()> {
     getrandom::fill(&mut token).map_err(|e| anyhow!("Cannot create session token: {e}"))?;
     let token = token.iter().map(|b| format!("{b:02x}")).collect();
     let app = Arc::new(App {
+        imports: file_imports::Service::new(creation.directory())?,
         creation: creation.clone(),
         publishing: publishing.clone(),
         jobs,
@@ -1558,6 +1557,18 @@ async fn main() -> Result<()> {
         host: address.to_string(),
         session_cookie: format!("ft_session_{}", address.port()),
         token,
+    });
+    let imports_owner = Arc::downgrade(&app);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let Some(app) = imports_owner.upgrade() else {
+                break;
+            };
+            if let Err(error) = app.imports.cleanup(&app).await {
+                eprintln!("Import cleanup: {error:#}");
+            }
+        }
     });
     let recovery = app.clone();
     tokio::spawn(async move {
@@ -1603,6 +1614,16 @@ async fn main() -> Result<()> {
         .route(
             "/api/creation",
             post(creation::command).layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
+        )
+        .route("/api/file-imports", post(file_imports::start))
+        .route(
+            "/api/file-imports/{id}/{index}",
+            axum::routing::put(file_imports::upload).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/file-imports/{id}/commit", post(file_imports::commit))
+        .route(
+            "/api/file-imports/{id}",
+            axum::routing::delete(file_imports::cancel),
         )
         .route("/api/torrent", get(creation::torrent_file))
         .route(

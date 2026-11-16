@@ -1,8 +1,10 @@
+import {action,bindAction} from './actions.js';
+import {fileMenu,importFiles,importing} from './file-imports.js';
 import {size} from './reader.js';
 import type {Snapshot} from './types.js';
 export interface SourceFile {path:string[];source:string;length:number;modified:string;}
 export interface FilesEntry {kind:'files';name:string;files:SourceFile[];linked:boolean;copy:boolean;}
-type Entry=FilesEntry|{kind:'page';page:number}|{kind:'torrent';name:string;data:number[]};
+type Entry=FilesEntry|{kind:'page';page:number}|{kind:'torrent';name:string;data:number[];original?:SourceFile};
 interface Page {id:number;title:string;body:string;entries:Entry[];}
 interface Draft {root:number;pages:Page[];}
 interface DraftView {id:string;revision:number;post:boolean;copy_files:boolean;draft:Draft;phase:string;error:string;done:number;total:number;operation:number;result:string|null;}
@@ -12,43 +14,6 @@ function button(text:string,fn:()=>void,variant='outline'){const b=el('button',t
 export async function creationCall(command:unknown){
   const r=await fetch('./api/creation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(command)});
   const value=await r.json();if(!r.ok)throw Error(value.error||`Creation failed (${r.status})`);return value;
-}
-let picker:{resolve:(entries:FilesEntry[]|null)=>void;selected:Set<string>;path:string;offset:number;total:number;epoch:number}|null=null;
-let pickerSerial=0;
-const selections=new Map<string,Set<string>>();
-async function browse(path?:string,offset=0){
-  const current=picker;if(!current)return;const epoch=++current.epoch;
-  $('source-error').textContent='';$('source-add').setAttribute('disabled','');
-  try{
-    const result=await creationCall({action:'browse',path:path||null,offset});
-    if(picker!==current||epoch!==current.epoch)return;
-    current.path=result.path;current.offset=offset;current.total=result.total;const pathInput=$<HTMLInputElement>('source-path');pathInput.placeholder=result.path;if(document.activeElement!==pathInput)pathInput.value=result.path;
-    const list=$('source-entries');list.replaceChildren();
-    for(const entry of result.entries){
-      const row=el('div','','source-row'),check=document.createElement('input');check.type='checkbox';check.className='input';check.disabled=entry.disabled;check.checked=current.selected.has(entry.path);check.setAttribute('aria-label',`Select ${entry.name}`);
-      check.onchange=()=>{if(check.checked)current.selected.add(entry.path);else current.selected.delete(entry.path);updateSelection();};
-      const name=entry.directory?button(entry.name,()=>void browse(entry.path),'ghost'):el('label',entry.name);
-      const id=`source-check-${pickerSerial}-${list.children.length}`;check.id=id;if(name instanceof HTMLLabelElement)name.htmlFor=id;name.classList.add('source-name');
-      if(name instanceof HTMLButtonElement)name.disabled=entry.disabled;
-      row.append(check,name,el('span',entry.directory?'Folder':size(entry.length),'muted'));list.append(row);
-    }
-    $<HTMLButtonElement>('source-parent').disabled=!result.parent;$('source-parent').onclick=()=>void browse(result.parent);
-    $('source-more').hidden=offset+result.entries.length>=result.total;$('source-more').onclick=()=>void browse(current.path,offset+result.entries.length);
-    updateSelection();
-  }catch(e){if(picker===current&&epoch===current.epoch){$('source-error').textContent=String(e);updateSelection();}}
-}
-function updateSelection(){if(!picker)return;$('source-count').textContent=`${picker.selected.size} selected`;$<HTMLButtonElement>('source-add').disabled=!picker.selected.size;}
-export function pickServerFiles(scope:string):Promise<FilesEntry[]|null>{
-  if(picker)return Promise.reject(Error('A file selection is already open'));
-  return new Promise(resolve=>{picker={resolve,selected:selections.get(scope)||new Set(),path:'',offset:0,total:0,epoch:0};selections.set(scope,picker.selected);pickerSerial++;
-    $('source-path-form').onsubmit=e=>{e.preventDefault();void browse($<HTMLInputElement>('source-path').value||picker?.path);};
-    $('source-select-directory').onclick=()=>{if(picker?.path){picker.selected.add(picker.path);updateSelection();}};
-    $('source-add').onclick=async()=>{const current=picker;if(!current)return;$<HTMLButtonElement>('source-add').disabled=true;
-      try{const result=await creationCall({action:'sources',paths:[...current.selected]});if(picker!==current)return;picker=null;selections.delete(scope);current.resolve(result.entries);$<HTMLDialogElement>('source-dialog').close();}
-      catch(e){if(picker===current){$('source-error').textContent=String(e);updateSelection();}}
-    };
-    $<HTMLDialogElement>('source-dialog').showModal();void browse($<HTMLInputElement>('source-path').value||undefined);
-  });
 }
 export class CreationUI {
   private state:Snapshot|null=null;
@@ -62,21 +27,19 @@ export class CreationUI {
   private timer:ReturnType<typeof setTimeout>|null=null;
   private polling=false;
   private busy=false;
+  private changingType=false;
+  private typeChange:Promise<void>=Promise.resolve();
   private loading='';
   private listSignature='';
   constructor(){
     $('post-add').onclick=()=>void this.create();$('post-add').setAttribute('aria-label','Create');
-    $('source-dialog').addEventListener('close',()=>{if(picker){const current=picker;picker=null;current.resolve(null);}});
     $('creation-title').oninput=()=>{const p=this.page();if(p){p.title=$<HTMLInputElement>('creation-title').value;$('creation-heading').textContent=p.title||'Untitled';this.changed();}};
     $('creation-body').oninput=()=>{const p=this.page();if(p){p.body=$<HTMLTextAreaElement>('creation-body').value;this.changed();}};
-    $('creation-post').onchange=()=>{if(!this.current)return;this.current.post=$<HTMLInputElement>('creation-post').checked;this.pageId=this.current.draft.root;this.changed();this.draw();};
-    $('creation-copy').onchange=()=>{if(!this.current)return;this.current.copy_files=$<HTMLInputElement>('creation-copy').checked;for(const p of this.current.draft.pages)for(const e of p.entries)if(e.kind==='files')e.copy=this.current.copy_files;this.changed();};
-    $('creation-add-files').onclick=()=>void this.addFiles();
+    $('creation-post').onchange=()=>{this.typeChange=this.setType(true);};
+    $('creation-regular').onchange=()=>{this.typeChange=this.setType(false);};
+    fileMenu($('creation-add-files'),files=>void this.addFiles(files));
     $('creation-new-page').onclick=()=>{const d=this.current,p=this.page();if(!d||!p)return;const id=Math.max(...d.draft.pages.map(p=>p.id))+1;d.draft.pages.push({id,title:'Untitled page',body:'',entries:[]});p.entries.push({kind:'page',page:id});this.pageId=id;this.changed();this.draw();};
-    $('creation-add-torrent').onclick=()=>$<HTMLInputElement>('creation-torrent').click();
-    $('creation-torrent').onchange=()=>void this.addTorrent();
-    $('creation-submit').onclick=()=>void this.submit();
-    $('creation-cancel').onclick=()=>{if(this.current)void creationCall({action:'cancel',id:this.current.id,operation:this.current.operation}).then(()=>this.poll()).catch(e=>this.error(e));};
+    bindAction($('creation-submit'),()=>this.intent(),()=>{const d=this.current;if(!d)return;const task=importing({kind:'creation',id:d.id});if(task)task.cancel();else if(!['Draft','Created','Bound'].includes(d.phase))void creationCall({action:'cancel',id:d.id,operation:d.operation}).then(()=>this.poll()).catch(e=>this.error(e));else void this.submit();});
     $('creation-delete').onclick=()=>void this.remove();
     $('creation-password-form').onsubmit=e=>{e.preventDefault();void this.publish();};
     $('creation-password-dialog').addEventListener('close',()=>{$<HTMLInputElement>('creation-password').value='';$<HTMLInputElement>('creation-confirm').value='';});
@@ -102,11 +65,16 @@ export class CreationUI {
       const i=this.drafts.findIndex(x=>x.id===d.id);if(i>=0)this.drafts[i]=d;this.drawLists();
     });return this.queue;
   }
-  private async addFiles(){const d=this.current,p=this.page();if(!d||!p)return;
-    try{const files=await pickServerFiles(d.id+'/'+p.id);if(!files||this.current!==d)return;for(const e of files){e.copy=d.copy_files;p.entries.push(e);}this.changed();this.drawEntries();}catch(e){this.error(e);}
+  private intent(){const d=this.current;if(!d)return '';return importing({kind:'creation',id:d.id})?'import/'+d.id:!['Draft','Created','Bound'].includes(d.phase)?`cancel/${d.id}/${d.operation}`:'ok/'+d.id;}
+  private async setType(post:boolean){const d=this.current;if(!d)return;this.changingType=true;this.status();
+    try{await this.flush();const next:DraftView=await creationCall({action:'save_draft',id:d.id,revision:d.revision,post,copy_files:true,draft:d.draft});
+      Object.assign(d,next);if(this.current===d){this.pageId=d.draft.root;this.draw();}void this.poll();
+    }catch(e){this.error(e);if(this.current===d){$<HTMLInputElement>('creation-post').checked=d.post;$<HTMLInputElement>('creation-regular').checked=!d.post;}}finally{this.changingType=false;this.status();}
   }
-  private async addTorrent(){const input=$<HTMLInputElement>('creation-torrent'),f=input.files?.[0],d=this.current,p=this.page();
-    try{if(!f||!d||!p)return;if(f.size>8*1024*1024)throw Error('Torrent metadata exceeds 8 MiB');const data=Array.from(new Uint8Array(await f.arrayBuffer()));if(this.current!==d)return;p.entries.push({kind:'torrent',name:f.name,data});this.changed();this.drawEntries();}catch(e){this.error(e);}finally{input.value='';}
+  private async addFiles(files:File[]){const d=this.current,p=this.page();if(!d||!p)return;
+    try{await this.typeChange;await this.flush();const value=await importFiles({kind:'creation',id:d.id},p.id,d.revision,files,()=>this.status());d.revision=value.revision;d.draft=value.draft;
+      if(this.current===d)this.draw();void this.poll();
+    }catch(e){if(this.current===d)this.error(e);}
   }
   private async remove(){const d=this.current;if(!d||this.busy)return;this.busy=true;
     try{await this.flush();await creationCall({action:'delete_draft',id:d.id,revision:d.revision});this.current=null;this.drafts=this.drafts.filter(x=>x.id!==d.id);location.hash='#/library';this.drawLists();}catch(e){this.error(e);}finally{this.busy=false;}
@@ -149,25 +117,24 @@ export class CreationUI {
     if(this.drafts.some(d=>!d.result&&!d.post))$('empty').hidden=true;
     for(const a of $('creation-post-drafts').querySelectorAll<HTMLAnchorElement>('a'))a.setAttribute('aria-current',a.hash===location.hash?'page':'false');
   }
-  private status(){const d=this.current;if(!d)return;const working=!['Draft','Created','Bound'].includes(d.phase);
-    for(const input of $('creation-view').querySelectorAll<HTMLInputElement|HTMLTextAreaElement|HTMLButtonElement|HTMLSelectElement>('input,textarea,button,select'))input.disabled=!this.connected||working;
-    $('creation-cancel').hidden=!working;$<HTMLButtonElement>('creation-cancel').disabled=!this.connected;
-    const submit=$('creation-submit'),label=d.post?'Publish':d.error?'Retry':'Create torrent';
-    if(submit.textContent!==label)submit.textContent=label;
-    $('creation-status').textContent=working?`${d.phase}${d.total?` · ${size(d.done)} / ${size(d.total)}`:''}`:this.edits!==this.saved?'Saving…':'Draft saved';
+  private status(){const d=this.current;if(!d)return;const task=importing({kind:'creation',id:d.id}),working=!!task||!['Draft','Created','Bound'].includes(d.phase);
+    for(const input of $('creation-view').querySelectorAll<HTMLInputElement|HTMLTextAreaElement|HTMLButtonElement|HTMLSelectElement>('input,textarea,button,select'))input.disabled=!this.connected||working||this.changingType;
+    const submit=$('creation-submit');submit.toggleAttribute('disabled',!this.connected||this.changingType);
+    action(submit,working?'x':null,working?'Cancel':'OK',!working);
+    $('creation-status').textContent=task?`Importing · ${size(task.done)} / ${size(task.total)}`:working?`${d.phase}${d.total?` · ${size(d.done)} / ${size(d.total)}`:''}`:this.edits!==this.saved?'Saving…':'Draft saved';
     if(d.error)this.error(d.error);
   }
   private draw(){const d=this.current,p=this.page();if(!d||!p)return;
-    $<HTMLInputElement>('creation-post').checked=d.post;$<HTMLInputElement>('creation-copy').checked=d.copy_files;
+    $<HTMLInputElement>('creation-post').checked=d.post;$<HTMLInputElement>('creation-regular').checked=!d.post;
     $<HTMLInputElement>('creation-title').value=p.title;$('creation-heading').textContent=this.title(d);$<HTMLTextAreaElement>('creation-body').value=p.body;
-    for(const id of ['creation-body-field','creation-new-page','creation-add-torrent'])$(id).hidden=!d.post;
-    $('creation-excluded').hidden=d.post||!d.draft.pages.some(p=>p.body||p.entries.some(e=>e.kind!=='files'));
+    for(const id of ['creation-body-field','creation-new-page'])$(id).hidden=!d.post;
+    $('creation-excluded').hidden=d.post||!d.draft.pages.some(p=>p.body||p.entries.some(e=>e.kind==='page'));
     const nav=$('creation-pages');nav.replaceChildren();nav.hidden=!d.post||d.draft.pages.length===1;
     if(d.post)for(const page of d.draft.pages){const b=button(page.title,()=>{this.pageId=page.id;this.draw();},'ghost');b.setAttribute('aria-current',String(page.id===this.pageId));nav.append(b);}
     this.drawEntries();this.status();
   }
   private drawEntries(){const d=this.current,p=this.page();if(!d||!p)return;const list=$('creation-entries');list.replaceChildren();
-    const entries=(d.post?[p]:d.draft.pages).flatMap(page=>page.entries.map((entry,index)=>({page,entry,index}))).filter(x=>d.post||x.entry.kind==='files');
+    const entries=(d.post?[p]:d.draft.pages).flatMap(page=>page.entries.map((entry,index)=>({page,entry,index}))).filter(x=>d.post||x.entry.kind!=='page');
     for(const {page,entry:e,index} of entries){
       const row=el('div','','own-entry creation-entry');const name=e.kind==='page'?d.draft.pages.find(p=>p.id===e.page)?.title||'Page':e.name;
       row.append(e.kind==='page'?button(name,()=>{this.pageId=e.page;this.draw();},'link'):el('span',name,'own-entry-name'));

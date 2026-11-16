@@ -1,3 +1,4 @@
+import {setupActions} from './actions.js';
 import {initReaderSettings,readerSettingsState,readerSettingsRemoved} from './reader.js';
 import {imageState} from './images.js';
 import {CreationUI} from './creation.js';
@@ -575,3 +576,5 @@ for (const trigger of document.querySelectorAll<HTMLButtonElement>("[data-help]"
 }
 
 window.addEventListener("hashchange", render);
+
+setupActions();

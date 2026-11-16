@@ -1241,6 +1241,7 @@ mod reader_tests {
         draft.pages[0]
             .entries
             .push(feedtorrent_posts::publishing::Entry::Torrent {
+                original: None,
                 name: "x.torrent".into(),
                 data: b"d4:infod6:lengthi0e4:name1:x12:piece lengthi16384e6:pieces0:ee".to_vec(),
             });

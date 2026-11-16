@@ -119,6 +119,7 @@ fn attached_outer_metadata_and_virtual_previews_are_preserved() {
     let mut draft = Draft::new("post".into());
     draft.pages[0].body = "published".into();
     draft.pages[0].entries.push(Entry::Torrent {
+        original: None,
         name: "attachment.torrent".into(),
         data: original.clone(),
     });
@@ -142,6 +143,7 @@ fn attached_outer_metadata_and_virtual_previews_are_preserved() {
     assert!(draft.build(&key(), &first.pages, 999).is_err());
     draft.pages[0].body.clear();
     draft.pages[0].entries[0] = Entry::Torrent {
+        original: None,
         name: "metadata".into(),
         data: original,
     };

@@ -56,6 +56,8 @@ export class PostsUI {
   private signature = '';
   private viewRoute = '';
   private readKey = '';
+  private readPending = new Map<string,{post:string;catalog:string;sequence:string|null}>();
+  private readSending = new Set<string>();
   private readError = '';
   private linkedExisting: ((source:InspectedSource)=>Promise<string|null>)|null = null;
   private followRequest = 0;
@@ -196,8 +198,24 @@ export class PostsUI {
       this.showError(String(e));
     }
   }
+  private markRead(post:string,catalog:string,sequence:string|null) {
+    const key=`${post}/${catalog}/${sequence||''}`;
+    if(this.readKey!==key){this.readKey=key;this.readPending.set(key,{post,catalog,sequence});}
+    this.flushRead();
+  }
+  private flushRead() {
+    if(!this.connected||!this.state?.ready)return;
+    for(const [key,intent] of this.readPending) {
+      if(this.readSending.has(key))continue;
+      this.readSending.add(key);
+      void this.host.call({type:'mark_catalog_read',...intent}).then(()=>{
+        this.readPending.delete(key);this.readError='';
+      }).catch(e=>{this.readError=`Could not save reading state: ${e}`;this.showError(this.readError);})
+      .finally(()=>{this.readSending.delete(key);});
+    }
+  }
   render(state: Snapshot|null, connected: boolean) {
-    this.state=state;this.connected=connected;
+    this.state=state;this.connected=connected;this.flushRead();
     const route=location.hash.split('/'),active=route[1]==='posts';
     const isLibrary=!active&&route[1]!=='own'&&route[1]!=='new';
     $('transfer-view').hidden=!isLibrary;$('post-view').hidden=!active;
@@ -219,6 +237,7 @@ export class PostsUI {
     const target=route[3]||this.catalogId||this.position.saved()?.catalog||f.available||f.head||'';
     if(target!==this.catalogId){this.catalogId=target;this.signature='';this.bodyLoaded=false;this.body=null;this.page=null;this.readKey='';}
     const c=f.catalogs.find(c=>c.id===target);
+    if(target&&(c||/^\d+$/.test(route[4]||'')))this.markRead(f.id,target,/^\d+$/.test(route[4]||'')?route[4]:null);
     if(!this.trail.length){this.trail=[{name:f.name,href:location.hash.split('/torrent/')[0]}];
     }
     if(this.trail.length>1&&c?.name)this.trail[this.trail.length-1].name=c.name;
@@ -241,7 +260,7 @@ export class PostsUI {
       for(let i=4;i<parts.length-1;i++)if(/^[0-9a-f]{40}$/.test(parts[i])&&!crumbs.some(c=>c.href===parts.slice(0,i+1).join('/')))crumbs.push({name:state?.transfers.find(t=>t.id===parts[i])?.name||'Catalog',href:parts.slice(0,i+1).join('/')});
       this.content.render({id:nested.id,parent:nested.parent,post:this.postId,state,connected,crumbs,position:this.position,source:f.name,entryDownload:f.catalogs.some(c=>c.id===nested.id)?e=>this.downloadContent(e.infohash!,{type:'download_entry',post:f.id,catalog:nested.id,index:e.index}):undefined,shown:async data=>{
         const catalog=f.catalogs.find(c=>c.id===data.id),key=f.id+'/'+data.id;
-        if(data.kind==='catalog'&&catalog?.ready&&!['metadata','pending','error'].includes(data.body_state)&&this.readKey!==key){this.readKey=key;await this.host.call({type:'mark_catalog_read',post:f.id,catalog:data.id,sequence:null});}
+        if(data.kind==='catalog'&&catalog&&this.readKey!==key)this.markRead(f.id,data.id,null);
       },download:async data=>{
         if(state?.posts.find(x=>x.id===f.id)?.catalogs.some(c=>c.id===nested.parent)&&data.source_index!==undefined)await this.downloadContent(nested.id,{type:'download_entry',post:f.id,catalog:nested.parent!,index:data.source_index});
         else if(data.source)await this.downloadContent(nested.id,{type:'add_torrent',data:data.source,origin:{kind:'catalog',parent:nested.parent!}});
@@ -271,11 +290,6 @@ export class PostsUI {
       }
       if(page.catalog.ready&&this.bodyLoaded){
         this.position.restore();
-        const sequence=location.hash.split('/')[4]||null,key=`${post}/${catalog}/${sequence||''}`;
-        if(this.readKey!==key){this.readKey=key;
-          try{await this.host.call({type:'mark_catalog_read',post,catalog,sequence});}
-          catch(e){if(current()){this.readError=`Could not save reading state: ${e}`;this.showError(this.readError);}}
-        }
       }
     }catch(e){if(current()){this.readError=String(e);this.showError(this.readError);}}
     finally{if(current()){this.loading=false;this.draw();}}

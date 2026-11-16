@@ -44,13 +44,13 @@ test('own Public view unifies actions, wraps safely and preserves controls acros
     for(let i=0;i<boxes.length;i++){const a=boxes[i];expect(a.x).toBeGreaterThanOrEqual(0);expect(a.r).toBeLessThanOrEqual(width);expect(a.sw).toBeLessThanOrEqual(a.cw);for(const b of boxes.slice(i+1))expect(a.r<=b.x+1||b.r<=a.x+1||a.b<=b.y+1||b.b<=a.y+1).toBe(true)}
     const dates=page.locator('#own-preview .reader-dates');if(await dates.isVisible())expect((await dates.boundingBox())!.y).toBeGreaterThanOrEqual(header!.y+header!.height);
     await expect(page.locator('#own-view>.list-heading').first()).toBeHidden();
-    await expect(page.locator('#own-publish')).toBeHidden();
+    await expect(page.locator('#own-publish')).toHaveAttribute('aria-label',pending?'Cancel':'Publish');
     if(pending)for(const name of['Retry','Cancel'])await expect(actions.getByRole('button',{name,exact:true})).toBeVisible();
     await page.screenshot({path:info.outputPath(`${label}-${width}.png`),animations:'disabled'});
    }
   }
   await page.goto(app.url+'/#/own/'+id+'/read/7');await expect(heading).toHaveText('Notes');await expect(page.locator('#own-preview .reader-dates time')).toHaveCount(2);await layout('root');
-  await page.evaluate(()=>{const w=window as any;w.controls=['own-copy','own-toggle','own-retry','own-cancel','own-indicator','own-info','own-settings'].map(id=>document.getElementById(id));w.moves=0;new MutationObserver(records=>{for(const r of records)for(const n of r.removedNodes)if(w.controls.some((c:Node)=>c&&(n===c||n.contains(c))))w.moves++}).observe(document.getElementById('own-view')!,{subtree:true,childList:true})});
+  await page.evaluate(()=>{const w=window as any;w.controls=['own-copy','own-toggle','own-retry','own-publish','own-indicator','own-info','own-settings'].map(id=>document.getElementById(id));w.moves=0;new MutationObserver(records=>{for(const r of records)for(const n of r.removedNodes)if(w.controls.some((c:Node)=>c&&(n===c||n.contains(c))))w.moves++}).observe(document.getElementById('own-view')!,{subtree:true,childList:true})});
   await actions.locator('#own-copy').click();await expect.poll(()=>page.evaluate(()=>(window as any).copied)).toBe(own.magnet);
   await emit();expect(await page.evaluate(()=>(window as any).moves)).toBe(0);
   await toggle.click();await expect(page.locator('#own-editor')).toBeVisible();await expect(page.locator('#own-view>.list-heading #own-top-actions')).toBeVisible();await toggle.click();await expect(identity.locator('#own-toggle')).toBeVisible();
@@ -59,8 +59,8 @@ test('own Public view unifies actions, wraps safely and preserves controls acros
   await page.locator('#own-preview').getByRole('link',{name:longTitle,exact:true}).click();await expect(heading).toHaveText(longTitle);await layout('nested-long');
   Object.assign(own,{state:'Publication pending',phase:'Retrying',operation:42,pending_revision:own.revision,pending_sequence:'1',next_retry_at:1794009600});await emit();await expect(actions.locator('#own-retry')).toBeVisible();await layout('pending-long',true);
   await actions.locator('#own-retry').click();expect(calls.some(c=>c.action==='retry_publication'&&c.operation===42)).toBe(true);await emit();await expect(actions.locator('#own-retry')).toBeEnabled();await emit();await expect(actions.locator('#own-retry')).toBeEnabled();
-  await page.locator('#own-cancel').click();expect(calls.some(c=>c.action==='cancel_publication'&&c.operation===42)).toBe(true);
-  await toggle.click();await expect(page.locator('#own-editor-actions #own-retry')).toBeVisible();await expect(page.locator('#own-editor-actions #own-cancel')).toBeVisible();await expect(page.locator('#own-title')).toHaveValue(longTitle);await toggle.click();
+  await page.locator('#own-publish').click();expect(calls.some(c=>c.action==='cancel_publication'&&c.operation===42)).toBe(true);
+  await toggle.click();await expect(page.locator('#own-editor-actions #own-retry')).toBeVisible();await expect(page.locator('#own-editor-actions #own-publish')).toBeVisible();await expect(page.locator('#own-title')).toHaveValue(longTitle);await toggle.click();
   await page.locator('#own-preview').getByRole('link',{name:'Payload',exact:true}).click();await expect(page).toHaveURL(new RegExp('/read/8/torrent/'+hash+'$'));await expect(heading).toHaveText('payload.txt');
   await layout('nested-torrent',true);const activity=page.locator('#own-preview .content-sharing');await expect(activity).toBeVisible();
   for(const width of[1280,900,320]){await page.setViewportSize({width,height:900});const a=await activity.boundingBox(),i=await identity.boundingBox();expect(a!.y).toBeGreaterThanOrEqual(i!.y+i!.height);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)}

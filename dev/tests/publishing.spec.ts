@@ -28,7 +28,7 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.goto(app.url+'/#/own/'+id);
     await expect(page.locator("#own-title")).toHaveValue("Field notes");
     await expect(page.locator("#own-editor")).toBeVisible();
-    await expect(page.locator("#own-toggle")).toHaveText("Public view");
+    await expect(page.locator("#own-toggle")).toHaveAttribute("aria-label","Public view");
     await expect(page.locator("#own-breadcrumb")).toBeHidden();
     await expect(page.locator("#transfers-nav")).toHaveAttribute("aria-current","false");
     await expect(page.locator("#post-tree a[data-kind=own]").first()).toHaveAttribute("aria-current","page");
@@ -39,7 +39,7 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
     await page.locator("#post-tree a[data-kind=own]").first().click();
     await expect(page.locator("#own-preview")).toBeVisible();
     await expect(page.locator("#own-editor")).toBeHidden();
-    await expect(page.locator("#own-toggle")).toHaveText("Edit");
+    await expect(page.locator("#own-toggle")).toHaveAttribute("aria-label","Edit");
     await page.reload();await expect(page.locator("#own-preview")).toBeVisible();
     await page.locator("#own-toggle").click();
     await expect(page.locator("#transfers-nav")).toHaveAttribute("aria-current","false");
@@ -61,7 +61,7 @@ test("own publishing editor, durable drafts, safe Markdown, keys and 320px", asy
       }),
     );
     await page
-      .locator("#own-torrent")
+      .locator("#own-add-files-files")
       .setInputFiles({
         name: "payload.torrent",
         mimeType: "application/x-bittorrent",
@@ -195,4 +195,20 @@ test('title snapshots cannot move Public view between pointerdown and pointerup'
     await expect(page).toHaveURL(new RegExp('#/own/'+id+'/read/1$'));
     await expect(page.locator('#own-preview')).toBeVisible();await expect(page.locator('#own-heading')).toHaveText('Field notes');
   }finally{await cleanup(root,app);}
+});
+
+test('owned imports flush pending edits and lock entry mutations until commit',async({page})=>{
+ const root=await temporary();let app:any,release:(()=>void)|undefined;
+ try{
+  app=await startApp(join(root,'app'));const password='owned import test password';await app.api('/api/publishing',{action:'create_key',password,confirmation:password});const own=await app.api('/api/publishing',{action:'create_post',title:'Owned import'});
+  const deletes:string[]=[];page.on('request',r=>{if(r.method()==='DELETE'&&r.url().includes('/api/file-imports/'))deletes.push(r.url());});
+  await page.goto(app.url+'/#/own/'+own.id);await expect(page.locator('#own-title')).toHaveValue('Owned import');await page.locator('#own-add-files-files').setInputFiles({name:'existing.txt',mimeType:'text/plain',buffer:Buffer.from('existing')});await expect(page.locator('#own-entries')).toContainText('existing.txt');
+  let ready:()=>void;const waiting=new Promise<void>(resolve=>ready=resolve);
+  await page.route('**/api/file-imports/*/0',async route=>{await new Promise<void>(resolve=>{release=resolve;ready();});await route.continue();});
+  await page.locator('#own-title').fill('Pending title is retained');await page.locator('#own-add-files-files').setInputFiles({name:'next.txt',mimeType:'text/plain',buffer:Buffer.from('next')});await waiting;await page.locator('#transfers-nav').click();await page.evaluate(id=>{location.hash='#/own/'+id;},own.id);await expect(page.locator('#own-editor')).toBeVisible();
+  await expect(page.locator('#own-title')).toBeDisabled();await expect(page.locator('#own-body')).toBeDisabled();
+  const controls=page.locator('#own-entries button,#own-entries select');expect(await controls.count()).toBeGreaterThan(0);for(const control of await controls.all())await expect(control).toBeDisabled();
+  await expect(page.locator('#own-publish')).toHaveAttribute('aria-label','Cancel');release!();await expect(page.locator('#own-entries')).toContainText('next.txt');await expect(page.locator('#own-title')).toBeEnabled();
+  const result=await app.api('/api/publishing',{action:'get_post',id:own.id});expect(result.draft.pages[0].title).toBe('Pending title is retained');expect(result.draft.pages[0].entries.map((e:any)=>e.name).sort()).toEqual(['existing.txt','next.txt']);expect(deletes).toEqual([]);
+ }finally{release?.();await cleanup(root,app);}
 });

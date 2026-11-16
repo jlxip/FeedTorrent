@@ -92,6 +92,32 @@ test('failure keeps draft and dialog; autosave and duplicate submission cannot r
     await page.goto(x.app.url+'/#/own/'+x.own);await expect(page.locator('#own-unavailable')).toBeVisible();expect((await x.app.api()).publishing.posts.some(f=>f.id===x.own)).toBe(false);expect(errors).toEqual([]);
   }finally{await cleanup(x.root,x.app);}
 });
+test('editing after deletion dialog dismissal survives delayed close cleanup',async({page})=>{
+  await page.addInitScript(()=>{
+    const w=window as any,nativeFrame=window.requestAnimationFrame.bind(window);
+    const frames:FrameRequestCallback[]=[];let closing=false;
+    document.addEventListener('close',event=>{
+      if((event.target as HTMLElement).id!=='post-remove-dialog'||!w.holdRemovalClose)return;
+      closing=true;setTimeout(()=>closing=false,0);
+    },true);
+    window.requestAnimationFrame=callback=>{if(closing){frames.push(callback);return 0;}return nativeFrame(callback);};
+    w.pendingRemovalClose=()=>frames.length;
+    w.finishRemovalClose=()=>{for(const callback of frames.splice(0))callback(performance.now());};
+  });
+  const x=await fixture(page);
+  try{
+    await page.goto(x.app.url+'/#/own/'+x.own);await expect(page.locator('#own-body')).toBeVisible();
+    await x.open('own:'+x.own);await page.evaluate(()=>(window as any).holdRemovalClose=true);
+    await page.locator('#post-remove-dialog [data-close]').click();await expect(page.locator('#post-remove-dialog')).toBeHidden();
+    await expect.poll(()=>page.evaluate(()=>(window as any).pendingRemovalClose())).toBeGreaterThan(0);
+    // Reproduce the CI ordering: close cleanup runs as the next edit starts.
+    await page.locator('#own-body').evaluate(input=>input.addEventListener('focus',()=>{(window as any).finishRemovalClose();},{once:true}));
+    await page.locator('#own-body').fill('Saved after closing deletion');
+    await expect(page.locator('#own-body')).toHaveValue('Saved after closing deletion',{timeout:5000});
+    await expect.poll(async()=>(await x.pub({action:'get_post',id:x.own})).draft.pages[0].body).toBe('Saved after closing deletion');
+    expect((await x.app.api()).publishing.posts.some(post=>post.id===x.own)).toBe(true);
+  }finally{await page.evaluate(()=>(window as any).finishRemovalClose());await cleanup(x.root,x.app);}
+});
 test('mobile confirmation supports touch, themes and disconnect without changing data',async({browser},info)=>{
   const context=await browser.newContext({viewport:{width:320,height:740},hasTouch:true}),page=await context.newPage(),x=await fixture(page);
   try{

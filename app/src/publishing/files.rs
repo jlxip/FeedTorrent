@@ -161,7 +161,10 @@ pub(super) fn store(dir: &Path, c: &StreamCatalog, work: &queue::Work) -> Result
             }
             StreamData::File { file, copy } => {
                 crate::creation::verify_source(file)?;
-                if *copy {
+                if *copy
+                    || Path::new(&file.source)
+                        .starts_with(fs::canonicalize(dir)?.join("publishing-assets"))
+                {
                     copy_atomic(Path::new(&file.source), &target, &work.cancel)?;
                 } else {
                     external.push_str(&format!("{name}\t{}\n", file.source));

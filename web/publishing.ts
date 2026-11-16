@@ -1,6 +1,8 @@
 import {settingsButton} from './reader.js';
 import {ownImages} from './images.js';
-import {pickServerFiles,type FilesEntry} from './creation.js';
+import type {FilesEntry,SourceFile} from './creation.js';
+import {action,bindAction} from './actions.js';
+import {fileMenu,importFiles,importing} from './file-imports.js';
 import {ContentReader,ContentPage,PostHistory,torrentRoute,type ContentHost} from './content.js';
 import type {MarkdownNode} from "./markdown.js";
 import {ReaderHistory,type ReaderEntry} from "./reader.js";
@@ -30,7 +32,7 @@ export interface PublishingState {
 }
 type Entry = FilesEntry
   | { kind: "page"; page: number }
-  | { kind: "torrent"; name: string; data: number[] };
+  | { kind: "torrent"; name: string; data: number[]; original?:SourceFile };
 interface Page {
   id: number;
   title: string;
@@ -101,6 +103,7 @@ export class PublishingUI {
   private bodyCache=new Map<string,MarkdownNode>();
   private bodyRequest='';
   private adding=new Set<number[]>();
+  private importPreparing=new Set<string>();
   constructor(
     private link: (uri: string) => void,
     private addTorrent: (data: number[],id:string,post:string) => Promise<void>,
@@ -139,34 +142,7 @@ export class PublishingUI {
       $("own-title").focus();
       $<HTMLInputElement>("own-title").select();
     };
-    $("own-add-files").onclick = async () => {
-      const id=this.id,p=this.page();if(!p)return;
-      try{const entries=await pickServerFiles(id+'/'+p.id);if(!entries||id!==this.id)return;for(const e of entries){e.copy=$<HTMLInputElement>('own-copy-files').checked;p.entries.push(e);}this.changed();this.drawEntries();}catch(e){this.error(e);}
-    };
-    $('own-copy-files').onchange=()=>{const s=this.session();if(!s)return;for(const p of s.draft.pages)for(const e of p.entries)if(e.kind==='files')e.copy=$<HTMLInputElement>('own-copy-files').checked;this.changed();};
-    $("own-add-torrent").onclick = () =>
-      $<HTMLInputElement>("own-torrent").click();
-    $("own-torrent").onchange = async () => {
-      const input = $<HTMLInputElement>("own-torrent"),
-        file = input.files?.[0],
-        id = this.id,
-        page = this.current;
-      try {
-        if (!file) return;
-        if (file.size > 8 * 1024 * 1024)
-          throw Error("Torrent metadata exceeds 8 MiB");
-        const data = Array.from(new Uint8Array(await file.arrayBuffer()));
-        if (id !== this.id || page !== this.current)
-          throw Error("Page changed; select the file again");
-        this.page()?.entries.push({ kind: "torrent", name: file.name, data });
-        this.changed();
-        this.drawEntries();
-      } catch (e) {
-        this.error(e);
-      } finally {
-        input.value = "";
-      }
-    };
+    fileMenu($('own-add-files'),files=>void this.importFiles(files));
     $("own-toggle").onclick = () => {
       location.hash=this.reading?`#/own/${this.id}`:this.readHref(this.current);
     };
@@ -179,8 +155,9 @@ export class PublishingUI {
       }
     };
     $("own-retry").onclick = () => void this.publicationAction("retry_publication");
-    $("own-cancel").onclick = () => void this.publicationAction("cancel_publication");
-    $("own-publish").onclick = async () => {
+    bindAction($('own-publish'),()=>this.intent(),()=>void this.submit());
+    /* The confirmation keeps its explicit text and password handling below. */
+    this.openPublish = async () => {
       const origin={id:this.id,page:this.current,route:location.hash};
       this.publishOrigin=origin;
       try {
@@ -488,6 +465,7 @@ export class PublishingUI {
       empty.append(header);
       container.append(empty);
     }
+    if(importing({kind:'own',id:this.id})||this.importPreparing.has(this.id))for(const input of container.querySelectorAll<HTMLInputElement|HTMLButtonElement|HTMLSelectElement>('input,button,select'))input.disabled=true;
   }
   private draw() {
     const s=this.session(),p=this.page();
@@ -495,14 +473,12 @@ export class PublishingUI {
     $("own-post-help").textContent=[this.id,this.post()?.magnet].filter(Boolean).join("\n");
     $("own-editor").hidden=this.reading;$("own-preview").hidden=!this.reading;
     $("own-contents-heading").hidden=this.reading;$("own-entries").hidden=this.reading;$("own-editor-actions").hidden=this.reading;
-    $("own-toggle").textContent=this.reading?'Edit':'Public view';
-    const actions=this.reading?$('own-top-actions'):$('own-publish').parentElement!;
-    const before=this.reading?$('own-toggle'):$('own-publish');
-    for(const id of ['own-retry','own-cancel']){const control=$(id);if(control.parentElement!==actions)actions.insertBefore(control,before);}
-    $('own-file-options').hidden=this.reading;$('own-add-files').hidden=this.reading;
-    const sourceEntries=s?.draft.pages.flatMap(p=>p.entries).filter((e):e is FilesEntry=>e.kind==='files');
-    $<HTMLInputElement>('own-copy-files').checked=sourceEntries?.[0]?.copy??true;
-    $("own-new-page").hidden=this.reading;$("own-add-torrent").hidden=this.reading;
+    action($('own-toggle'),this.reading?'pencil':'book-open',this.reading?'Edit':'Public view');
+    const actions=this.reading?$('own-top-actions'):$('own-editor-actions').lastElementChild!;
+    const before=this.reading?$('own-toggle'):null;
+    for(const id of ['own-retry','own-publish']){const control=$(id);if(control.parentElement!==actions)actions.insertBefore(control,before);}
+    $('own-add-files').closest<HTMLElement>('.file-menu')!.hidden=this.reading;
+    $("own-new-page").hidden=this.reading;
     const header=this.reader.header,topActions=$('own-top-actions');
     const target=this.reading?header.identity:this.ownHeadingRow;
     if(this.ownIdentity.parentElement!==target){
@@ -669,16 +645,21 @@ export class PublishingUI {
     this.indicator();
     $("own-publish").toggleAttribute(
       "disabled",
-      !connected || !f || f.operation !== null,
+      !connected || !f,
     );
     $("own-retry").hidden = !f?.operation || f.next_retry_at === null;
-    $("own-cancel").hidden = !f?.operation;
-    for (const id of ["own-retry", "own-cancel"])
-      $<HTMLButtonElement>(id).disabled = !connected;
+    const task=importing({kind:'own',id:this.id}),preparing=this.importPreparing.has(this.id);
+    action($('own-publish'),task||f?.operation!=null?'x':'arrow-up',task||f?.operation!=null?'Cancel':'Publish');
+    if(task&&session)$('own-draft-status').textContent=`Importing · ${task.done} / ${task.total}`;
+    for(const input of $('own-editor').querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('input,textarea'))input.disabled=!!task||preparing||!session||!connected;
+    for(const id of ['own-add-files','own-new-page'])$(id).toggleAttribute('disabled',!!task||preparing||!session||!connected);
+    for(const input of $('own-entries').querySelectorAll<HTMLInputElement|HTMLButtonElement|HTMLSelectElement>('input,button,select'))if(task||preparing)input.disabled=true;
+    for (const id of ["own-retry", "own-publish"])
+      $<HTMLButtonElement>(id).disabled = !connected || (id==='own-publish'&&preparing&&!task);
     const problem = this.session()?.error || state?.publishing.error || "";
     if ($("own-error").firstElementChild!.textContent !== problem) $("own-error").firstElementChild!.textContent = problem;
     $("own-error").hidden = !problem;
-    if (session && f && session.edits === session.saved)
+    if (!task && session && f && session.edits === session.saved)
       $("own-draft-status").textContent =
         "Draft saved" +
         (f.published_revision > 0 && session.revision > f.published_revision
@@ -703,7 +684,7 @@ export class PublishingUI {
             this.current = value.draft.root;
             this.trail = [this.current];
             this.rememberIds(value);if(this.reading)this.readPage();
-            this.draw();
+            this.draw();this.render(this.state,this.connected);
           }
         })
         .catch((e) => {if(this.id===id&&(this.epochs.get(id)||0)===epoch&&this.post())this.error(e);})
@@ -761,12 +742,22 @@ export class PublishingUI {
     $("own-publication-help").textContent = [label, ...details].join("\n");
     if ($("own-status").textContent !== label) $("own-status").textContent = label;
   }
+  private openPublish:()=>Promise<void>=async()=>{};
+  private intent(){const f=this.post();return importing({kind:'own',id:this.id})?'import/'+this.id:f?.operation!=null?`cancel/${this.id}/${f.operation}`:'publish/'+this.id;}
+  private async submit(){const task=importing({kind:'own',id:this.id});if(task){task.cancel();return;}if(this.post()?.operation!=null){await this.publicationAction('cancel_publication');return;}await this.openPublish();}
+  private async importFiles(files:File[]){const id=this.id,p=this.page(),s=this.session();if(!p||!s||this.importPreparing.has(id)||importing({kind:'own',id}))return;
+    this.importPreparing.add(id);this.render(this.state,this.connected);
+    try{await this.flush(id);const value=await importFiles({kind:'own',id},p.id,s.revision,files,()=>this.render(this.state,this.connected));
+      if(this.sessions.get(id)===s){s.revision=value.revision;s.draft=value.draft;if(this.id===id)this.draw();}
+    }catch(e){s.error=String(e);if(this.id===id)this.error(e);}
+    finally{this.importPreparing.delete(id);if(this.id===id){this.draw();this.render(this.state,this.connected);}}
+  }
   private async publicationAction(action: "retry_publication" | "cancel_publication") {
     const f = this.post();
     if (!this.connected || f?.operation == null) return;
     const id = f.id, operation = f.operation;
     try {
-      for (const name of ["own-retry", "own-cancel"]) $<HTMLButtonElement>(name).disabled = true;
+      for (const name of ["own-retry", "own-publish"]) $<HTMLButtonElement>(name).disabled = true;
       await api({action, id, operation});
     } catch (e) {
       this.error(e);

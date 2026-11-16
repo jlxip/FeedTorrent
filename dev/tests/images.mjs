@@ -1,3 +1,4 @@
+import {sourceEntries} from './helpers.mjs';
 import {evidencePath} from './runtime.mjs';
 import assert from 'node:assert/strict';
 import {writeFile,readFile,mkdir,rename,symlink,rm} from 'node:fs/promises';
@@ -20,7 +21,7 @@ try{
  await app.command({type:'set_image_preferences',update:{scope:'post',id,policy:null}});assert.deepEqual((await app.api()).image_preferences.posts,{});
  pass('global/post image preferences are partial, normalized, durable and independent of download settings');
  const file=join(root,'photo.png');await writeFile(file,png());
- const sources=await app.api('/api/creation',{action:'sources',paths:[file]});
+ const sources=await sourceEntries([file]);
  const password='image test passphrase';await app.api('/api/publishing',{action:'create_key',password,confirmation:password});
  const post=await app.api('/api/publishing',{action:'create_post',title:'Photos'});
  let revision=1;
@@ -39,9 +40,9 @@ try{
  await writeFile(file,Buffer.alloc(png().length,42));assert.equal((await image(query())).status,400);
  await rm(file);await symlink(join(root,'app','state','publishing.json'),file);assert.equal((await image(query())).status,400);await rm(file);
  pass('modified, missing and substituted symlink sources cannot be served');
- await writeFile(file,png());draft.pages[0].entries=(await app.api('/api/creation',{action:'sources',paths:[file]})).entries;await save();
+ await writeFile(file,png());draft.pages[0].entries=(await sourceEntries([file])).entries;await save();
  for(const text of ['<svg xmlns="http://www.w3.org/2000/svg"></svg>','<html><script>alert(1)</script></html>']){
-  await writeFile(file,text);draft.pages[0].entries=(await app.api('/api/creation',{action:'sources',paths:[file]})).entries;await save();assert.equal((await image(query())).status,415);
+  await writeFile(file,text);draft.pages[0].entries=(await sourceEntries([file])).entries;await save();assert.equal((await image(query())).status,415);
  }
  pass('HTML and SVG bytes are rejected even when named as a PNG');
  const t=imageTorrent('Photo catalog');await preloadImages(root,app,t);await app.command({type:'pause',id:t.id});

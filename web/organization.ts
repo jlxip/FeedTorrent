@@ -34,7 +34,12 @@ export class OrganizationUI {
   constructor(private call:(c:Command)=>Promise<unknown>,private removeOwn:(id:string,revision:string)=>Promise<void>,private removedFollowed:(id:string)=>void){
     $('post-remove-form').onsubmit=e=>{e.preventDefault();void this.submitRemove();};
     $('post-remove-dialog').addEventListener('close',()=>{
-      requestAnimationFrame(()=>{const focus=this.returnFocus;if(focus?.isConnected&&(!document.querySelector('dialog[open]')||focus.closest<HTMLDialogElement>('dialog')?.open))focus.focus();});
+      requestAnimationFrame(()=>{
+        const dialog=$<HTMLDialogElement>('post-remove-dialog'),active=document.activeElement;
+        // Native close already restores focus. Do not interrupt a subsequent edit.
+        if(dialog.open||active&&active!==document.body&&!dialog.contains(active))return;
+        const focus=this.returnFocus;if(focus?.isConnected&&(!document.querySelector('dialog[open]')||focus.closest<HTMLDialogElement>('dialog')?.open))focus.focus();
+      });
     });
     try{const saved=JSON.parse(localStorage.getItem('postTreeFolded')||localStorage.getItem('feedTreeFolded')||'[]');if(Array.isArray(saved))this.folded=new Set(saved.filter(x=>typeof x==='string'));}catch{}
     $('post-archive').addEventListener('toggle',()=>{try{localStorage.setItem('postArchiveOpen',String(($('post-archive') as HTMLDetailsElement).open));}catch{}});

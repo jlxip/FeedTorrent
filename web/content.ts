@@ -1,3 +1,4 @@
+import {action} from './actions.js';
 import {PeerList} from './peers.js';
 import {settingsButton} from './reader.js';
 import {torrentImages} from './images.js';
@@ -34,7 +35,7 @@ export class ContentHeader {
   private down=node('span');private up=node('span');private peers=node('span');private error=node('div','','alert');private warning=node('div','','alert');private approve=button('Download once');
   private value:Summary={title:'',connected:false,noTorrent:true};private failure='';private id='';private pending=false;private generation=0;
   constructor(private prefix:string,identity?:HTMLElement){
-    this.peerList.setCounter(this.peers);
+    this.peerList.setCounter(this.peers);action(this.approve,'arrow-down','Download once',true);
     this.gear=settingsButton(prefix);
     this.title.id=prefix+'-heading';this.title.tabIndex=-1;
     this.info.id=prefix+'-info';this.info.className='btn help-control';this.info.dataset.variant='ghost';this.info.dataset.size='icon-sm';
@@ -100,9 +101,7 @@ export class ContentHeader {
     this.amount.textContent=`${size(t?.verified||0)} / ${size(total)}`;
     this.bar.hidden=!t||t.progress>=1||!t.active||!m.connected||t.held||t.state!=='Downloading';
     this.bar.setAttribute('aria-label',`${m.title} download progress`);this.bar.setAttribute('aria-valuenow',String(t?.progress||0));this.fill.style.width=`${Math.max(0,Math.min(1,t?.progress||0))*100}%`;
-    const label=t?(t.active?'Pause':'Resume'):'Download';this.toggle.setAttribute('aria-label',label);this.toggle.dataset.label=label;
-    if(t){this.toggle.dataset.size='icon-sm';const signature=t.active?'pause':'play';if(this.toggle.dataset.icon!==signature){this.toggle.replaceChildren(glyph(signature));this.toggle.dataset.icon=signature;}}
-    else{this.toggle.textContent='Download';delete this.toggle.dataset.icon;delete this.toggle.dataset.size;}
+    const label=t?(t.active?'Pause':'Resume'):'Download';this.toggle.dataset.label=label;action(this.toggle,t?(t.active?'pause':'play'):'arrow-down',label);
     this.toggle.hidden=!t&&!m.download;this.toggle.disabled=!enabled||(!t&&!m.download)||!!(t?.held&&!t.active);
     this.more.hidden=!t;this.more.disabled=!enabled;this.folder.disabled=!enabled||!t;this.remove.disabled=!enabled||!t||!!t.protected_by?.length;
     this.pin.disabled=!enabled||!t;this.pin.setAttribute('aria-checked',String(!!t?.pinned));
@@ -130,7 +129,7 @@ export class PostHistory {
   private kind:'own'|'followed'='own';private id='';private connected=false;
   constructor(private call:(c:Command,refresh?:boolean)=>Promise<any>,root?:HTMLDetailsElement){
     this.root=root||document.createElement('details');this.root.classList.add('reader-history','post-version-history');this.root.hidden=true;
-    const summary=node('summary','History','btn');summary.dataset.variant='ghost';this.root.replaceChildren(summary,this.list);
+    const summary=node('summary','','btn');summary.dataset.variant='ghost';action(summary,'history','History');this.root.replaceChildren(summary,this.list);
     this.root.addEventListener('toggle',()=>{if(this.root.open)void this.load();else this.request++;});
     document.addEventListener('pointerdown',e=>{if(!this.root.contains(e.target as Node))this.root.open=false;});
     document.addEventListener('keydown',e=>{if(e.key==='Escape')this.root.open=false;});
@@ -179,9 +178,9 @@ export class ContentPage {
   private history=node('details','','reader-history') as HTMLDetailsElement;private historyLinks=node('div');
   constructor(private reader:ContentReader,private host:ContentHost){
     reader.header.peerList.setReader(id=>host.call({type:'read_peers',id},false));
-    reader.header.mountStatus(this.status);this.status.setAttribute('role','status');this.pager.setAttribute('aria-label','Contents pages');this.pager.append(this.previous,this.range,this.next);reader.root.append(this.pager);
+    action(this.previous,'chevron-left','Previous');action(this.next,'chevron-right','Next');this.previous.dataset.variant=this.next.dataset.variant='ghost';reader.header.mountStatus(this.status);this.status.setAttribute('role','status');this.pager.setAttribute('aria-label','Contents pages');this.pager.append(this.previous,this.range,this.next);reader.root.append(this.pager);
     this.previous.onclick=()=>this.move(-100);this.next.onclick=()=>this.move(100);
-    const summary=node('summary','History','btn');summary.dataset.variant='ghost';this.history.append(summary,this.historyLinks);this.historyLinks.setAttribute('aria-label','Catalog history');reader.root.insertBefore(this.history,reader.body);
+    const summary=node('summary','','btn');summary.dataset.variant='ghost';action(summary,'history','History');this.history.append(summary,this.historyLinks);this.historyLinks.setAttribute('aria-label','Catalog history');reader.root.insertBefore(this.history,reader.body);
     document.addEventListener('pointerdown',e=>{if(!this.history.contains(e.target as Node))this.history.open=false;});
     document.addEventListener('keydown',e=>{if(e.key==='Escape')this.history.open=false;});
   }

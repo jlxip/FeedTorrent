@@ -599,7 +599,10 @@ impl Manager {
                     .checked_add(1)
                     .context("Draft revision exhausted")?;
                 let revision = f.revision;
-                persist(dir, &c)?;
+                if let Err(error) = persist(dir, &c) {
+                    let _ = persist(dir, lib);
+                    return Err(error);
+                }
                 *lib = c;
                 Ok(serde_json::json!({"revision":revision}))
             }

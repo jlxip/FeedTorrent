@@ -34,6 +34,8 @@ pub enum Entry {
     Torrent {
         name: String,
         data: Vec<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original: Option<SourceFile>,
     },
     Files {
         name: String,
@@ -185,7 +187,7 @@ impl Draft {
                                 .clone();
                             (format!("{title}.torrent"), self.page(*page)?)
                         }
-                        Entry::Torrent { name, data } => (name.clone(), data.clone()),
+                        Entry::Torrent { name, data, .. } => (name.clone(), data.clone()),
                         Entry::Files { name, .. } => (
                             format!("{name}.torrent"),
                             self.links
@@ -491,12 +493,35 @@ impl Draft {
                             .ok_or_else(|| err("Draft too large"))?;
                     }
                 }
-                if let Entry::Torrent { name, data } = entry {
+                if let Entry::Torrent {
+                    name,
+                    data,
+                    original,
+                } = entry
+                {
                     component(name)?;
                     if data.len() > MAX_METAINFO
                         || !matches!(inspect_item(data), ItemContent::Torrent(_))
                     {
                         return Err(err("Expected a valid .torrent, at most 8 MiB"));
+                    }
+                    if let Some(f) = original {
+                        if f.path.is_empty()
+                            || f.source.is_empty()
+                            || f.source.chars().any(char::is_control)
+                            || f.modified.is_empty()
+                            || f.length != data.len() as u64
+                        {
+                            return Err(err("Invalid original metainfo reference"));
+                        }
+                        for c in &f.path {
+                            component(c)?;
+                        }
+                        bytes = bytes
+                            .checked_add(
+                                f.source.len() + f.path.iter().map(String::len).sum::<usize>() + 64,
+                            )
+                            .ok_or_else(|| err("Draft too large"))?;
                     }
                     bytes = bytes
                         .checked_add(data.len())
@@ -605,7 +630,7 @@ impl Draft {
                                 .clone();
                             (format!("{title}.torrent"), self.page(*page)?)
                         }
-                        Entry::Torrent { name, data } => (name.clone(), data.clone()),
+                        Entry::Torrent { name, data, .. } => (name.clone(), data.clone()),
                         Entry::Files { .. } => {
                             return Err(err("File references require the host streaming builder"))
                         }
@@ -866,14 +891,17 @@ mod tests {
         d.pages[0].body = "x".repeat(900000);
         d.pages[0].entries = vec![
             Entry::Torrent {
+                original: None,
                 name: "x.torrent".into(),
                 data: a.metainfo.clone(),
             },
             Entry::Torrent {
+                original: None,
                 name: "3-x.torrent".into(),
                 data: c.metainfo.clone(),
             },
             Entry::Torrent {
+                original: None,
                 name: "x.torrent".into(),
                 data: a.metainfo,
             },

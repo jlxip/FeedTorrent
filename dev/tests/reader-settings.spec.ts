@@ -61,7 +61,7 @@ test('edits queued during a save survive its response, snapshots and closing the
   }finally{release();await cleanup(x.root,x.app);}
 });
 
-test('save errors and invalid limits retain entity drafts without automatic retries or blocking other valid edits',async({page,context})=>{
+test('save errors and invalid limits retain entity drafts with automatic retries or blocking other valid edits',async({page,context})=>{
   const x=await fixture(page);
   try{
     await x.open();let reject=true,attempts=0;
@@ -72,8 +72,8 @@ test('save errors and invalid limits retain entity drafts without automatic retr
     await page.locator('#reader-post-name').fill('Keep this draft');await expect(page.locator('#reader-settings-error')).toContainText('Configuration unavailable');
     const failed=attempts;await close(page);await x.open(x.ids[1]);await expect(page.locator('#reader-post-name')).toHaveValue('Second');
     await x.app.command({type:'configure_post',id:x.ids[0],config:{name:'Other tab',mode:'mirror_catalogs',automatic_limit:8388608}});
-    await x.open();await expect(page.locator('#reader-post-name')).toHaveValue('Keep this draft');await expect(page.locator('#reader-post-mode')).toHaveValue('mirror_catalogs');expect(attempts).toBe(failed);
-    reject=false;await page.locator('#reader-settings-retry').click();await expect.poll(async()=>(await x.post()).local_name).toBe('Keep this draft');await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
+    await x.open();await expect(page.locator('#reader-post-name')).toHaveValue('Keep this draft');await expect(page.locator('#reader-post-mode')).toHaveValue('mirror_catalogs');expect(attempts).toBeGreaterThanOrEqual(failed);
+    reject=false;await expect(page.locator('#reader-settings-retry')).toHaveCount(0);await expect.poll(async()=>(await x.post()).local_name).toBe('Keep this draft');await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
     await page.locator('#reader-post-limit').fill('0');await page.locator('#reader-post-name').fill('Valid name');await expect.poll(async()=>(await x.post()).local_name).toBe('Valid name');
     expect((await x.post()).automatic_limit).toBe(8388608);await expect(page.locator('#reader-post-limit')).toHaveAttribute('aria-invalid','true');
     await close(page);await page.locator('#post-settings').click();await expect(page.locator('#reader-post-limit')).toHaveValue('0');
@@ -98,4 +98,15 @@ test('navigation flushes valid edits without letting late saves reopen settings,
     await page.locator('#post-name').fill('Not followed yet');await page.locator('#post-mode').selectOption('mirror_catalogs');await page.locator('#post-dialog [data-close]').click();expect((await x.app.api()).posts).toHaveLength(2);
     await expect(page).toHaveURL(new RegExp(x.ids[1]+'$'));
   }finally{release();await cleanup(x.root,x.app);}
+});
+
+test('autosaves pending settings after reconnect without a manual Retry control',async({page,context})=>{
+ const x=await fixture(page);
+ try{
+  await page.addInitScript(()=>{const Native=window.EventSource;(window as any).EventSource=class extends Native{constructor(url:string|URL,init?:EventSourceInit){super(url,init);(window as any).__settingsEvents=this;}};});
+  await x.open();await context.setOffline(true);await page.evaluate(()=>{const input=document.getElementById('reader-post-name') as HTMLInputElement;input.value='Pending offline name';input.dispatchEvent(new Event('input',{bubbles:true}));const events=(window as any).__settingsEvents;events.close();events.dispatchEvent(new Event('error'));});await expect(page.locator('#post-refresh')).toBeDisabled();
+  await expect(page.locator('#reader-settings-error')).toBeVisible();
+  await expect(page.locator('#reader-settings-status')).toHaveText('Not saved');expect((await x.post()).local_name).not.toBe('Pending offline name');
+  await context.setOffline(false);const snapshot=await x.app.api();await page.evaluate(snapshot=>(window as any).__settingsEvents.dispatchEvent(new MessageEvent('snapshot',{data:JSON.stringify(snapshot)})),snapshot);await expect.poll(async()=> (await x.post()).local_name).toBe('Pending offline name');await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
+ }finally{await context.setOffline(false);await cleanup(x.root,x.app);}
 });

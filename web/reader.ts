@@ -1,3 +1,4 @@
+import {action as setAction} from './actions.js';
 import type {Command,PostConfig,PostMode,Snapshot} from './types.js';
 import {markdown, type MarkdownNode} from './markdown.js';
 import {activeImages,ImagePanel,type ImageContext} from './images.js';
@@ -143,12 +144,10 @@ export class Reader {
       const action=row.querySelector<HTMLElement>('.reader-action')!;
       if(e.label){let b=action.firstElementChild as HTMLButtonElement|null;if(!b){b=document.createElement('button');b.type='button';b.className='btn';action.append(b);}
         b.id=`${this.prefix}-action-${e.key}`;b.setAttribute('aria-label',e.label);
-        if(b.dataset.label!==e.label){b.dataset.label=e.label;b.textContent=e.label;
-          if(e.label==='Show in Folder'){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
-            for(const [k,v] of Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'2','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false'}))svg.setAttribute(k,v);
-            svg.innerHTML='<path d="m6 14 2-4h14l-4 10H2V4h6l2 3h10v3"/>';b.replaceChildren(svg);b.dataset.size='icon-sm';
-          }else delete b.dataset.size;
-        }b.disabled=!!(e.actionDisabled??e.disabled);b.dataset.variant=e.label==='Download'?'default':'outline';b.onclick=()=>e.action?.();
+        b.dataset.label=e.label;
+        const glyph=e.label==='Download'?'arrow-down':e.label==='Follow post'?'bookmark-plus':e.label==='Show in Folder'?'folder-open':null;
+        setAction(b,glyph,e.label,e.label!=='Download'&&e.label!=='Show in Folder');
+        b.disabled=!!(e.actionDisabled??e.disabled);b.dataset.variant=e.label==='Download'?'default':'outline';b.onclick=()=>e.action?.();
       }else action.replaceChildren();
       const error=row.querySelector<HTMLElement>('.reader-error')!;error.textContent=e.error||'';error.hidden=!e.error;
     }
@@ -219,7 +218,6 @@ function refresh(){
   $('reader-settings-error').hidden=!error;
   const status=$('reader-settings-status');status.hidden=!draft;
   status.textContent=draft?.busy?'Saving…':draft?.dirty.size?'Not saved':'Saved';
-  const retry=$<HTMLButtonElement>('reader-settings-retry');retry.hidden=!draft?.error;retry.disabled=!ready||!!draft?.busy;
   const remove=$<HTMLButtonElement>('reader-post-remove');remove.hidden=!selected.followed;remove.disabled=!ready;
   $('reader-load-images').hidden=!activeImages()?.pendingExternal;
 }
@@ -264,6 +262,7 @@ async function flush(id:string){
     }
   }catch(error){draft.error=String(error);}
   finally{draft.busy=false;rebase(id);refresh();}
+  if(draft.error&&draft.dirty.size)draft.timer=setTimeout(()=>void flush(id),2000);
   if(!draft.error&&[...draft.dirty.keys()].some(field=>field!=='limit'||validLimit(draft)))void flush(id);
 }
 export function settingsButton(prefix:string){
@@ -284,13 +283,15 @@ export function initReaderSettings(value:Host){
   $('reader-post-name').oninput=()=>changed('name');$('reader-post-limit').oninput=()=>changed('limit');
   $('reader-post-mode').onchange=()=>changed('mode',true);$('reader-post-unlimited').onchange=()=>changed('limit',true);
   $('reader-image-policy').onchange=()=>changed('policy',true);
-  $('reader-settings-retry').onclick=()=>{if(selected?.id)void flush(selected.id);};
   $('reader-load-images').onclick=()=>{const images=activeImages();if(selected?.route===location.hash&&images?.pendingExternal){images.loadExternal();dialog().close();}};
   $('reader-post-remove').onclick=()=>{const id=selected?.id;if(id)host.remove(id,$('reader-post-remove'));};
   dialog().addEventListener('close',()=>{const id=selected?.id;selected=null;if(id&&!drafts.get(id)?.error)void flush(id);});
   window.addEventListener('hashchange',()=>{if(dialog().open)dialog().close();refresh();});
   document.addEventListener('reader-images-change',refresh);
 }
-export function readerSettingsState(state:Snapshot|null,online:boolean){snapshot=state;connected=online;refresh();}
+export function readerSettingsState(state:Snapshot|null,online:boolean){
+  const available=connected&&snapshot?.ready;snapshot=state;connected=online;refresh();
+  if(online&&state?.ready&&!available)for(const [id,draft] of drafts)if(draft.dirty.size&&!draft.busy)void flush(id);
+}
 
 export function readerSettingsRemoved(id:string){clearTimeout(drafts.get(id)?.timer);drafts.delete(id);if(selected?.id===id){selected=null;dialog().close();}}

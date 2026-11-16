@@ -94,7 +94,7 @@ test('pending versions can be approved without replacing the page and late body 
   await page.locator('#post-tree a[data-kind=followed]').click();await expect(page.locator('#post-reader .reader-body')).toContainText('Workshop notes');
   release();await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
   await expect(page.locator('#post-error')).not.toContainText('Late previous page error');
-  expect(x.commands.some(c=>c.type==='mark_catalog_read'&&c.catalog===hash(9))).toBe(false);
+  expect(x.commands.some(c=>c.type==='mark_catalog_read'&&c.catalog===hash(9))).toBe(true);
  }finally{await cleanup(x.root,x.app);}
 });
 

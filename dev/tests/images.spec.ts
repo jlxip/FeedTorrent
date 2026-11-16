@@ -1,3 +1,4 @@
+import {sourceEntries} from './helpers.mjs';
 import {expect,test} from '@playwright/test';
 import {createServer} from 'node:http';
 import {writeFile,mkdir} from 'node:fs/promises';
@@ -11,7 +12,7 @@ async function fixture(page:any){
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const url='http://127.0.0.1:'+(server.address() as any).port;
  try{
   app=await startApp(join(root,'app'));const file=join(root,'photo.png');await writeFile(file,png());
-  const sources=await app.api('/api/creation',{action:'sources',paths:[file]});const password='image reader passphrase';await app.api('/api/publishing',{action:'create_key',password,confirmation:password});
+  const sources=await sourceEntries([file]);const password='image reader passphrase';await app.api('/api/publishing',{action:'create_key',password,confirmation:password});
   const {id}=await app.api('/api/publishing',{action:'create_post',title:'Photos'});
   const body=`![Attached photo](photo.png)\n\n[![External one](${url}/one)](${url}/linked)\n\n![External\ntwo](${url}/two)\n\n![Broken photo](${url}/broken)\n\n![Invalid URL](http://user:password@127.0.0.1/invalid)\n\n[Child](Child.torrent)`;
   const draft={root:1,pages:[{id:1,title:'Photos',body,entries:[...sources.entries,{kind:'page',page:2}]},{id:2,title:'Child',body:`![Child photo](${url}/one)`,entries:[]}]};
@@ -70,7 +71,7 @@ test('HTTP image settings cover all global/post combinations and stay independen
   await page.locator('#settings-dialog').getByRole('button',{name:'Close',exact:true}).click();
   let reject=true;await page.route('**/api/commands',async r=>{if(reject&&r.request().postDataJSON().type==='set_image_preferences'){reject=false;await r.fulfill({status:503,json:{error:'Cannot save image setting'}});}else await r.continue();});
   await settings(page);await page.locator('#reader-image-policy').selectOption('ask');await expect(page.locator('#reader-settings-error')).toContainText('Cannot save image setting');await expect(page.locator('#reader-image-policy')).toHaveValue('ask');
-  await page.locator('#reader-settings-retry').click();await expect(other.locator('#reader-image-policy')).toHaveValue('ask');
+  await expect(page.locator('#reader-settings-retry')).toHaveCount(0);await expect(other.locator('#reader-image-policy')).toHaveValue('ask');
   await other.close();
  }finally{await finish(x);}
 });

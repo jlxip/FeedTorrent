@@ -1,3 +1,5 @@
+import {checkFileImports} from './file-import-fixtures.mjs';
+import {sourceEntries} from './helpers.mjs';
 import {verify,createPublicKey} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {mkdir,writeFile,readFile,open,stat,symlink,utimes,readdir,rename} from 'node:fs/promises';
@@ -15,7 +17,7 @@ const root=await temporary();let app,restored,network,client;
 const digest=async path=>{const hash=createHash('sha256');for await(const b of createReadStream(path))hash.update(b);return hash.digest('hex');};
 const create=async(title,paths,copy=true,post=false)=>{
   const d=await app.api('/api/creation',{action:'create_draft'});
-  const {entries}=await app.api('/api/creation',{action:'sources',paths});
+  const {entries}=await sourceEntries(paths);
   d.draft.pages[0].title=title;d.draft.pages[0].entries=entries;
   return app.api('/api/creation',{action:'save_draft',id:d.id,revision:d.revision,post,copy_files:copy,draft:d.draft});
 };
@@ -28,9 +30,9 @@ try{
   const sources=join(root,'sources');await mkdir(join(sources,'folder','nested'),{recursive:true});await writeFile(join(sources,'folder','nested','data.txt'),'source bytes for a conventional torrent');
   await writeFile(join(sources,'folder','cross-file.bin'),Buffer.alloc(700003,19));
   network=await dhtNetwork({verify:verifyMutable});const flags=['--dht-bootstrap',network.bootstrap.map(n=>`${n.host}:${n.port}`).join(',')];app=await startApp(join(root,'app'),flags);
-  const browse=await app.api('/api/creation',{action:'browse',path:sources});assert.equal(browse.entries[0].name,'folder');
+
   await symlink(join(sources,'folder'),join(sources,'unsafe-link'));
-  await assert.rejects(()=>app.api('/api/creation',{action:'sources',paths:[join(sources,'unsafe-link')]}),/symlink/i);
+  await assert.rejects(()=>sourceEntries([join(sources,'unsafe-link')]),/symlink/i);
   const settings=(await app.api()).settings;await app.command({type:'configure',settings:{...settings,seed_by_default:false}});
   let d=await create('Copied folder',[join(sources,'folder')]);assert.equal((await app.api()).publishing.has_key,false);
   await app.stop();app=await startApp(join(root,'app'),flags);assert.equal((await app.api('/api/creation',{action:'get_draft',id:d.id})).draft.pages[0].title,'Copied folder');
@@ -41,7 +43,7 @@ try{
   const torrent=await new Promise((resolve,reject)=>{const t=client.add(metainfo,{path:join(root,'independent')});t.once('metadata',()=>resolve(t));t.once('error',reject);t.once('ready',()=>resolve(t));});
   torrent.addPeer(`127.0.0.1:${(await app.api()).listen_port}`);await wait(()=>torrent.done,'independent download');
   for(const file of torrent.files){const target=join(root,'independent',file.path);assert.equal(await digest(target),await digest(join(copied.save_path,file.path)));}
-  await new Promise(resolve=>client.destroy(resolve));client=undefined;console.log('PASS durable keyless draft, server selector, v1 metainfo and independent exact-byte download');
+  await new Promise(resolve=>client.destroy(resolve));client=undefined;console.log('PASS durable keyless draft, legacy source compatibility, v1 metainfo and independent exact-byte download');
   const original=join(sources,'external.bin');await writeFile(original,Buffer.alloc(2*1024*1024,37));const before=await digest(original);
   d=await create('External source',[original],false);const external=await generate(d);let source=await complete(external.result);
   await app.stop();app=await startApp(join(root,'app'),flags);source=await complete(source.id);
@@ -55,7 +57,7 @@ try{
   const large=join(sources,'large.bin');const fd=await open(large,'w');await fd.truncate(270*1024*1024);await fd.close();
   d=await create('Large copied payload',[large],true);const largeCommon=await generate(d);await complete(largeCommon.result);
   let post=await create('Mixed files',[large],false,true);post.draft.pages[0].body='Large embedded content';
-  const linked=await app.api('/api/creation',{action:'sources',paths:[join(sources,'folder')]});linked.entries[0].linked=true;linked.entries[0].copy=false;post.draft.pages[0].entries.push(...linked.entries);
+  const linked=await sourceEntries([join(sources,'folder')]);linked.entries[0].linked=true;linked.entries[0].copy=false;post.draft.pages[0].entries.push(...linked.entries);
   post=await app.api('/api/creation',{action:'save_draft',id:post.id,revision:post.revision,post:true,copy_files:false,draft:post.draft});
   const password='creation native test password';const bound=await app.api('/api/creation',{action:'bind_post',id:post.id,revision:post.revision,password,confirmation:password});
   await app.api('/api/publishing',{action:'publish',id:bound.id,revision:bound.revision,password});
@@ -72,3 +74,5 @@ try{
   await wait(async()=> (await app.api('/api/creation',{action:'get_draft',id:canceled.id})).phase==='Draft','canceled creation');
   assert(!(await readdir(join(root,'app','downloads'))).some(n=>n.startsWith('.create-'+canceled.id)));console.log('PASS cancellation preserves draft and removes its staging payload');
 }finally{if(client)await new Promise(r=>client.destroy(r));await cleanup(root,app,restored);if(network)await network.stop();}
+
+await checkFileImports();

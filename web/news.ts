@@ -1,3 +1,4 @@
+import {icon} from './actions.js';
 import {canRestoreFocus} from './reader.js';
 import type {Command, NewsEntry, NewsPage, Snapshot} from "./types.js";
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
@@ -16,8 +17,10 @@ export class NewsUI {
   private request = 0;
   private busy = false;
   private rows = new Map<string, HTMLElement>();
-  private pending = new Set<string>();
+  private hideRead = localStorage.getItem('newsHideRead') === 'true';
   constructor(private call: (c:Command,refresh?:boolean)=>Promise<any>) {
+    $<HTMLInputElement>('news-hide-read').checked=this.hideRead;
+    $('news-hide-read').onchange=()=>{this.hideRead=$<HTMLInputElement>('news-hide-read').checked;localStorage.setItem('newsHideRead',String(this.hideRead));this.first();};
     $("news-refresh").onclick = () => this.first();
     $("news-previous").onclick = () => {
       this.offset = Math.max(0,this.offset-100);
@@ -41,7 +44,7 @@ export class NewsUI {
     const focus = chosen || (document.activeElement as HTMLElement|null)?.id || null;
     history.replaceState({...history.state,news:{offset:this.offset,anchor:this.anchor,scroll:scrollY,focus}}, "");
   }
-  private first() {this.offset=0;this.anchor=null;void this.load(true);}
+  private first() {this.signature="";this.offset=0;this.anchor=null;void this.load(true);}
   private error(message: string) {
     $("news-error").hidden=!message; $("news-error").firstElementChild!.textContent=message;
   }
@@ -78,7 +81,7 @@ export class NewsUI {
     this.busy=true;this.error("");
     this.draw();
     try {
-      const page=await this.call({type:'news_page',offset:this.offset,anchor:this.anchor},false) as NewsPage;
+      const page=await this.call({type:'news_page',offset:this.offset,anchor:this.anchor,hide_read:this.hideRead},false) as NewsPage;
       if (request!==this.request||!this.active) return;
       if (page.offset>0 && page.offset>=page.total) {
         this.offset=page.total?Math.floor((page.total-1)/100)*100:0;
@@ -120,20 +123,8 @@ export class NewsUI {
         const post=node('span','','news-post muted');
         const date=node('time','','news-date muted');
         const status=node('span','','news-availability muted');
-        const badge=node('span','','badge');badge.dataset.variant='secondary';
-        const toggle=document.createElement('button');toggle.type='button';toggle.className='btn news-toggle';toggle.dataset.variant='ghost';toggle.id=`news-read-${key}`;
-        toggle.onclick=async()=> {
-          if(!this.connected||this.pending.has(key))return;
-          this.pending.add(key);toggle.disabled=true;
-          try {
-            const current=this.page?.entries.find(e=>this.key(e)===key);if(!current)return;
-            const read=!current.read;
-            await this.call({type:'set_update_read',post:current.post,sequence:current.sequence,read});
-            current.read=read;this.error('');
-          } catch(e){this.error(String(e));}
-          finally {this.pending.delete(key);this.draw();}
-        };
-        row.append(a,post,date,status,badge,toggle);this.rows.set(key,row);$("news-list").append(row);
+        const badge=node('span','','news-read');badge.append(icon('check'));badge.setAttribute('role','img');badge.setAttribute('aria-label','Read');
+        row.append(a,post,date,status,badge);this.rows.set(key,row);$("news-list").append(row);
       }
       const at=$("news-list").children.item(position++);
       if(at!==row)$("news-list").insertBefore(row,at);
@@ -149,10 +140,7 @@ export class NewsUI {
         date.setAttribute('aria-label',`Detected ${time.toLocaleString()}`);
       } else date.textContent='Detection time unavailable';
       row.querySelector('.news-availability')!.textContent=(c?.error||entry.error)||(c?.ready?'':c?.state||entry.state);
-      row.querySelector('.badge')!.textContent=entry.read?'Read':'Unread';
-      const toggle=row.querySelector<HTMLButtonElement>('.news-toggle')!;
-      toggle.textContent=entry.read?'Mark unread':'Mark read';toggle.disabled=!this.connected||this.pending.has(key);
-      toggle.setAttribute('aria-label',`${toggle.textContent}: ${c?.name||entry.name}`);
+      (row.querySelector('.news-read') as HTMLElement).hidden=!entry.read;
     }
   }
 }

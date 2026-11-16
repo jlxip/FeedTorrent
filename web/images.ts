@@ -1,3 +1,4 @@
+import {action} from './actions.js';
 import type {ImagePreferences,Snapshot} from './types.js';
 import type {MarkdownNode} from './markdown.js';
 export interface ImageContext {
@@ -73,7 +74,7 @@ export class ImagePanel {
     row.status.textContent=row.phase==='blocked'?'External image':row.phase==='pending'?'Image is not downloaded and verified':row.phase==='loading'?'Loading image…':row.phase==='error'?'Could not load image':'';
     row.status.hidden=!row.status.textContent;
     row.button.hidden=!(row.target&&(row.phase==='error'||row.remote&&row.phase==='blocked'));
-    row.button.textContent=row.phase==='error'?'Retry image':'Load image';
+    action(row.button,row.phase==='error'?'rotate-cw':'image',row.phase==='error'?'Retry image':'Load image',true);
   }
   private loadImage(row:Row,url:string){
     if(!url||!this.current()||row.phase==='loading'||row.phase==='loaded')return;

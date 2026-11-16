@@ -332,3 +332,19 @@ export async function retainForRemoval(app,id,bytes){
   if(v.deleting.length)throw Error('Removal fixture did not retain torrent');
   await app.command({type:'set_pin',id,pinned:false,revision:v.revision});
 }
+
+export async function sourceEntries(paths) {
+  const fs=await import('node:fs/promises'),path=await import('node:path');
+  const entries=[];
+  for(const source of paths) {
+    const files=[];
+    async function scan(source,relative) {
+      const m=await fs.lstat(source,{bigint:true});
+      if(m.isSymbolicLink())throw Error('Source symlinks are not supported');
+      if(m.isDirectory()) {for(const name of (await fs.readdir(source)).sort())await scan(path.join(source,name),[...relative,name]);}
+      else files.push({path:relative,source,length:Number(m.size),modified:String(m.mtimeNs)});
+    }
+    await scan(source,[path.basename(source)]);entries.push({kind:'files',name:path.basename(source),files,linked:false,copy:true});
+  }
+  return {entries};
+}
