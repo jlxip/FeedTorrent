@@ -33,6 +33,7 @@ public:
   NativeDescription description(rust::Str id) const;
   NativeFile file_at(rust::Str id, std::uint32_t index) const;
   void allow_download(rust::Str id);
+  void configure_webtorrent(rust::Slice<const rust::String> trackers, rust::Str stun);
   void pause(rust::Str id);
   void resume(rust::Str id);
   void remove(rust::Str id);

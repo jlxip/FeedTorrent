@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <libtorrent/alert_types.hpp>
+#include <libtorrent/announce_entry.hpp>
 #include <libtorrent/bdecode.hpp>
 #include <libtorrent/bencode.hpp>
 #include <libtorrent/entry.hpp>
@@ -277,6 +278,36 @@ struct Session::Impl {
   fs::path dir;
   std::unique_ptr<lt::session> session;
   std::map<std::string, lt::torrent_handle> handles;
+  std::map<std::string, std::vector<lt::announce_entry>> source_trackers;
+  std::vector<std::string> webtorrent_trackers;
+  void update_announce_policy() {
+    bool webtorrent = !webtorrent_trackers.empty();
+    for (auto const& [key, trackers] : source_trackers) {
+      (void)key;
+      webtorrent = webtorrent || std::any_of(trackers.begin(), trackers.end(), [](auto const& t) {
+        return t.url.compare(0, 6, "wss://") == 0 || t.url.compare(0, 5, "ws://") == 0;
+      });
+    }
+    // WSS signaling must coexist with an already successful HTTP/UDP tracker,
+    // including when WSS belongs only to the source and globals are empty.
+    lt::settings_pack settings;
+    settings.set_bool(lt::settings_pack::announce_to_all_trackers, webtorrent);
+    settings.set_bool(lt::settings_pack::announce_to_all_tiers, webtorrent);
+    session->apply_settings(settings);
+  }
+  void update_trackers(std::string const& key) {
+    auto h = handles.at(key);
+    auto trackers = source_trackers.at(key);
+    auto ti = h.torrent_file();
+    if (!ti || !ti->priv()) {
+      for (auto const& url : webtorrent_trackers) {
+        if (std::none_of(trackers.begin(), trackers.end(), [&](auto const& t) { return t.url == url; }))
+          trackers.emplace_back(url);
+      }
+    }
+    h.replace_trackers(trackers);
+    h.force_reannounce();
+  }
   std::map<std::string, std::shared_ptr<KnownPeers>> known_peers;
   std::map<std::string, fs::path> transfer_roots;
   std::map<std::string, std::pair<bool, std::int64_t>> dates;
@@ -424,6 +455,7 @@ Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
                      : "0.0.0.0:" + std::to_string(port) +
                            ",[::]:" + std::to_string(port));
   s.set_str(lt::settings_pack::user_agent, "FeedTorrent/1.0.0-dev");
+  if (isolated) s.set_str(lt::settings_pack::webtorrent_stun_server, "");
   s.set_bool(lt::settings_pack::enable_dht, true);
   s.set_bool(lt::settings_pack::enable_lsd, !isolated);
   s.set_bool(lt::settings_pack::enable_upnp, !isolated);
@@ -552,11 +584,26 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
   });
   auto h = impl->session->add_torrent(std::move(p));
   impl->handles[key] = h;
+  impl->source_trackers[key] = h.trackers();
+  impl->update_announce_policy();
+  impl->update_trackers(key);
   impl->known_peers[key] = std::move(known);
   impl->transfer_roots[key] = fs::path(str(path)).parent_path();
   impl->dates[key] = magnet ? std::make_pair(false, std::int64_t(0)) : creation_date(bytes);
   if (active)
     h.resume();
+}
+void Session::configure_webtorrent(rust::Slice<const rust::String> trackers, rust::Str stun) {
+  if (impl->stopped) throw std::runtime_error("Backend closed");
+  lt::settings_pack settings;
+  settings.set_str(lt::settings_pack::webtorrent_stun_server, str(stun));
+  impl->session->apply_settings(settings);
+  std::vector<std::string> urls;
+  for (auto const& url : trackers) urls.emplace_back(std::string(url));
+  if (urls == impl->webtorrent_trackers) return;
+  impl->webtorrent_trackers = std::move(urls);
+  impl->update_announce_policy();
+  for (auto const& [key, handle] : impl->handles) impl->update_trackers(key);
 }
 void Session::pause(rust::Str id) { impl->handle(id).pause(); }
 void Session::resume(rust::Str id) {
@@ -594,6 +641,8 @@ void Session::remove(rust::Str id) {
     throw std::runtime_error(
         "Timed out detaching transfer; files were preserved");
   impl->handles.erase(key);
+  impl->source_trackers.erase(key);
+  impl->update_announce_policy();
   impl->known_peers.erase(key);
   impl->dates.erase(key);
   impl->metadata_guard.erase(key);

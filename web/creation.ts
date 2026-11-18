@@ -11,8 +11,8 @@ interface DraftView {id:string;revision:number;post:boolean;copy_files:boolean;d
 const $=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id)! as T;
 function el(tag:string,text='',cls=''){const n=document.createElement(tag);n.textContent=text;n.className=cls;return n;}
 function button(text:string,fn:()=>void,variant='outline'){const b=el('button',text,'btn') as HTMLButtonElement;b.type='button';b.dataset.variant=variant;b.onclick=fn;return b;}
-export async function creationCall(command:unknown){
-  const r=await fetch('./api/creation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(command)});
+export async function creationCall(command:unknown,signal?:AbortSignal){
+  const r=await fetch('./api/creation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(command),signal});
   const value=await r.json();if(!r.ok)throw Error(value.error||`Creation failed (${r.status})`);return value;
 }
 export class CreationUI {
@@ -26,6 +26,8 @@ export class CreationUI {
   private queue:Promise<void>=Promise.resolve();
   private timer:ReturnType<typeof setTimeout>|null=null;
   private polling=false;
+  private unloading=false;
+  private pollAbort:AbortController|null=null;
   private busy=false;
   private changingType=false;
   private typeChange:Promise<void>=Promise.resolve();
@@ -45,7 +47,9 @@ export class CreationUI {
     $('creation-password-dialog').addEventListener('close',()=>{$<HTMLInputElement>('creation-password').value='';$<HTMLInputElement>('creation-confirm').value='';});
     $('creation-copy-magnet').onclick=()=>void navigator.clipboard.writeText('magnet:?xt=urn:btih:'+location.hash.split('/')[2]).catch(e=>this.error(e));
     window.addEventListener('hashchange',()=>{void this.flush().catch(e=>this.error(e));this.render(this.state,this.connected);});
-    setInterval(()=>{if(this.connected)void this.poll();},1500);
+    window.addEventListener('beforeunload',()=>{this.unloading=true;this.pollAbort?.abort();});
+    window.addEventListener('pageshow',()=>{this.unloading=false;if(this.connected)void this.poll();});
+    setInterval(()=>{if(this.connected&&!this.unloading)void this.poll();},1500);
   }
   private title(d:DraftView){return d.draft.pages.find(p=>p.id===d.draft.root)?.title||'Untitled';}
   private page(){return this.current?.draft.pages.find(p=>p.id===this.pageId);}
@@ -92,15 +96,16 @@ export class CreationUI {
       $<HTMLDialogElement>('creation-password-dialog').close();await creationCall({action:'delete_draft',id:d.id,revision:d.revision});this.current=null;location.hash=`#/own/${result.id}/read`;void this.poll();
     }catch(e){$('creation-password-error').textContent=String(e);}finally{this.busy=false;$<HTMLButtonElement>('creation-password-submit').disabled=false;$<HTMLInputElement>('creation-password').value='';$<HTMLInputElement>('creation-confirm').value='';}
   }
-  private async poll(){if(this.polling||!this.connected)return;this.polling=true;
-    try{const result=await creationCall({action:'list'});this.drafts=result.drafts;this.drawLists();const d=this.current,remote=this.drafts.find(x=>x.id===d?.id);
+  private async poll(){if(this.polling||!this.connected||this.unloading)return;this.polling=true;
+    const controller=new AbortController();this.pollAbort=controller;
+    try{const result=await creationCall({action:'list'},controller.signal);if(this.unloading)return;this.drafts=result.drafts;this.drawLists();const d=this.current,remote=this.drafts.find(x=>x.id===d?.id);
       if(d&&remote&&this.edits===this.saved&&remote.revision>=d.revision){
         if(remote.result){
           const route=`#/create/${d.id}`;if(location.hash===route){this.current=null;location.hash=remote.post?`#/own/${remote.result}`:`#/library/${remote.result}`;void creationCall({action:'delete_draft',id:d.id,revision:remote.revision}).catch(()=>{});}return;
         }
-        const changed=d.revision!==remote.revision;if(changed){const fresh:DraftView=await creationCall({action:'get_draft',id:d.id});if(this.current===d&&this.edits===this.saved){this.current=fresh;this.draw();}}else{d.phase=remote.phase;d.error=remote.error;d.done=remote.done;d.total=remote.total;d.operation=remote.operation;this.status();}
+        const changed=d.revision!==remote.revision;if(changed){const fresh:DraftView=await creationCall({action:'get_draft',id:d.id},controller.signal);if(!this.unloading&&this.current===d&&this.edits===this.saved){this.current=fresh;this.draw();}}else{d.phase=remote.phase;d.error=remote.error;d.done=remote.done;d.total=remote.total;d.operation=remote.operation;this.status();}
       }
-    }catch(e){if(location.hash.startsWith('#/create/'))this.error(e);}finally{this.polling=false;}
+    }catch(e){if(!this.unloading&&location.hash.startsWith('#/create/'))this.error(e);}finally{this.polling=false;if(this.pollAbort===controller)this.pollAbort=null;}
   }
   render(state:Snapshot|null,connected:boolean){
     const before=this.connected;this.state=state;this.connected=connected;

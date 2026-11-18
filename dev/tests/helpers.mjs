@@ -54,9 +54,15 @@ export async function startApp(root, extra = [], options = {}) {
     defaults.splice(defaults.indexOf("--download-dir"), 2);
   if (options.defaultData && defaults.includes("--data-dir"))
     defaults.splice(defaults.indexOf("--data-dir"), 2);
+  const binary = resolve("target/release/feedtorrent");
+  const args = [...defaults, ...extra];
+  const limits = options.descriptorLimits;
+  // Apply limits immediately before exec: Node/libuv raises its own soft limit
+  // on launch, so limiting a Node parent does not reproduce desktop startup.
+  const launcher = "import os,resource,sys;old=resource.getrlimit(resource.RLIMIT_NOFILE)[1];hard=int(sys.argv[2]) if old==resource.RLIM_INFINITY else min(old,int(sys.argv[2]));soft=min(int(sys.argv[1]),hard);resource.setrlimit(resource.RLIMIT_NOFILE,(soft,hard));print('FD_LIMIT_BEFORE_EXEC',soft,hard,flush=True);os.execv(sys.argv[3],sys.argv[3:])";
   const child = spawn(
-    resolve("target/release/feedtorrent"),
-    [...defaults, ...extra],
+    limits ? "python3" : binary,
+    limits ? ["-c", launcher, String(limits.soft), String(limits.hard), binary, ...args] : args,
     { stdio: ["ignore", "pipe", "pipe"], cwd: options.cwd, env: options.env },
   );
   let logs = "";

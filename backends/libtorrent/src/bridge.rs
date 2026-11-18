@@ -93,6 +93,11 @@ pub mod ffi {
             isolated: bool,
             ipv6_only: bool,
         ) -> Result<UniquePtr<Session>>;
+        fn configure_webtorrent(
+            self: Pin<&mut Session>,
+            trackers: &[String],
+            stun: &str,
+        ) -> Result<()>;
         fn inspect_magnet(uri: &str) -> Result<String>;
         fn inspect_torrent(data: &[u8]) -> Result<String>;
         fn describe_torrent(data: &[u8]) -> Result<NativeDescription>;

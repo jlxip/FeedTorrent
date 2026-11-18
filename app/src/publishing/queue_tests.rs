@@ -118,6 +118,130 @@ fn install_record(f: &mut Owned, sequence: i64) {
     f.state = "Published".into();
 }
 #[test]
+fn reactivation_of_error_durably_retries_the_signed_record_without_publishing_the_draft() {
+    let (dir, mut lib, ids) = fixture(1);
+    let id = &ids[0];
+    let f = lib.posts.get_mut(id).unwrap();
+    install_record(f, 4);
+    f.published_sequence = Some(4);
+    f.revision = 2;
+    f.draft.pages[0].body = "Unpublished edits must remain private".into();
+    f.state = "Error".into();
+    f.error = "Catalog restoration failed".into();
+    let before = serde_json::to_value(&*f).unwrap();
+    let mut m = manager(&dir, lib);
+    // A renewal timer from the previous success must not delay explicit recovery.
+    m.renewals
+        .insert(id.clone(), Instant::now() + Duration::from_secs(900));
+    m.command(Command::SetActive {
+        id: id.clone(),
+        active: true,
+    })
+    .unwrap();
+    let f = &m.lib.posts[id];
+    let p = f
+        .pending
+        .as_ref()
+        .expect("reactivation must enqueue signed recovery");
+    let operation = p.id;
+    assert!(f.active);
+    assert_eq!(f.state, "Queued");
+    assert!(f.error.is_empty());
+    assert_eq!(p.revision, 1);
+    assert_eq!(serde_json::to_value(&p.signed).unwrap(), before["record"]);
+    assert_eq!(serde_json::to_value(&p.pages).unwrap(), before["pages"]);
+    assert!(m.secrets.is_empty());
+    for active in [true, false] {
+        assert!(m
+            .command(Command::SetActive {
+                id: id.clone(),
+                active
+            })
+            .is_err());
+    }
+    let mut restored = load(&dir).unwrap();
+    recover(&mut restored).unwrap();
+    assert_eq!(restored.posts[id].pending.as_ref().unwrap().id, operation);
+    m = manager(&dir, restored);
+    m.finished(id.clone(), operation + 1, Ok(1));
+    assert_eq!(m.lib.posts[id].state, "Publication pending");
+    running(&mut m, id, operation);
+    m.finished(id.clone(), operation, Ok(1));
+    let after = serde_json::to_value(&load(&dir).unwrap().posts[id]).unwrap();
+    assert_eq!(after["state"], "Published");
+    assert_eq!(after["active"], true);
+    assert_eq!(after["error"], "");
+    assert!(after["pending"].is_null());
+    for field in [
+        "record",
+        "pages",
+        "history",
+        "draft",
+        "revision",
+        "signed_revision",
+        "published_revision",
+        "published_sequence",
+        "published",
+        "changed_at_us",
+    ] {
+        assert_eq!(after[field], before[field], "{field}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn reactivation_without_a_signed_record_requires_publish_and_disabling_preserves_error() {
+    let (dir, mut lib, ids) = fixture(1);
+    let id = &ids[0];
+    let f = lib.posts.get_mut(id).unwrap();
+    f.state = "Error".into();
+    f.error = "Incorrect password".into();
+    persist(&dir, &lib).unwrap();
+    let mut m = manager(&dir, lib);
+    let before = fs::read(dir.join("publishing.json")).unwrap();
+    let error = m
+        .command(Command::SetActive {
+            id: id.clone(),
+            active: true,
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("Publish the draft"));
+    assert_eq!(fs::read(dir.join("publishing.json")).unwrap(), before);
+    assert!(!m.lib.posts[id].active);
+    m.command(Command::SetActive {
+        id: id.clone(),
+        active: false,
+    })
+    .unwrap();
+    assert_eq!(m.lib.posts[id].state, "Error");
+    assert_eq!(m.lib.posts[id].error, "Incorrect password");
+    assert!(m.lib.posts[id].pending.is_none());
+    fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn reactivation_failed_persistence_keeps_the_error_and_operation_counter() {
+    let (dir, mut lib, ids) = fixture(1);
+    let id = &ids[0];
+    let f = lib.posts.get_mut(id).unwrap();
+    install_record(f, 4);
+    f.state = "Error".into();
+    f.error = "Catalog restoration failed".into();
+    persist(&dir, &lib).unwrap();
+    let mut m = manager(&dir, lib);
+    let before = serde_json::to_vec(&m.lib).unwrap();
+    let path = dir.join("publishing.json");
+    fs::rename(&path, path.with_extension("saved")).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(m
+        .command(Command::SetActive {
+            id: id.clone(),
+            active: true
+        })
+        .is_err());
+    assert_eq!(serde_json::to_vec(&m.lib).unwrap(), before);
+    assert_eq!(fs::read(path.with_extension("saved")).unwrap(), before);
+    fs::remove_dir_all(dir).unwrap();
+}
+#[test]
 fn snapshots_are_durable_duplicate_guarded_and_secrets_are_not_serialized() {
     let (dir, lib, ids) = fixture(1);
     let mut m = manager(&dir, lib);

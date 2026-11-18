@@ -13,12 +13,13 @@ const inputs={
   target,
   libtorrent:run('git',['-C','backends/libtorrent/vendor/libtorrent','rev-parse','HEAD']),
   trySignal:run('git',['-C','backends/libtorrent/vendor/libtorrent/deps/try_signal','rev-parse','HEAD']),
+  rtc:run('git',['-C','backends/libtorrent/vendor/libtorrent','rev-parse','HEAD:deps/libdatachannel']),
   platform:run('uname',['-s','-m']),
   compiler:run('c++',['--version']),
   cmake:run('cmake',['--version']),
   ninja:run('ninja',['--version']),
   pkgConfig:run('pkg-config',['--version']),
-  scripts:['dev/scripts/native-deps.sh','dev/cmake/openbsd.cmake','.gitmodules'].map(file=>
+  scripts:['dev/scripts/native-deps.sh','dev/cmake/openbsd.cmake','dev/cmake/openbsd-webrtc.cmake','dev/cmake/openbsd-ice.h','dev/cmake/openbsd-dtls.h','.gitmodules'].map(file=>
     [file,createHash('sha256').update(readFileSync(resolve(root,file))).digest('hex')]),
   environment:Object.fromEntries(['CC','CXX','CFLAGS','CXXFLAGS','CPPFLAGS','LDFLAGS',
     'OPENSSL_ROOT_DIR','BOOST_ROOT','CMAKE_PREFIX_PATH','MACOSX_DEPLOYMENT_TARGET']

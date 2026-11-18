@@ -613,7 +613,24 @@ impl Manager {
                     bail!("Wait for the current publication")
                 }
                 let mut c = lib.clone();
-                c.posts.get_mut(&id).context("Own post not found")?.active = active;
+                let f = c.posts.get(&id).context("Own post not found")?;
+                let recovery = if active && f.state == "Error" {
+                    if f.record.is_none() {
+                        bail!("Publish the draft before reactivating this post")
+                    }
+                    Some(allocate(&mut c)?)
+                } else {
+                    None
+                };
+                let f = c.posts.get_mut(&id).unwrap();
+                f.active = active;
+                if let Some(operation) = recovery {
+                    // Reannounce only the durable signature; newer draft edits
+                    // still require an explicit Publish and its password.
+                    f.pending = Some(pending(f, operation, true));
+                    f.state = "Queued".into();
+                    f.error.clear();
+                }
                 persist(dir, &c)?;
                 *lib = c;
                 Ok(serde_json::json!({"ok":true}))

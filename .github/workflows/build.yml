@@ -68,6 +68,10 @@ jobs:
         run: |
           sh dev/scripts/native-deps.sh --verify-source
           test -s .tools/native/lib/libtorrent-rasterbar.a
+          test -s .tools/native/lib/libdatachannel-static.a
+          test -s .tools/native/lib/libjuice-static.a
+          test -s .tools/native/lib/libusrsctp.a
+          grep -Fqx "webtorrent:BOOL=ON" .tools/libtorrent-build/CMakeCache.txt
           test -f .tools/native/include/libtorrent/version.hpp
           grep -Fqx "prefix=$PWD/.tools/native" .tools/native/lib/pkgconfig/libtorrent-rasterbar.pc
           grep -Fqx "CMAKE_INSTALL_PREFIX:PATH=$PWD/.tools/native" .tools/libtorrent-build/CMakeCache.txt
@@ -145,6 +149,10 @@ jobs:
         run: |
           sh dev/scripts/native-deps.sh --verify-source
           test -s .tools/native/lib/libtorrent-rasterbar.a
+          test -s .tools/native/lib/libdatachannel-static.a
+          test -s .tools/native/lib/libjuice-static.a
+          test -s .tools/native/lib/libusrsctp.a
+          grep -Fqx "webtorrent:BOOL=ON" .tools/libtorrent-build/CMakeCache.txt
           test -f .tools/native/include/libtorrent/version.hpp
           grep -Fqx "prefix=$PWD/.tools/native" .tools/native/lib/pkgconfig/libtorrent-rasterbar.pc
           grep -Fqx "CMAKE_INSTALL_PREFIX:PATH=$PWD/.tools/native" .tools/libtorrent-build/CMakeCache.txt
@@ -260,7 +268,7 @@ jobs:
           sync: rsync
           copyback: true
           cache-after-prepare: true
-          cache-after-prepare-key-suffix: libtorrent-6da363d2994f17c0b3c0450d124cf73a31a73847-${{ hashFiles('dev/ci/prepare.sh', 'dev/scripts/native-deps.sh', 'dev/cmake/openbsd.cmake', '.gitmodules') }}
+          cache-after-prepare-key-suffix: libtorrent-6da363d2994f17c0b3c0450d124cf73a31a73847-${{ hashFiles('dev/ci/prepare.sh', 'dev/scripts/native-deps.sh', 'dev/cmake/openbsd.cmake', 'dev/cmake/openbsd-webrtc.cmake', 'dev/cmake/openbsd-ice.h', 'dev/cmake/openbsd-dtls.h', '.gitmodules') }}
           prepare: |
             sh dev/ci/prepare.sh
             useradd -m -s /bin/sh ci
@@ -282,6 +290,10 @@ jobs:
               ln -s /opt/feedtorrent-native .tools/native
             fi
             test -s .tools/native/lib/libtorrent-rasterbar.a
+            test -s .tools/native/lib/libdatachannel-static.a
+            test -s .tools/native/lib/libjuice-static.a
+            test -s .tools/native/lib/libusrsctp.a
+            grep -Fqx "webtorrent:BOOL=ON" .tools/libtorrent-build/CMakeCache.txt
             grep -Fqx "prefix=$PWD/.tools/native" .tools/native/lib/pkgconfig/libtorrent-rasterbar.pc
             grep -Fqx "CMAKE_INSTALL_PREFIX:PATH=$PWD/.tools/native" .tools/libtorrent-build/CMakeCache.txt
             touch .tools/native/.ready

@@ -8,3 +8,6 @@ target_include_directories(node_datachannel PRIVATE "${NODE_ADDON_API}")
 get_target_property(binding_libraries node_datachannel LINK_LIBRARIES)
 list(REMOVE_ITEM binding_libraries -static-libgcc -static-libstdc++)
 set_property(TARGET node_datachannel PROPERTY LINK_LIBRARIES "${binding_libraries}")
+
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/openbsd-webrtc.cmake")
+feedtorrent_openbsd_webrtc()

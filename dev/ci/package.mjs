@@ -108,6 +108,9 @@ export async function packageRelease(){
   const include=cache.match(/^OPENSSL_INCLUDE_DIR:[^=]+=(.+)$/m)?.[1];assert(include,'Missing native TLS headers');
   const tlsHeaders=await readFile(join(include,'openssl/opensslv.h'),'utf8');
   const native={libtorrent:(await readFile('.tools/native/lib/pkgconfig/libtorrent-rasterbar.pc','utf8')).match(/^Version: (.+)$/m)?.[1],libtorrent_commit:command('git',['-C','backends/libtorrent/vendor/libtorrent','rev-parse','HEAD']),tls:tlsHeaders.match(/^#\s*define\s+(?:LIBRESSL_VERSION_TEXT|OPENSSL_VERSION_TEXT)\s+"([^"]+)"/m)?.[1]};
+  assert(/^webtorrent:BOOL=ON$/m.test(cache),'Native package lacks WebRTC support');
+  native.webtorrent=true;
+  native.libdatachannel_commit=command('git',['-C','backends/libtorrent/vendor/libtorrent/deps/libdatachannel','rev-parse','HEAD']);
   const boost=cache.match(/^Boost_INCLUDE_DIR:[^=]+=(.+)$/m)?.[1];
   if(boost)native.boost=(await readFile(join(boost,'boost/version.hpp'),'utf8')).match(/^#define BOOST_LIB_VERSION "([^"]+)"/m)?.[1];
   const temp=await mkdtemp(join(output,'.package-'));

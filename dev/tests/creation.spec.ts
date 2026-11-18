@@ -124,3 +124,35 @@ test('the primary Cancel aborts a file import and preserves the previous draft',
   await expect(page.locator('#creation-submit')).toHaveAttribute('aria-label','OK');release!();await expect(page.locator('#creation-entries')).toContainText('No items');expect(await app.api('/api/creation',{action:'get_draft',id})).toEqual(before);
  }finally{release?.();await cleanup(root,app);}
 });
+
+
+test('background draft polling stops at the unload boundary and resumes in the new document',async({page})=>{
+  const root=await temporary();let app:any;
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.addInitScript(()=>{
+    const originalFetch=window.fetch.bind(window),interval=window.setInterval.bind(window);
+    let leaving=false;
+    window.fetch=(input,init)=>{
+      if(leaving&&String(input).includes('api/creation'))sessionStorage.setItem('draftPollAfterUnload',String(Number(sessionStorage.getItem('draftPollAfterUnload')||0)+1));
+      return originalFetch(input,init);
+    };
+    window.setInterval=((handler:any,delay?:number,...args:any[])=>{
+      // Run the real background callback at the lifecycle boundary, rather
+      // than relying on a 1500ms interval randomly coinciding with reload.
+      if(delay===1500&&typeof handler==='function')window.addEventListener('beforeunload',()=>{
+        leaving=true;queueMicrotask(()=>handler(...args));
+      });
+      return interval(handler,delay,...args);
+    }) as typeof window.setInterval;
+  });
+  try {
+    app=await startApp(root);
+    const first=page.waitForResponse(r=>r.url().endsWith('/api/creation')&&r.request().postDataJSON()?.action==='list');
+    await page.goto(app.url);await (await first).finished();
+    await page.evaluate(()=>new Promise<void>(r=>requestAnimationFrame(()=>r())));
+    const next=page.waitForResponse(r=>r.url().endsWith('/api/creation')&&r.request().postDataJSON()?.action==='list');
+    await page.reload();await (await next).finished();await expect(page.locator('#open-button')).toBeEnabled();
+    expect(await page.evaluate(()=>Number(sessionStorage.getItem('draftPollAfterUnload')||0))).toBe(0);
+    expect(errors).toEqual([]);
+  } finally {await cleanup(root,app);}
+});

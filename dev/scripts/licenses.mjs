@@ -47,7 +47,20 @@ const geoip = JSON.parse(await readFile(join(root, "app/data/dbip-country-lite.j
 if (createHash("sha256").update(await readFile(join(root,"app/data",geoip.file))).digest("hex") !== geoip.sha256) throw Error("DB-IP database checksum mismatch");
 for (const name of ["DB-IP-NOTICE", "CC-BY-4.0.txt", "dbip-country-lite.json"])
   await copyFile(join(root, "app/data", name), join(notices, name));
-const packages = [{name:"DB-IP Country Lite",version:geoip.edition,license:geoip.license,source:geoip.source,sha256:geoip.sha256}];
+const nativeSources = [
+  ['libtorrent','backends/libtorrent/vendor/libtorrent','LICENSE','BSD-3-Clause','https://github.com/arvidn/libtorrent'],
+  ['libdatachannel','backends/libtorrent/vendor/libtorrent/deps/libdatachannel','LICENSE','MPL-2.0','https://github.com/paullouisageneau/libdatachannel'],
+  ['libjuice','backends/libtorrent/vendor/libtorrent/deps/libdatachannel/deps/libjuice','LICENSE','MPL-2.0','https://github.com/paullouisageneau/libjuice'],
+  ['usrsctp','backends/libtorrent/vendor/libtorrent/deps/libdatachannel/deps/usrsctp','LICENSE.md','BSD-3-Clause','https://github.com/sctplab/usrsctp'],
+  ['plog','backends/libtorrent/vendor/libtorrent/deps/libdatachannel/deps/plog','LICENSE','MIT','https://github.com/SergiusTheBest/plog'],
+];
+const nativePackages=[];
+for (const [name,path,notice,license,repository] of nativeSources) {
+  await copyFile(join(root,path,notice),join(notices,`${name.toUpperCase()}-LICENSE`));
+  const revision=output('git',['-C',path,'rev-parse','HEAD']);
+  nativePackages.push({name,revision,license,source:`${repository}/tree/${revision}`});
+}
+const packages = [...nativePackages,{name:"DB-IP Country Lite",version:geoip.edition,license:geoip.license,source:geoip.source,sha256:geoip.sha256}];
 for (const p of metadata.packages.sort(
   (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version),
 )) {

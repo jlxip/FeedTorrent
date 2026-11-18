@@ -5,6 +5,8 @@ export interface Settings {
   download_dir: string;
   peer_port: number;
   seed_by_default: boolean;
+  webtorrent_trackers: string[];
+  webtorrent_stun_server: string;
 }
 export interface TorrentFile {
   name: string;

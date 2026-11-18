@@ -12,7 +12,9 @@ mod post_state;
 mod posts;
 mod publishing;
 mod publishing_keys;
+mod resources;
 mod storage;
+mod webtorrent;
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
     body::Body,
@@ -69,6 +71,10 @@ struct Settings {
     peer_port: u16,
     #[serde(default = "default_seed")]
     seed_by_default: bool,
+    #[serde(default = "webtorrent::default_trackers")]
+    webtorrent_trackers: Vec<String>,
+    #[serde(default = "webtorrent::default_stun")]
+    webtorrent_stun_server: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Record {
@@ -349,6 +355,8 @@ fn default_store() -> Store {
             download_dir: "user/downloads".into(),
             peer_port: 6881,
             seed_by_default: true,
+            webtorrent_trackers: webtorrent::default_trackers(),
+            webtorrent_stun_server: webtorrent::default_stun(),
         },
         records: vec![],
         image_preferences: images::Preferences::default(),
@@ -421,11 +429,15 @@ impl Engine {
         Ok(())
     }
     fn new(args: &Args, dir: PathBuf, store: Store) -> Result<Self> {
-        let native = LibtorrentBackend::new(
+        let mut native = LibtorrentBackend::new(
             dir.to_str().context("Non-UTF-8 state directory")?,
             store.settings.peer_port,
             args.dht_bootstrap.as_deref().unwrap_or(""),
             args.isolated,
+        )?;
+        native.configure_webtorrent(
+            &store.settings.webtorrent_trackers,
+            &store.settings.webtorrent_stun_server,
         )?;
         let view = Snapshot {
             engine: "libtorrent-rasterbar 2.1.2",
@@ -502,7 +514,7 @@ impl Engine {
                 continue;
             }
             if let Some(existing) = e.store.records.iter_mut().find(|r| r.id == id) {
-                if existing.path != record.path {
+                if !storage::same_location(&existing.path, &record.path) {
                     if existing.path.exists() {
                         warnings.push(format!(
                             "Torrent {id} conflicts with the registry; files preserved"
@@ -840,8 +852,21 @@ impl Engine {
                 {
                     bail!("Downloads and published must be different directories")
                 }
+                webtorrent::validate(&mut settings)?;
+                let previous = self.store.settings.clone();
+                self.native.configure_webtorrent(
+                    &settings.webtorrent_trackers,
+                    &settings.webtorrent_stun_server,
+                )?;
                 self.store.settings = settings;
-                self.persist()?;
+                if let Err(error) = self.persist() {
+                    self.store.settings = previous;
+                    self.native.configure_webtorrent(
+                        &self.store.settings.webtorrent_trackers,
+                        &self.store.settings.webtorrent_stun_server,
+                    )?;
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -1390,6 +1415,7 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
 async fn main() -> Result<()> {
     let args = Args::parse();
     let http_ports = local_http::ports(args.http_port, args.isolated)?;
+    resources::prepare()?;
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
     let dir = match args.data_dir.as_deref() {
         Some(path) => ensure_directory(path)?,

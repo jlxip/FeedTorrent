@@ -391,6 +391,21 @@ function settingsStatus(value: string) {
 function saveSettings(): Promise<boolean> {
   const folder = $<HTMLInputElement>("#download-dir");
   const port = $<HTMLInputElement>("#peer-port");
+  const trackerField = $<HTMLTextAreaElement>("#webtorrent-trackers");
+  const stunField = $<HTMLInputElement>("#webtorrent-stun-server");
+  const trackers = [...new Set(trackerField.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean))];
+  const stun = stunField.value.trim();
+  const trackersValid = trackers.length <= 32 && trackers.every(value=>{
+    try {const u=new URL(value);return value.length<=2048 && u.protocol==='wss:' && !!u.hostname && !u.username && !u.password && !u.hash && !/\s/.test(value);} catch {return false;}
+  });
+  const stunValid = !stun || (()=>{
+    try {const u=new URL('http://'+stun);return stun.length<=253 && !!u.hostname && !!stun.match(/:\d+$/) && Number(stun.match(/:(\d+)$/)![1])>0 && !u.username && !u.password && u.pathname==='/' && !u.search && !u.hash && !stun.includes('/') && !/\s/.test(stun);} catch {return false;}
+  })();
+  trackerField.setAttribute('aria-invalid',String(!trackersValid));
+  stunField.setAttribute('aria-invalid',String(!stunValid));
+  $('#webtorrent-trackers-error').textContent=trackersValid?'':'Enter up to 32 valid wss:// tracker URLs, one per line.';
+  $('#webtorrent-stun-server-error').textContent=stunValid?'':'Enter a STUN server as host:port, or leave empty.';
+  if(!trackersValid || !stunValid){settingsStatus('');return Promise.resolve(false);}
   const folderInvalid = !folder.value.trim();
   const portInvalid = !port.value || !port.validity.valid;
   folder.setAttribute("aria-invalid", String(folderInvalid));
@@ -408,6 +423,8 @@ function saveSettings(): Promise<boolean> {
     download_dir: folder.value,
     peer_port: Number(port.value),
     seed_by_default: $<HTMLInputElement>("#seed-by-default").checked,
+    webtorrent_trackers: trackers,
+    webtorrent_stun_server: stun,
   };
   // Serialize writes so a slower response cannot overwrite a newer edit.
   settingsSave = settingsSave.then(async () => {
@@ -445,18 +462,23 @@ $("#settings-open").onclick = () => {
   $<HTMLInputElement>("#download-dir").value = state.settings.download_dir;
   $<HTMLInputElement>("#peer-port").value = String(state.settings.peer_port);
   $<HTMLInputElement>("#seed-by-default").checked = state.settings.seed_by_default;
+  $<HTMLTextAreaElement>('#webtorrent-trackers').value = (state.settings.webtorrent_trackers || []).join('\n');
+  $<HTMLInputElement>('#webtorrent-stun-server').value = state.settings.webtorrent_stun_server ?? '';
+  $('#webtorrent-trackers-error').textContent='';
+  $('#webtorrent-stun-server-error').textContent='';
   $<HTMLInputElement>("#external-images-automatic").checked = !!state.image_preferences?.automatic;
   $("#settings-error").textContent = "";
-  for (const input of document.querySelectorAll<HTMLInputElement>("#settings-form input"))
+  for (const input of document.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>("#settings-form input, #settings-form textarea"))
     input.removeAttribute("aria-invalid");
   settingsStatus("");
   $<HTMLDialogElement>("#settings-dialog").showModal();
 };
-for (const input of document.querySelectorAll<HTMLInputElement>("#settings-form input")) {
+for (const input of document.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>("#settings-form input, #settings-form textarea")) {
   input.addEventListener("input", () => {
     settingsEditVersion++;
     if(input.id==='external-images-automatic')++imageSettingsVersion;
     input.removeAttribute("aria-invalid");
+    const fieldError=document.getElementById(input.id+'-error');if(fieldError)fieldError.textContent='';
     settingsStatus("");
     $("#settings-error").textContent = "";
   });

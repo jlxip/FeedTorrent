@@ -240,6 +240,24 @@
           </div>
           <input class="input" id="peer-port" type="number" min="0" max="65535" required aria-describedby="peer-port-help settings-error" />
         </div>
+        <div class="field">
+          <div class="field-label">
+            <label for="webtorrent-trackers" class="label">WebRTC trackers</label>
+            <button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="webtorrent-trackers-help" aria-label="About WebRTC trackers" aria-describedby="webtorrent-trackers-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
+            <span id="webtorrent-trackers-help" class="field-tooltip" role="tooltip" hidden>One wss:// URL per line. Added to public torrents alongside their own trackers. Clear the list to use only trackers from each torrent.</span>
+          </div>
+          <textarea class="textarea" id="webtorrent-trackers" rows="3" spellcheck="false" aria-describedby="webtorrent-trackers-help webtorrent-trackers-error"></textarea>
+          <p id="webtorrent-trackers-error" class="transfer-error" role="alert"></p>
+        </div>
+        <div class="field">
+          <div class="field-label">
+            <label for="webtorrent-stun-server" class="label">STUN server</label>
+            <button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="webtorrent-stun-server-help" aria-label="About STUN server" aria-describedby="webtorrent-stun-server-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
+            <span id="webtorrent-stun-server-help" class="field-tooltip" role="tooltip" hidden>Host and port used for new WebRTC connections. Leave empty to disable STUN. Changes apply without restarting.</span>
+          </div>
+          <input class="input" id="webtorrent-stun-server" type="text" autocomplete="off" spellcheck="false" aria-describedby="webtorrent-stun-server-help webtorrent-stun-server-error" />
+          <p id="webtorrent-stun-server-error" class="transfer-error" role="alert"></p>
+        </div>
         <div class="field" data-orientation="horizontal"><input class="input" id="seed-by-default" type="checkbox" checked /><label for="seed-by-default" class="label">Seed by default</label></div>
         <div class="field" data-orientation="horizontal"><input id="external-images-automatic" type="checkbox" class="input" /><label for="external-images-automatic" class="label">Load external images automatically</label></div>
         <p id="settings-error" class="transfer-error" role="alert"></p>

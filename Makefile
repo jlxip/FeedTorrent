@@ -8,7 +8,7 @@ WASM_CHECK = cargo check --locked --offline -p feedtorrent-bep -p feedtorrent-po
 UI_TEST = node dev/scripts/ui.mjs
 UI_ARGS =
 UNIT_ARGS = --workspace
-ALL_NATIVE_SUITES = bep44 bep50 network peers tls edge-cases open-cwd posts publishing key-vault retention organization storage creation images http-ports
+ALL_NATIVE_SUITES = bep44 bep50 network peers tls edge-cases open-cwd posts publishing key-vault retention organization storage creation images http-ports webtorrent startup
 
 NATIVE_SUITES = $(ALL_NATIVE_SUITES)
 
@@ -33,7 +33,7 @@ verify-source: root
 	sh dev/scripts/native-deps.sh --verify-source
 native-deps: $(NATIVE_READY)
 	sh dev/scripts/native-deps.sh --verify-source
-$(NATIVE_READY): dev/scripts/native-deps.sh dev/cmake/openbsd.cmake .gitmodules
+$(NATIVE_READY): dev/scripts/native-deps.sh dev/cmake/openbsd.cmake dev/cmake/openbsd-webrtc.cmake dev/cmake/openbsd-ice.h dev/cmake/openbsd-dtls.h .gitmodules
 	@$(CHECK_ROOT)
 	NATIVE_JOBS="$(NATIVE_JOBS)" sh dev/scripts/native-deps.sh
 	touch "$@"

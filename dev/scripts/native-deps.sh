@@ -7,13 +7,23 @@ if [ ! -e "$source/.git" ]; then git -C "$root" submodule update --init backends
 test "$(git -C "$source" rev-parse HEAD)" = 6da363d2994f17c0b3c0450d124cf73a31a73847 || { echo 'Unexpected libtorrent revision' >&2; exit 1; }
 git -C "$source" diff --exit-code HEAD
 if [ ! -e "$source/deps/try_signal/.git" ]; then git -C "$source" submodule update --init deps/try_signal; fi
+rtc="$source/deps/libdatachannel"
+if [ ! -e "$rtc/.git" ]; then git -C "$source" submodule update --init deps/libdatachannel; fi
+for dependency in libjuice plog usrsctp; do
+  if [ ! -e "$rtc/deps/$dependency/.git" ]; then git -C "$rtc" submodule update --init "deps/$dependency"; fi
+done
+for dependency in deps/libdatachannel deps/libdatachannel/deps/libjuice deps/libdatachannel/deps/plog deps/libdatachannel/deps/usrsctp; do
+  case "$dependency" in deps/libdatachannel) expected=$(git -C "$source" rev-parse HEAD:deps/libdatachannel);; *) expected=$(git -C "$rtc" rev-parse "HEAD:deps/$(basename "$dependency")");; esac
+  test "$(git -C "$source/$dependency" rev-parse HEAD)" = "$expected" || { echo "Unexpected source revision: $dependency" >&2; exit 1; }
+  git -C "$source/$dependency" diff --exit-code HEAD
+done
 [ "${1:-}" != --verify-source ] || exit 0
 jobs=${NATIVE_JOBS:-6}
 if [ "$(uname -s)" = OpenBSD ]; then jobs=${NATIVE_JOBS:-2}; fi
 set -- cmake -S "$root/backends/libtorrent/vendor/libtorrent" \
   -B "$root/.tools/libtorrent-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_STANDARD=17 -DCMAKE_INSTALL_PREFIX="$root/.tools/native" \
-  -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF -Dwebtorrent=OFF \
+  -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF -Dwebtorrent=ON \
   -Di2p=OFF -Dbuild_tests=OFF -Dbuild_examples=OFF -Dbuild_tools=OFF \
   -Dpython-bindings=OFF
 # Keep the distributable independent of package-manager TLS libraries.

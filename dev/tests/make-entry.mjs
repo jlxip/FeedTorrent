@@ -18,7 +18,7 @@ try {
   // Real Make graph and TypeScript emitter, with expensive native tools replaced
   // at their process boundaries. No shared caches or application data are used.
   await writeFile(join(project, "dev/node_modules/typescript/bin/tsc"), `import ${JSON.stringify(join(repo,"dev/node_modules/typescript/bin/tsc"))};\n`);
-  for (const file of ["Cargo.toml", "app/Cargo.toml", ".gitmodules", "dev/cmake/openbsd.cmake", "dev/package.json", "dev/package-lock.json"]) await writeFile(join(project,file), "{}\n");
+  for (const file of ["Cargo.toml", "app/Cargo.toml", ".gitmodules", "dev/cmake/openbsd.cmake", "dev/cmake/openbsd-webrtc.cmake", "dev/cmake/openbsd-ice.h", "dev/cmake/openbsd-dtls.h", "dev/package.json", "dev/package-lock.json"]) await writeFile(join(project,file), "{}\n");
   await writeFile(join(project,"app/Cargo.toml"), '[package]\nname = "feedtorrent"\n');
   await writeFile(join(project,"web/tsconfig.json"), JSON.stringify({compilerOptions:{target:"ES2022",module:"ES2022",strict:true},include:["*.ts"]}));
   await writeFile(join(project,"web/main.ts"), "export const value = 1;\n");

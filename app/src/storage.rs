@@ -25,6 +25,14 @@ pub(super) fn published(dir: &Path) -> PathBuf {
     dir.join("published")
 }
 
+// Relative/absolute spellings of an existing directory are not conflicting
+// copies. Failed resolution must never make two unrelated paths equivalent.
+pub(super) fn same_location(left: &Path, right: &Path) -> bool {
+    left == right
+        || matches!((fs::canonicalize(left), fs::canonicalize(right)),
+            (Ok(left), Ok(right)) if left == right)
+}
+
 pub(super) fn sidecar(record: &Record, suffix: &str) -> Result<PathBuf> {
     if !valid_id(&record.id) || record.path.file_name().and_then(|s| s.to_str()) != Some(&record.id)
     {

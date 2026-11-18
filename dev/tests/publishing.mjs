@@ -290,6 +290,45 @@ try {
     const f = (await app.api()).publishing.posts[0];
     return !f.operation && /password/i.test(f.error);
   }, "incorrect password");
+  const recoveryBefore = JSON.parse(await readFile(join(root, "publisher/state/publishing.json")));
+  assert.equal(recoveryBefore.posts[id].state, "Error");
+  assert.equal(recoveryBefore.posts[id].active, false);
+  let recoveryPuts = 0;
+  const observeRecovery = (key) => {
+    if (key.equals(target)) recoveryPuts++;
+  };
+  for (const node of nodes) node.on("put", observeRecovery);
+  await pub({ action: "set_active", id, active: true });
+  await wait(async () => {
+    const s = await app.api(), f = s.publishing.posts.find(p => p.id === id);
+    return recoveryPuts > 0 && f?.state === "Published" && !f.operation && s;
+  }, "reactivated Error publication acknowledged by independent DHT");
+  const recoveryAfter = JSON.parse(await readFile(join(root, "publisher/state/publishing.json")));
+  assert(recoveryAfter.next_operation > recoveryBefore.next_operation);
+  assert.equal(recoveryAfter.posts[id].active, true);
+  assert.equal(recoveryAfter.posts[id].error, "");
+  assert.equal(recoveryAfter.posts[id].pending, null);
+  for (const field of ["record", "pages", "history", "draft", "revision", "signed_revision",
+    "published_revision", "published_sequence", "published", "changed_at_us"])
+    assert.deepEqual(recoveryAfter.posts[id][field], recoveryBefore.posts[id][field], field);
+  const recoveredLibrary = (await app.api()).library_posts.find(p => p.post_kind === "own" && p.id === id);
+  assert.equal(recoveredLibrary.state, "Published");
+  assert.equal(recoveredLibrary.error, "");
+  await app.stop();
+  const putsBeforeRestart = recoveryPuts;
+  app = await startApp(join(root, "publisher"), args);
+  resources.push(app);
+  await wait(async () => {
+    const s = await app.api(), f = s.publishing.posts.find(p => p.id === id);
+    return recoveryPuts > putsBeforeRestart && f?.active && f.state === "Published" && !f.operation && !f.error;
+  }, "reactivated publication remains healthy after restart");
+  for (const node of nodes) node.off("put", observeRecovery);
+  assert.deepEqual(JSON.parse(await readFile(join(root, "publisher/state/publishing.json"))).posts[id].record,
+    recoveryBefore.posts[id].record);
+  // Restore the fixture's original inactive policy before the backup/password
+  // scenarios; otherwise their restart intentionally starts another renewal.
+  await pub({ action: "set_active", id, active: false });
+  pass("reactivating Error reannounces the existing signed record to independent DHT, clears Library error and survives restart without changing content or version");
   for (const full of [false, true]) {
     const r = await fetch(app.url + `/api/publishing/backup?full=${full}`, {
       headers: { Cookie: app.cookie },

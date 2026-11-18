@@ -19,6 +19,7 @@ use feedtorrent_bep::{
 pub struct LibtorrentBackend {
     session: cxx::UniquePtr<ffi::Session>,
     dht: dht::DhtState,
+    isolated: bool,
 }
 fn error(e: impl std::fmt::Display) -> BackendError {
     BackendError::new(e.to_string())
@@ -39,6 +40,30 @@ pub struct Peer {
     pub up: u64,
 }
 impl LibtorrentBackend {
+    /// Configure WebRTC discovery without changing the original torrent source.
+    /// Test sessions never contact external signaling or STUN servers.
+    pub fn configure_webtorrent(&mut self, trackers: &[String], stun: &str) -> Result<()> {
+        let local_tracker = |t: &&String| {
+            !self.isolated
+                || t.starts_with("wss://127.0.0.1:")
+                || t.starts_with("wss://localhost:")
+                || t.starts_with("wss://[::1]:")
+        };
+        let trackers: Vec<String> = trackers.iter().filter(local_tracker).cloned().collect();
+        let stun = if self.isolated
+            && !(stun.starts_with("127.0.0.1:")
+                || stun.starts_with("localhost:")
+                || stun.starts_with("[::1]:"))
+        {
+            ""
+        } else {
+            stun
+        };
+        self.session
+            .pin_mut()
+            .configure_webtorrent(&trackers, stun)
+            .map_err(error)
+    }
     /// Read connection details without refreshing or persisting torrent state.
     pub fn read_peers(&self, id: &str) -> Result<Vec<Peer>> {
         Ok(self
@@ -74,6 +99,7 @@ impl LibtorrentBackend {
             session: ffi::new_session(state_dir, port, bootstrap, isolated, ipv6_only)
                 .map_err(error)?,
             dht: dht::DhtState::default(),
+            isolated,
         })
     }
 }
