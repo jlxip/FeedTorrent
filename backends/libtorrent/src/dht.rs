@@ -84,6 +84,10 @@ impl Pending {
     }
 }
 impl LibtorrentBackend {
+    /// Includes native traversals still draining after a reported timeout.
+    pub fn dht_request_pending(&self, id: DhtRequestId) -> bool {
+        self.dht.requests.contains_key(&id.0)
+    }
     fn pump_dht(&mut self) {
         if self.dht.closed {
             return;

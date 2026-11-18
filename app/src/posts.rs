@@ -200,6 +200,9 @@ impl PostHost {
             }
         }
         for event in e.native.poll_dht() {
+            if e.gateway.event(&event) {
+                continue;
+            }
             if e.publication_native
                 .as_mut()
                 .is_some_and(|bridge| bridge.event(&event, self))
@@ -771,7 +774,9 @@ mod tests {
         let mut store = default_store();
         store.settings.peer_port = 0;
         store.settings.download_dir = dir.join("downloads").display().to_string();
-        let mut engine = Engine::new(&args, dir.clone(), store).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let gateway = dht_gateway::Gateway::new(runtime.handle().clone());
+        let mut engine = Engine::new(&args, dir.clone(), store, gateway).unwrap();
         use feedtorrent_bep::bep49::{BuildEntry, FeedBuilder};
         let mut b = FeedBuilder::new("catalog");
         b.entries.push(BuildEntry::file(vec!["note".into()], 3));
@@ -840,7 +845,9 @@ mod tests {
         let mut store = default_store();
         store.settings.peer_port = 0;
         store.settings.download_dir = dir.join("downloads").display().to_string();
-        let mut engine = Engine::new(&args, dir.clone(), store).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let gateway = dht_gateway::Gateway::new(runtime.handle().clone());
+        let mut engine = Engine::new(&args, dir.clone(), store, gateway).unwrap();
         let signer = feedtorrent_bep::bep44::Bep44Signer::from_seed(&[29; 32]);
         let pointer =
             feedtorrent_bep::bep46::TorrentPointer::sign(&signer, [8; 20], 1, vec![]).unwrap();
@@ -915,7 +922,9 @@ mod tests {
         let mut store = default_store();
         store.settings.peer_port = 0;
         store.settings.download_dir = path.join("downloads").display().to_string();
-        let mut engine = Engine::new(&args, path.clone(), store).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let gateway = dht_gateway::Gateway::new(runtime.handle().clone());
+        let mut engine = Engine::new(&args, path.clone(), store, gateway).unwrap();
         let host = engine.posts.as_mut().unwrap();
         if let Some(mut udp) = host.udp.take() {
             udp.close();

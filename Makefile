@@ -8,7 +8,7 @@ WASM_CHECK = cargo check --locked --offline -p feedtorrent-bep -p feedtorrent-po
 UI_TEST = node dev/scripts/ui.mjs
 UI_ARGS =
 UNIT_ARGS = --workspace
-ALL_NATIVE_SUITES = bep44 bep50 network peers tls edge-cases open-cwd posts publishing key-vault retention organization storage creation images http-ports webtorrent startup
+ALL_NATIVE_SUITES = bep44 bep50 network peers tls edge-cases open-cwd posts publishing key-vault retention organization storage creation images http-ports webtorrent startup dht-gateway
 
 NATIVE_SUITES = $(ALL_NATIVE_SUITES)
 

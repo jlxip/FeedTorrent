@@ -1,6 +1,7 @@
 mod content;
 mod creation;
 mod desktop;
+mod dht_gateway;
 mod file_imports;
 mod images;
 mod library;
@@ -67,6 +68,8 @@ struct Args {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Settings {
+    #[serde(default)]
+    dht_gateway: dht_gateway::Config,
     download_dir: String,
     peer_port: u16,
     #[serde(default = "default_seed")]
@@ -135,6 +138,7 @@ struct Transfer {
 }
 #[derive(Clone, Debug, Serialize)]
 struct Snapshot {
+    dht_gateway: dht_gateway::View,
     engine: &'static str,
     image_preferences: images::Preferences,
     transfers: Vec<Transfer>,
@@ -352,6 +356,7 @@ fn default_store() -> Store {
     Store {
         version: 4,
         settings: Settings {
+            dht_gateway: dht_gateway::Config::default(),
             download_dir: "user/downloads".into(),
             peer_port: 6881,
             seed_by_default: true,
@@ -402,6 +407,7 @@ fn reject_symlinks(path: &Path) -> Result<()> {
     Ok(())
 }
 struct Engine {
+    gateway: dht_gateway::Gateway,
     refresh_serial: u64,
     organization: organization::Organization,
     organization_error: String,
@@ -417,18 +423,27 @@ struct Engine {
     view: Snapshot,
 }
 impl Engine {
-    fn persist(&self) -> Result<()> {
+    fn persist_registry(&self) -> Result<()> {
         atomic(
             &self.dir.join("transfers.json"),
             &serde_json::to_vec_pretty(&self.store)?,
         )
-        .context("Cannot save transfer registry")?;
+        .context("Cannot save transfer registry")
+    }
+    fn persist(&self) -> Result<()> {
+        self.persist_registry()?;
         for record in &self.store.records {
             storage::write_manifest(record, self.store.retention.pins.contains(&record.id))?;
         }
         Ok(())
     }
-    fn new(args: &Args, dir: PathBuf, store: Store) -> Result<Self> {
+    fn new(
+        args: &Args,
+        dir: PathBuf,
+        store: Store,
+        mut gateway: dht_gateway::Gateway,
+    ) -> Result<Self> {
+        gateway.start(&store.settings.dht_gateway);
         let mut native = LibtorrentBackend::new(
             dir.to_str().context("Non-UTF-8 state directory")?,
             store.settings.peer_port,
@@ -440,6 +455,7 @@ impl Engine {
             &store.settings.webtorrent_stun_server,
         )?;
         let view = Snapshot {
+            dht_gateway: gateway.view.clone(),
             engine: "libtorrent-rasterbar 2.1.2",
             transfers: vec![],
             library_posts: vec![],
@@ -459,6 +475,7 @@ impl Engine {
             cleanup: vec![],
         };
         let mut e = Self {
+            gateway,
             refresh_serial: 0,
             retention_recovery: store.retention.jobs.keys().copied().collect(),
             organization: organization::Organization::load(&dir)?,
@@ -853,13 +870,16 @@ impl Engine {
                     bail!("Downloads and published must be different directories")
                 }
                 webtorrent::validate(&mut settings)?;
+                let prepared = self.gateway.prepare(&settings.dht_gateway)?;
                 let previous = self.store.settings.clone();
                 self.native.configure_webtorrent(
                     &settings.webtorrent_trackers,
                     &settings.webtorrent_stun_server,
                 )?;
                 self.store.settings = settings;
-                if let Err(error) = self.persist() {
+                // Settings do not change transfer manifests. Commit their one
+                // registry before replacing the live gateway listener.
+                if let Err(error) = self.persist_registry() {
                     self.store.settings = previous;
                     self.native.configure_webtorrent(
                         &self.store.settings.webtorrent_trackers,
@@ -867,6 +887,7 @@ impl Engine {
                     )?;
                     return Err(error);
                 }
+                self.gateway.apply(prepared);
             }
         }
         Ok(())
@@ -1040,6 +1061,7 @@ impl Engine {
             }
         }
         self.view = Snapshot {
+            dht_gateway: self.gateway.view.clone(),
             engine: "libtorrent-rasterbar 2.1.2",
             transfers,
             library_posts: vec![],
@@ -1455,6 +1477,7 @@ async fn main() -> Result<()> {
     let address = listener.local_addr()?;
     let origin = format!("http://{address}");
     let first = Snapshot {
+        dht_gateway: dht_gateway::View::default(),
         engine: "libtorrent-rasterbar 2.1.2",
         transfers: vec![],
         library_posts: vec![],
@@ -1483,8 +1506,9 @@ async fn main() -> Result<()> {
     let (jobs, receiver) = mpsc::sync_channel::<Job>(32);
     let (init_tx, init_rx) = oneshot::channel();
     let (stop, stopping) = mpsc::channel();
+    let gateway = dht_gateway::Gateway::new(tokio::runtime::Handle::current());
     let thread = std::thread::spawn(move || -> Result<()> {
-        let mut engine = match Engine::new(&args, dir, store) {
+        let mut engine = match Engine::new(&args, dir, store, gateway) {
             Ok(e) => e,
             Err(e) => {
                 let _ = init_tx.send(Err(format!("{e:#}")));
@@ -1544,6 +1568,7 @@ async fn main() -> Result<()> {
                 engine.publication_native = Some(bridge);
             }
             engine.post_tick();
+            engine.gateway.tick(&mut engine.native);
             engine.cleanup_tick();
             if refresh.elapsed() >= Duration::from_secs(1) {
                 if let Err(e) = engine.refresh() {
@@ -1560,6 +1585,7 @@ async fn main() -> Result<()> {
                 checkpoint = Instant::now();
             }
         }
+        engine.gateway.stop();
         engine.persist()?;
         let post_result = engine.persist_posts();
         if let Some(host) = &mut engine.posts {

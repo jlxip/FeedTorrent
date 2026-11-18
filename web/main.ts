@@ -227,7 +227,15 @@ function renderCleanup(){
     const retry=row.lastElementChild as HTMLButtonElement;retry.hidden=!job.error;retry.disabled=!connected||retrying.has(job.id);
   }
 }
+function renderGateway() {
+  const gateway=state?.dht_gateway;
+  $('#dht-gateway-status').textContent=gateway?.error || (gateway?.running ? `Listening on ${gateway.listen}` : 'Off');
+  $('#dht-gateway-status').classList.toggle('transfer-error',!!gateway?.error);
+  $('#dht-gateway-retry').hidden=!gateway?.error;
+  $<HTMLButtonElement>('#dht-gateway-retry').disabled=!connected;
+}
 function render() {
+  renderGateway();
   imageState(state);
   if($<HTMLDialogElement>('#settings-dialog').open&&imageSettingsVersion===savedImageSettingsVersion)$<HTMLInputElement>('#external-images-automatic').checked=!!state?.image_preferences?.automatic;
   const transfers = state?.transfers || [];
@@ -388,7 +396,7 @@ function settingsStatus(value: string) {
   $("#settings-save-status").textContent = value;
   $("#settings-save-status").hidden = !value;
 }
-function saveSettings(): Promise<boolean> {
+function saveSettings(forceGateway = false): Promise<boolean> {
   const folder = $<HTMLInputElement>("#download-dir");
   const port = $<HTMLInputElement>("#peer-port");
   const trackerField = $<HTMLTextAreaElement>("#webtorrent-trackers");
@@ -417,9 +425,22 @@ function saveSettings(): Promise<boolean> {
     settingsStatus("");
     return Promise.resolve(false);
   }
+  const gatewayListen=$<HTMLInputElement>('#dht-gateway-listen');
+  const listen=gatewayListen.value.trim();
+  // URL checks IP syntax; the backend also validates the exact SocketAddr.
+  const gatewayValid=(()=>{try{
+    const u=new URL('http://'+listen),m=listen.match(/:(\d+)$/);
+    const host=u.hostname;
+    const ip=host.startsWith('[') || (/^\d+\.\d+\.\d+\.\d+$/.test(host)&&host===listen.slice(0,listen.lastIndexOf(':')));
+    return ip&&!!m&&Number(m[1])>0&&Number(m[1])<=65535&&u.pathname==='/'&&!u.search&&!u.hash&&!u.username&&!u.password&&!/\s/.test(listen);
+  }catch{return false}})();
+  gatewayListen.setAttribute('aria-invalid',String(!gatewayValid));
+  $('#dht-gateway-listen-error').textContent=gatewayValid?'':'Enter an IP address and port between 1 and 65535.';
+  if(!gatewayValid){settingsStatus('');return Promise.resolve(false);}
   const version = settingsEditVersion;
   const automatic=$<HTMLInputElement>('#external-images-automatic').checked,imageVersion=imageSettingsVersion;
   const settings: Settings = {
+    dht_gateway: {enabled:$<HTMLInputElement>("#dht-gateway-enabled").checked,listen},
     download_dir: folder.value,
     peer_port: Number(port.value),
     seed_by_default: $<HTMLInputElement>("#seed-by-default").checked,
@@ -428,14 +449,14 @@ function saveSettings(): Promise<boolean> {
   };
   // Serialize writes so a slower response cannot overwrite a newer edit.
   settingsSave = settingsSave.then(async () => {
-    if (JSON.stringify(settings) === JSON.stringify(state?.settings)&&imageVersion<=savedImageSettingsVersion) return true;
+    if (!forceGateway&&JSON.stringify(settings) === JSON.stringify(state?.settings)&&imageVersion<=savedImageSettingsVersion) return true;
     if (version === settingsEditVersion) {
       settingsStatus("Saving…");
       $("#settings-error").textContent = "";
     }
     try {
       const changedPort = settings.peer_port !== state?.settings.peer_port;
-      if(JSON.stringify(settings)!==JSON.stringify(state?.settings))await command({ type: "configure", settings });
+      if(forceGateway||JSON.stringify(settings)!==JSON.stringify(state?.settings))await command({ type: "configure", settings });
       if(imageVersion>savedImageSettingsVersion){
         if(automatic!==!!state?.image_preferences?.automatic)await command({type:'set_image_preferences',update:{scope:'global',automatic}});
         savedImageSettingsVersion=imageVersion;
@@ -456,9 +477,15 @@ function saveSettings(): Promise<boolean> {
 async function closeSettings() {
   if (await saveSettings()) $<HTMLDialogElement>("#settings-dialog").close();
 }
+$("#dht-gateway-retry").onclick=()=>{void saveSettings(true);};
 $("#settings-open").onclick = () => {
   if (!state) return;
   savedImageSettingsVersion=imageSettingsVersion;
+  const gateway=state.settings.dht_gateway || {enabled:false,listen:'127.0.0.1:8793'};
+  $<HTMLInputElement>('#dht-gateway-enabled').checked=gateway.enabled;
+  $<HTMLInputElement>('#dht-gateway-listen').value=gateway.listen;
+  $('#dht-gateway-listen-error').textContent='';
+  renderGateway();
   $<HTMLInputElement>("#download-dir").value = state.settings.download_dir;
   $<HTMLInputElement>("#peer-port").value = String(state.settings.peer_port);
   $<HTMLInputElement>("#seed-by-default").checked = state.settings.seed_by_default;

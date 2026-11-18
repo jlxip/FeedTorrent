@@ -2,6 +2,7 @@ import type {PublishingState} from "./publishing.js";
 export interface OrganizationNode {key:string;parent:string|null;archived:boolean;}
 export interface ImagePreferences {automatic:boolean;posts:Record<string,'always'|'ask'>;}
 export interface Settings {
+  dht_gateway: {enabled:boolean;listen:string};
   download_dir: string;
   peer_port: number;
   seed_by_default: boolean;
@@ -50,6 +51,7 @@ export interface LibraryPost {post_kind:'own'|'followed';id:string;name:string;r
 export interface PostVersion {id:string;name:string;total:number;created_at:number|null;updated_at:number|null;state:string;error:string;ready:boolean;pinned:boolean;}
 export interface PostHistoryData {post_kind:'own'|'followed';id:string;versions:PostVersion[];}
 export interface Snapshot {
+  dht_gateway?: {running:boolean;listen:string;error:string};
   library_posts:LibraryPost[];
   image_preferences:ImagePreferences;
   cleanup:Cleanup[];
