@@ -1,4 +1,5 @@
 #include "src/native/engine.h"
+#include "src/native/ice_ports.h"
 #include "feedtorrent-libtorrent/src/bridge.rs.h"
 #include <algorithm>
 #include <atomic>
@@ -276,6 +277,7 @@ struct PeerObserver final : lt::torrent_plugin {
 };
 struct Session::Impl {
   fs::path dir;
+  bool isolated = false;
   std::unique_ptr<lt::session> session;
   std::map<std::string, lt::torrent_handle> handles;
   std::map<std::string, std::vector<lt::announce_entry>> source_trackers;
@@ -293,6 +295,9 @@ struct Session::Impl {
     lt::settings_pack settings;
     settings.set_bool(lt::settings_pack::announce_to_all_trackers, webtorrent);
     settings.set_bool(lt::settings_pack::announce_to_all_tiers, webtorrent);
+    // Distinct browsers behind one NAT must coexist with TCP peers. Otherwise
+    // libtorrent rejects RTC even when the same-IP TCP peer is disconnected.
+    settings.set_bool(lt::settings_pack::allow_multiple_connections_per_ip, webtorrent || isolated);
     session->apply_settings(settings);
   }
   void update_trackers(std::string const& key) {
@@ -439,6 +444,8 @@ struct Session::Impl {
 Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
                  bool isolated, bool ipv6_only)
     : impl(std::make_unique<Impl>()) {
+  ice_port_range(); // Reject invalid process configuration before starting the session.
+  impl->isolated = isolated;
   impl->dir = str(dir);
   fs::create_directories(impl->dir);
   lt::session_params params;

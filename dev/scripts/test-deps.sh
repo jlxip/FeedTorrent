@@ -17,7 +17,7 @@ if [ "$(uname -s)" = OpenBSD ]; then
   node_tls_name=$(basename "$(dirname "$node_ssl")")
   node_tls_include="$node_prefix/include/$node_tls_name"
   test -f "$node_ssl" && test -f "$node_crypto" && test -f "$node_tls_include/openssl/ssl.h"
-  addon_inputs=$(cksum dev/scripts/test-deps.sh dev/openbsd-node-datachannel/CMakeLists.txt dev/cmake/openbsd-webrtc.cmake dev/cmake/openbsd-ice.h dev/cmake/openbsd-dtls.h)
+  addon_inputs=$(cksum dev/scripts/test-deps.sh dev/openbsd-node-datachannel/CMakeLists.txt dev/cmake/openbsd-webrtc.cmake dev/cmake/openbsd-ice.h)
   addon_stamp=.tools/node-datachannel/.feedtorrent-inputs
   if [ ! -f dev/node_modules/node-datachannel/build/Release/node_datachannel.node ] || [ "$(cat "$addon_stamp" 2>/dev/null || true)" != "$addon_inputs" ]; then
     npm --prefix "$root/.tools/test-addon" install --ignore-scripts --no-save --no-package-lock --no-audit --no-fund node-addon-api@7.1.1

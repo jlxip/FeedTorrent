@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {mkdir,readFile,rename,rmdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {temporary,cleanup,startApp,wait} from './helpers.mjs';
@@ -20,6 +21,13 @@ try{
  const update=await read(mutable);assert.equal(update.status,200);assert.deepEqual(await update.json(),updated);
  const high=await f.publish(9007199254740994,Buffer.from('above JavaScript safe integer'));
  const highRead=await read(mutable);assert.equal(highRead.status,200);assert.deepEqual(await highRead.json(),high);assert.equal(high.sequence,'9007199254740994');
+ const streams=await Promise.all(Array.from({length:6},()=>read(mutable,{headers:{Accept:'text/event-stream, application/json'}})));
+ for(const response of streams){
+  assert(response.headers.get('content-type').startsWith('text/event-stream'));assert.equal(response.headers.get('x-accel-buffering'),'no');
+  const text=await response.text(),frames=text.split('\n\n').filter(f=>f.includes('event: done'));
+  assert.equal(frames.length,1);const done=JSON.parse(frames[0].split('\n').find(l=>l.startsWith('data:')).slice(5));assert.equal(done.error,null);assert.deepEqual(done.record,high);
+ }
+ pass('opt-in SSE sends one explicit final signed result and keeps legacy JSON/CORS binary contracts');
  assert.equal((await read(immutable,{method:'HEAD'})).status,200);
  const preflight=await read(immutable,{method:'OPTIONS',headers:{Origin:'https://consumer.test','Access-Control-Request-Method':'GET','Access-Control-Request-Headers':'content-type'}});assert.equal(preflight.status,204);assert.equal(preflight.headers.get('access-control-allow-headers'),'*');
  for(const method of ['POST','PUT','DELETE'])assert.equal((await read(immutable,{method})).status,405);
@@ -61,6 +69,36 @@ try{
  const magnet=new URL(own.magnet),key=magnet.searchParams.get('xs').slice('urn:btpk:'.length),salt=magnet.searchParams.get('s')||'';
  const published=await read('/dht/mutable/'+key+'?salt='+salt);assert.equal(published.status,200);assert.equal((await published.json()).sequence,'0');
  pass('signed publication completes and its record remains readable while public lookups share the native actor');
+ // Hold two DHT responders behind a barrier. One authentic reply can be
+ // observed early, but the followed post's native traversal cannot complete.
+ const target=createHash('sha1').update(Buffer.from(key,'hex')).update(Buffer.from(salt,'hex')).digest();
+ const held=[],restores=[];let released=false,reader,text='';
+ for(const node of f.network.nodes.slice(1)){
+  const original=node._rpc.response;
+  node._rpc.response=function(peer,query,...args){
+   if(!released&&query.q?.toString()==='get'&&Buffer.from(query.a?.target||[]).equals(target)){
+    held.push(()=>original.call(this,peer,query,...args));return;
+   }
+   return original.call(this,peer,query,...args);
+  };
+  restores.push(()=>{node._rpc.response=original;});
+ }
+ const release=()=>{released=true;for(const restore of restores)restore();for(const send of held)send();};
+ try{
+  await app.command({type:'follow_post',uri:own.magnet,config:{name:'Shared native observation',mode:'current_catalog',automatic_limit:8388608}});
+  const stream=await read('/dht/mutable/'+key+'?salt='+salt,{headers:{Accept:'text/event-stream'},signal:AbortSignal.timeout(30000)});
+  reader=stream.body.getReader();const decoder=new TextDecoder();
+  while(!text.includes('event: record')){const part=await reader.read();assert(!part.done,'stream ended before a shared record');text+=decoder.decode(part.value,{stream:true});}
+  assert(held.length>0,'barrier did not hold the owning traversal');
+  const followed=(await app.api()).posts.find(post=>post.magnet===own.magnet);
+  assert(followed);assert.equal(followed.last_checked_ms,null,'shared observation waited for the owner to finish');
+  release();
+  for(;;){const part=await reader.read();if(part.done)break;text+=decoder.decode(part.value,{stream:true});}
+  const finals=text.split('\n\n').filter(frame=>frame.includes('event: done'));assert.equal(finals.length,1);
+  const final=JSON.parse(finals[0].split('\n').find(line=>line.startsWith('data:')).slice(5));assert.equal(final.error,null);assert.equal(final.record.sequence,'0');
+  await wait(async()=>{const snapshot=await app.api();assert.equal(snapshot.publishing.posts.find(post=>post.id===id).state,'Published');return snapshot.posts.find(post=>post.magnet===own.magnet)?.last_checked_ms!==null},'owning post receives its terminal result');
+  pass('shared signed SSE precedes a barrier-held internal lookup; final JSON and owner publication remain intact');
+ }finally{release();await reader?.cancel().catch(()=>{});reader?.releaseLock();}
  report.status='pass';
 }catch(error){report.status='fail';report.error=String(error);if(app)console.error('Gateway diagnostics',JSON.stringify(await app.api()),app.logs);throw error}
 finally{

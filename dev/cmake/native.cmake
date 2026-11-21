@@ -1,0 +1,38 @@
+include("${CMAKE_CURRENT_LIST_DIR}/openbsd.cmake")
+
+# libtorrent does not expose libdatachannel's ICE range. Adapt only its
+# signaling translation unit in the build tree; pinned sources stay pristine.
+function(feedtorrent_ice_ports)
+  get_target_property(sources torrent-rasterbar SOURCES)
+  set(found FALSE)
+  foreach(source IN LISTS sources)
+    if(source MATCHES "(^|/)rtc_signaling\\.cpp$")
+      get_filename_component(original "${source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+      file(READ "${original}" content)
+      set(needle "rtc::Configuration config;")
+      string(FIND "${content}" "${needle}" offset)
+      if(offset LESS 0)
+        message(FATAL_ERROR "Unexpected pinned WebRTC configuration source")
+      endif()
+      string(REPLACE "${needle}"
+        "rtc::Configuration config;\n\tauto const ice_ports = ft::ice_port_range();\n\tconfig.portRangeBegin = ice_ports.first;\n\tconfig.portRangeEnd = ice_ports.second;"
+        content "${content}")
+      set(header "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../backends/libtorrent/src/native/ice_ports.h")
+      set(content "#include \"${header}\"\n${content}")
+      set(generated "${CMAKE_CURRENT_BINARY_DIR}/feedtorrent-rtc_signaling.cpp")
+      file(CONFIGURE OUTPUT "${generated}" CONTENT "${content}" @ONLY)
+      list(REMOVE_ITEM sources "${source}")
+      list(APPEND sources "${generated}")
+      set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${original}" "${header}")
+      set(found TRUE)
+      break()
+    endif()
+  endforeach()
+  if(NOT found)
+    message(FATAL_ERROR "Missing pinned WebRTC signaling source")
+  endif()
+  set_property(TARGET torrent-rasterbar PROPERTY SOURCES "${sources}")
+endfunction()
+cmake_language(DEFER CALL feedtorrent_ice_ports)
+
+include("${CMAKE_CURRENT_LIST_DIR}/webtorrent-admission.cmake")

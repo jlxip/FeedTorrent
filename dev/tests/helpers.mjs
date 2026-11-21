@@ -42,6 +42,7 @@ export async function startApp(root, extra = [], options = {}) {
     "--http-port",
     "0",
   ];
+  if (options.isolated === false) defaults.splice(defaults.indexOf("--isolated"), 1);
   if (options.defaultHttp) defaults.splice(defaults.indexOf("--http-port"), 2);
   if (options.openBrowser) defaults.splice(defaults.indexOf("--no-open"), 1);
   for (const flag of ["--download-dir", "--peer-port", "--data-dir", "--http-port"]) {

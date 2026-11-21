@@ -3,10 +3,6 @@ fn main() {
     let prefix = root.join("../../.tools/native/lib/pkgconfig");
     let extra = std::env::var("PKG_CONFIG_PATH").unwrap_or_default();
     std::env::set_var("PKG_CONFIG_PATH", format!("{}:{}", prefix.display(), extra));
-    let openbsd = matches!(
-        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
-        Ok("openbsd")
-    );
     let mut lib = pkg_config::Config::new()
         .atleast_version("2.1.2")
         .statik(true)
@@ -34,7 +30,7 @@ fn main() {
             name.as_str(),
             "torrent-rasterbar" | "datachannel-static" | "juice-static" | "usrsctp"
         );
-        let tls = !openbsd && matches!(name.as_str(), "ssl" | "crypto");
+        let tls = matches!(name.as_str(), "ssl" | "crypto");
         let kind = if pinned || tls { "static" } else { "dylib" };
         println!("cargo:rustc-link-lib={kind}={name}");
     }
@@ -59,7 +55,14 @@ fn main() {
         build.define(&name, value.as_deref());
     }
     build.compile("feedtorrent-bridge");
+    // Relink when the separately built static library changes.
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("../../.tools/native/lib/libtorrent-rasterbar.a")
+            .display()
+    );
     println!("cargo:rerun-if-changed=src/bridge.rs");
     println!("cargo:rerun-if-changed=src/native/engine.h");
     println!("cargo:rerun-if-changed=src/native/engine.cc");
+    println!("cargo:rerun-if-changed=src/native/ice_ports.h");
 }

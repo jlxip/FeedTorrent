@@ -5,9 +5,9 @@ import { request } from "node:http";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import bencode from "bencode";
-import { temporary, tracker, seed, startApp, exact, cleanup } from "./helpers.mjs";
+import { temporary, tracker, seed, startApp, exact, cleanup, wait } from "./helpers.mjs";
 
-// Verify the selected OpenSSL/LibreSSL implementation with a real HTTPS tracker
+// Verify the selected OpenSSL implementation with a real HTTPS tracker
 // and a local CA. The independent seeder uses the underlying HTTP tracker.
 const root = await temporary();
 let tr, ref, app, proxy;
@@ -37,17 +37,24 @@ try {
   const url=Buffer.from(`https://127.0.0.1:${server.address().port}/announce`);
   metadata.announce=url;metadata["announce-list"]=[[url]];
   const env={...process.env,SSL_CERT_FILE:ca};
-  if(process.platform === "openbsd") {
-    const shim=join(root,"tls-ca.so");
-    execFileSync("cc",["-shared","-fPIC","-std=c11","-Wall","-Wextra","-Werror","dev/fixtures/tls-ca.c","-lssl","-lcrypto","-o",shim]);
-    env.LD_PRELOAD=[shim,env.LD_PRELOAD].filter(Boolean).join(":");
-    env.FEEDTORRENT_TEST_CA=ca;
-  }
+
   app=await startApp(root,[],{env});
   await app.command({type:"add_torrent",data:Array.from(bencode.encode(metadata))});
   await exact(app,ref);
   assert(protocols.some(version=>/^TLSv1\.[23]$/.test(version)));
   console.log("PASS trusted HTTPS tracker negotiates TLS and downloads exact bytes with the native crypto backend");
+  await app.stop();
+  const untrusted=join(root,"untrusted-ca.pem");
+  openssl(["req","-x509","-sha256","-newkey","rsa:2048","-nodes","-days","1","-subj","/CN=Untrusted fixture CA","-keyout",join(root,"untrusted-ca.key"),"-out",untrusted]);
+  const requests=protocols.length;
+  app=await startApp(join(root,"untrusted"),[],{env:{...process.env,SSL_CERT_FILE:untrusted}});
+  await app.command({type:"add_torrent",data:Array.from(bencode.encode(metadata))});
+  const rejected=await wait(async()=>{
+    const transfer=(await app.api()).transfers.find(t=>t.id===ref.id);
+    return /certificate verify failed/i.test(transfer?.warning||'')&&transfer;
+  },"untrusted HTTPS tracker rejected");
+  assert.equal(rejected.verified,0);assert.equal(protocols.length,requests);
+  console.log("PASS untrusted HTTPS tracker remains rejected with no bytes downloaded");
 } catch (error) {
   if (app) console.error("TLS fixture diagnostics", JSON.stringify(await app.api()), app.logs);
   throw error;

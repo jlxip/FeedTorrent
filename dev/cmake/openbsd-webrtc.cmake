@@ -8,13 +8,5 @@ function(feedtorrent_openbsd_webrtc)
           "-include" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/openbsd-ice.h")
       endif()
     endforeach()
-    foreach(rtc_target datachannel-static datachannel)
-      if(TARGET ${rtc_target})
-        get_target_property(rtc_source ${rtc_target} SOURCE_DIR)
-        set_property(SOURCE "${rtc_source}/src/impl/dtlstransport.cpp"
-          TARGET_DIRECTORY ${rtc_target} APPEND PROPERTY COMPILE_OPTIONS
-          "-include" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/openbsd-dtls.h")
-      endif()
-    endforeach()
   endif()
 endfunction()

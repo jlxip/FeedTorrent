@@ -7,10 +7,32 @@ import {setDefaultCACertificates,getCACertificates} from 'node:tls';
 import {join} from 'node:path';
 import {temporary,startApp,seed,reference,wait,exact,complete,hash,cleanup,tracker} from './helpers.mjs';
 import {signaling} from './webtorrent-fixture.mjs';
+import {admissionRegression} from './webtorrent-admission.mjs';
 const root=await temporary();let tr,ref,app,receiver,http,stun,recoverySeed;
 const oldCAs=getCACertificates('default');
 try {
-  tr=await signaling(join(root,'tls'));setDefaultCACertificates([...oldCAs,await readFile(tr.ca,'utf8')]);
+  tr=await signaling(join(root,'tls'),{ipv4Only:true});tr.env.FEEDTORRENT_ICE_PORT_RANGE='50000-50199';setDefaultCACertificates([...oldCAs,await readFile(tr.ca,'utf8')]);
+  for(const invalid of ['', '0-65535','50199-50000','50000','50000-65536',' 50000-50199','50000-50199x'])
+    await assert.rejects(()=>startApp(join(root,'invalid'),[],{env:{...tr.env,FEEDTORRENT_ICE_PORT_RANGE:invalid}}),/FEEDTORRENT_ICE_PORT_RANGE/);
+  // Production mode must accept RTC after a TCP publisher at the same IP has
+  // disconnected. Isolated fixtures allow multiple peers per IP by default.
+  http=await tracker();
+  ref=await seed(join(root,'same-ip-source'),[32769],{tracker:true,announce:[http.http]});
+  app=await startApp(join(root,'same-ip'),['--dht-bootstrap','127.0.0.1:9','--http-port','8792'],{env:tr.env,isolated:false});
+  await app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:[],webtorrent_stun_server:''}});
+  await app.command({type:'add_torrent',data:ref.bytes});await exact(app,ref);
+  await ref.stop();ref.stop=async()=>{};
+  await wait(async()=>(await app.command({type:'read_peers',id:ref.id})).peers.some(p=>p.address==='127.0.0.1'&&!p.connected),'disconnected TCP publisher retained');
+  const tcpIps=new Set((await app.command({type:'read_peers',id:ref.id})).peers.map(p=>p.address));
+  await app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:[tr.url]}});
+  receiver=await reference({tracker:{rtcConfig:{iceServers:[]}}});
+  const sameIp=receiver.client.add(`magnet:?xt=urn:btih:${ref.id}`,{path:join(root,'same-ip-receiver'),announce:[tr.url]});
+  const sameIpWires=[];sameIp.on('wire',(w,address)=>sameIpWires.push({type:w.type,address:address.split(':')[0]}));
+  await wait(()=>sameIp.done,'production WebRTC seed after TCP peer from same IP');
+  assert.deepEqual(await readFile(join(root,'same-ip-receiver','source','file-0.bin')),ref.originals[0]);
+  assert(sameIpWires.length>0);assert(sameIpWires.every(w=>w.type==='webrtc'&&tcpIps.has(w.address)),JSON.stringify(sameIpWires));
+  console.log('PASS production WebRTC serves exact bytes after a TCP publisher at the same IP disconnects');
+  await receiver.stop();receiver=undefined;await app.stop();await http.stop();http=undefined;
   app=await startApp(join(root,'app'),[],{env:tr.env});
   const configure=async(trackers,stun='')=>app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:trackers,webtorrent_stun_server:stun}});
   await configure([tr.url,tr.url]);assert.deepEqual((await app.api()).settings.webtorrent_trackers,[tr.url]);
@@ -40,6 +62,9 @@ try {
   for(let i=0;i<ref.originals.length;i++)assert.equal(hash(await readFile(join(dest,'source',`file-${i}.bin`))),hash(ref.originals[i]));
   assert(reverseWires.includes('webrtc'));assert(reverseWires.every(t=>t==='webrtc'));
   console.log('PASS restarted native seeds exact bytes over WebRTC after original publisher disconnects');
+  const ports=tr.announces.filter(m=>Buffer.from(m.peer,'hex').toString().startsWith('-LT')).flatMap(m=>m.icePorts);
+  assert(ports.length>0);assert(ports.every(port=>port>=50000&&port<=50199),JSON.stringify(ports));
+  console.log('PASS configured ICE range contains every advertised native UDP candidate before and after restart');
   await receiver.stop();receiver=undefined;
   const payloadPath=(await app.api()).transfers.find(t=>t.id===ref.id).save_path;
   await app.stop();
@@ -97,3 +122,5 @@ try {
   console.error('WebRTC fixture diagnostics',JSON.stringify({snapshot:app?await app.api().catch(e=>({error:String(e)})):null,logs:app?.logs,reference_errors:ref?.errors,announces:tr?.announces.slice(-25),tls_errors:tr?.tlsErrors}));
   throw error;
 } finally {setDefaultCACertificates(oldCAs);try{await cleanup(root,receiver,app,ref,recoverySeed,tr,http);}finally{if(stun)await new Promise(r=>stun.close(r));}}
+
+await admissionRegression();

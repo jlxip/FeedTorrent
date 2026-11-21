@@ -2,9 +2,12 @@
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{header, Method, Request, StatusCode},
+    http::{header, HeaderMap, Method, Request, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::get,
     Json, Router,
 };
@@ -27,6 +30,13 @@ const LOOKUPS: usize = 8;
 const RESPONSES: usize = 32;
 const TIMEOUT: Duration = Duration::from_secs(120);
 type Reply = oneshot::Sender<Result<Value, Failure>>;
+#[derive(Clone, Debug)]
+enum Update {
+    Waiting,
+    Record(Value),
+    Done(Result<Value, Failure>),
+}
+type Updates = watch::Sender<Update>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -141,6 +151,8 @@ struct Job {
     request: DhtRequest,
     reply: Reply,
     stopped: watch::Receiver<bool>,
+    stream: Option<Updates>,
+    observed: Option<Value>,
 }
 #[derive(Clone)]
 struct HttpState {
@@ -161,6 +173,8 @@ async fn lookup(state: HttpState, request: DhtRequest) -> Response {
         request,
         reply,
         stopped: stopped.clone(),
+        stream: None,
+        observed: None,
     }) {
         return match error {
             mpsc::TrySendError::Full(_) => overloaded(),
@@ -179,6 +193,91 @@ async fn lookup(state: HttpState, request: DhtRequest) -> Response {
         _ = tokio::time::sleep(TIMEOUT) => timed_out().into_response(),
     }
 }
+// SSE carries authenticated candidates, followed by exactly one response-terminal
+// `done`. An interrupted stream has no final result. Slow readers see the latest
+// candidate (watch coalesces), not an unbounded queue of historical observations.
+async fn stream_lookup(state: HttpState, request: DhtRequest) -> Response {
+    let Ok(permit) = state.permits.clone().try_acquire_owned() else {
+        return overloaded().into_response();
+    };
+    let mut stopped = state.stopped.clone();
+    if *stopped.borrow() {
+        return unavailable().into_response();
+    }
+    let (updates, mut received) = watch::channel(Update::Waiting);
+    let (reply, _unused) = oneshot::channel();
+    if let Err(error) = state.jobs.try_send(Job {
+        request,
+        reply,
+        stopped: stopped.clone(),
+        stream: Some(updates),
+        observed: None,
+    }) {
+        return match error {
+            mpsc::TrySendError::Full(_) => overloaded(),
+            mpsc::TrySendError::Disconnected(_) => unavailable(),
+        }
+        .into_response();
+    }
+    let events = async_stream::stream! {
+        let _permit = permit;
+        let deadline = tokio::time::sleep(TIMEOUT);
+        tokio::pin!(deadline);
+        loop {
+            let update = received.borrow_and_update().clone();
+            match update {
+                Update::Waiting => {},
+                Update::Record(record) => {
+                    yield Ok::<Event, std::convert::Infallible>(Event::default().event("record").json_data(record).expect("JSON value"));
+                },
+                Update::Done(result) => {
+                    let value = match result {
+                        Ok(record) => json!({"record":record,"error":null}),
+                        Err(Failure(status, message)) => json!({"record":null,"error":{"status":status.as_u16(),"message":message}}),
+                    };
+                    yield Ok(Event::default().event("done").json_data(value).expect("JSON value"));
+                    break;
+                }
+            }
+            let error = tokio::select! {
+                biased;
+                _ = stopped.changed() => Some(unavailable()),
+                _ = &mut deadline => Some(timed_out()),
+                result = received.changed() => if result.is_err() { Some(unavailable()) } else { None },
+            };
+            if let Some(Failure(status, message)) = error {
+                yield Ok(Event::default().event("done").json_data(json!({"record":null,"error":{"status":status.as_u16(),"message":message}})).expect("JSON value"));
+                break;
+            }
+        }
+    };
+    let mut response = Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    response
+        .headers_mut()
+        .insert("x-accel-buffering", "no".parse().unwrap());
+    response
+}
+fn wants_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|text| {
+            text.split(',').any(|range| {
+                let mut parts = range.split(';');
+                parts
+                    .next()
+                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+                    && parts.all(|parameter| {
+                        parameter
+                            .trim()
+                            .strip_prefix("q=")
+                            .is_none_or(|q| q.parse::<f32>().is_ok_and(|q| q > 0.0 && q <= 1.0))
+                    })
+            })
+        })
+}
 async fn immutable(State(state): State<HttpState>, Path(target): Path<String>) -> Response {
     match bytes(&target, Some(20)) {
         Ok(target) => lookup(state, DhtRequest::GetImmutable(target.try_into().unwrap())).await,
@@ -195,6 +294,7 @@ async fn mutable(
     State(state): State<HttpState>,
     Path(key): Path<String>,
     Query(query): Query<Salt>,
+    headers: HeaderMap,
 ) -> Response {
     let key = (|| {
         MutableKey::new(
@@ -204,7 +304,13 @@ async fn mutable(
         .map_err(|_| Failure(StatusCode::BAD_REQUEST, "Invalid mutable DHT key or salt"))
     })();
     match key {
-        Ok(key) => lookup(state, DhtRequest::GetMutable(key)).await,
+        Ok(key) => {
+            if wants_stream(&headers) {
+                stream_lookup(state, DhtRequest::GetMutable(key)).await
+            } else {
+                lookup(state, DhtRequest::GetMutable(key)).await
+            }
+        }
         Err(error) => error.into_response(),
     }
 }
@@ -250,13 +356,33 @@ struct Pending {
     identity: String,
     replies: Vec<Reply>,
     resolved: bool,
+    streams: Vec<Updates>,
+    observation: Option<Value>,
 }
 pub(super) trait Native: DhtBackend {
     fn request_pending(&self, id: DhtRequestId) -> bool;
+    fn mutable_observation(&self, _id: DhtRequestId) -> Option<Result<MutableRecord, DhtError>> {
+        None
+    }
+    fn shared_mutable_observation(
+        &self,
+        _key: &MutableKey,
+    ) -> Option<Result<MutableRecord, DhtError>> {
+        None
+    }
 }
 impl Native for LibtorrentBackend {
     fn request_pending(&self, id: DhtRequestId) -> bool {
         self.dht_request_pending(id)
+    }
+    fn mutable_observation(&self, id: DhtRequestId) -> Option<Result<MutableRecord, DhtError>> {
+        self.dht_mutable_observation(id)
+    }
+    fn shared_mutable_observation(
+        &self,
+        key: &MutableKey,
+    ) -> Option<Result<MutableRecord, DhtError>> {
+        self.dht_shared_mutable_observation(key)
     }
 }
 pub struct Gateway {
@@ -343,36 +469,58 @@ impl Gateway {
         };
         let result = result_json(&event.result);
         pending.resolved = true;
+        for stream in pending.streams.drain(..) {
+            stream.send_replace(Update::Done(result.clone()));
+        }
         for reply in pending.replies.drain(..) {
             let _ = reply.send(result.clone());
         }
         true
     }
     pub(super) fn tick(&mut self, native: &mut impl Native) {
-        // Timeouts are final HTTP results, but libtorrent still owns the target
-        // until its terminal event. Those slots remain charged to this gateway.
+        // A native pump may consume the terminal before this actor dispatches
+        // its queued event. Keep unresolved recipients until that dispatch.
+        // Reported timeouts still reserve their slot while native work drains.
         self.pending
-            .retain(|id, _| native.request_pending(DhtRequestId(*id)));
+            .retain(|id, pending| !pending.resolved || native.request_pending(DhtRequestId(*id)));
+        let mut deferred = Vec::new();
         for _ in 0..RESPONSES {
-            let Ok(job) = self.rx.try_recv() else { break };
-            if job.reply.is_closed() || *job.stopped.borrow() {
+            let Ok(mut job) = self.rx.try_recv() else {
+                break;
+            };
+            if (job.reply.is_closed() && job.stream.as_ref().is_none_or(Updates::is_closed))
+                || *job.stopped.borrow()
+            {
                 continue;
             }
             let identity = request_id(&job.request);
             if let Some(pending) = self.pending.values_mut().find(|p| p.identity == identity) {
                 if pending.resolved {
+                    if let Some(stream) = job.stream {
+                        stream.send_replace(Update::Done(Err(unavailable())));
+                    }
                     let _ = job.reply.send(Err(unavailable()));
                 } else {
                     pending.replies.retain(|r| !r.is_closed());
                     pending.replies.push(job.reply);
+                    pending.streams.retain(|s| !s.is_closed());
+                    if let Some(stream) = job.stream {
+                        if let Some(record) = &pending.observation {
+                            stream.send_replace(Update::Record(record.clone()));
+                        }
+                        pending.streams.push(stream);
+                    }
                 }
                 continue;
             }
             if self.pending.len() >= LOOKUPS {
+                if let Some(stream) = job.stream {
+                    stream.send_replace(Update::Done(Err(overloaded())));
+                }
                 let _ = job.reply.send(Err(overloaded()));
                 continue;
             }
-            match native.start_dht(job.request, DhtOptions { timeout: TIMEOUT }) {
+            match native.start_dht(job.request.clone(), DhtOptions { timeout: TIMEOUT }) {
                 Ok(id) => {
                     self.pending.insert(
                         id.0,
@@ -380,12 +528,81 @@ impl Gateway {
                             identity,
                             replies: vec![job.reply],
                             resolved: false,
+                            streams: job.stream.into_iter().collect(),
+                            observation: job.observed,
                         },
                     );
                 }
+                // Internal post checks/renewals also own native targets. Wait
+                // in the existing bounded HTTP queue, without starting work or
+                // changing each handler's original timeout/cancellation.
+                Err(DhtError::Busy) => {
+                    // Sharing is provisional and SSE-only. The other operation
+                    // retains its final result; our fresh lookup still follows.
+                    if let (DhtRequest::GetMutable(key), Some(stream)) = (&job.request, &job.stream)
+                    {
+                        if let Some(Ok(record)) = native.shared_mutable_observation(key) {
+                            if record.verify_for(key).is_ok() {
+                                let value = result_json(&Ok(DhtOutcome::Mutable(Some(record))))
+                                    .expect("signed shared observation");
+                                if job.observed.as_ref() != Some(&value) {
+                                    stream.send_replace(Update::Record(value.clone()));
+                                    job.observed = Some(value);
+                                }
+                            }
+                        }
+                    }
+                    deferred.push(job);
+                }
                 Err(error) => {
+                    if let Some(stream) = job.stream {
+                        stream.send_replace(Update::Done(Err(native_error(&error))));
+                    }
                     let _ = job.reply.send(Err(native_error(&error)));
                 }
+            }
+        }
+        // Retry at most once per actor pass; one occupied target must not spin
+        // or prevent unrelated queued identities from making progress.
+        for job in deferred {
+            if (job.reply.is_closed() && job.stream.as_ref().is_none_or(Updates::is_closed))
+                || *job.stopped.borrow()
+            {
+                continue;
+            }
+            if let Err(error) = self.tx.try_send(job) {
+                let (job, failure) = match error {
+                    mpsc::TrySendError::Full(job) => (job, overloaded()),
+                    mpsc::TrySendError::Disconnected(job) => (job, unavailable()),
+                };
+                if let Some(stream) = job.stream {
+                    stream.send_replace(Update::Done(Err(failure.clone())));
+                }
+                let _ = job.reply.send(Err(failure));
+            }
+        }
+        for (id, pending) in &mut self.pending {
+            pending.streams.retain(|s| !s.is_closed());
+            if pending.resolved || pending.streams.is_empty() {
+                continue;
+            }
+            match native.mutable_observation(DhtRequestId(*id)) {
+                Some(Ok(record)) => {
+                    let value = result_json(&Ok(DhtOutcome::Mutable(Some(record))))
+                        .expect("mutable observation");
+                    if pending.observation.as_ref() != Some(&value) {
+                        for stream in &pending.streams {
+                            stream.send_replace(Update::Record(value.clone()));
+                        }
+                        pending.observation = Some(value);
+                    }
+                }
+                Some(Err(error)) => {
+                    for stream in pending.streams.drain(..) {
+                        stream.send_replace(Update::Done(Err(native_error(&error))));
+                    }
+                }
+                None => {}
             }
         }
     }

@@ -11,19 +11,20 @@ const env = { ...process.env };
 for (const key of ["MAKEFLAGS", "MAKELEVEL", "MFLAGS"]) delete env[key];
 try {
   const project = join(root, "project"), elsewhere = join(root, "elsewhere"), bin = join(root, "bin");
-  for (const dir of ["dev/scripts", "dev/tests", "dev/cmake", "dev/node_modules/typescript/bin", "app", "web/vendor", ".runtime"]) await mkdir(join(project, dir), { recursive: true });
+  for (const dir of ["dev/scripts", "dev/tests", "dev/cmake", "backends/libtorrent/src/native/include/libtorrent/aux_", "dev/node_modules/typescript/bin", "app", "web/vendor", ".runtime"]) await mkdir(join(project, dir), { recursive: true });
   await mkdir(elsewhere); await mkdir(bin);
   await copyFile("Makefile", join(project, "Makefile"));
   await copyFile("dev/scripts/web.sh", join(project, "dev/scripts/web.sh"));
   // Real Make graph and TypeScript emitter, with expensive native tools replaced
   // at their process boundaries. No shared caches or application data are used.
   await writeFile(join(project, "dev/node_modules/typescript/bin/tsc"), `import ${JSON.stringify(join(repo,"dev/node_modules/typescript/bin/tsc"))};\n`);
-  for (const file of ["Cargo.toml", "app/Cargo.toml", ".gitmodules", "dev/cmake/openbsd.cmake", "dev/cmake/openbsd-webrtc.cmake", "dev/cmake/openbsd-ice.h", "dev/cmake/openbsd-dtls.h", "dev/package.json", "dev/package-lock.json"]) await writeFile(join(project,file), "{}\n");
+  for (const file of ["Cargo.toml", "app/Cargo.toml", ".gitmodules", "dev/cmake/native.cmake", "dev/cmake/webtorrent-admission.cmake","backends/libtorrent/src/native/websocket_tracker_connection.cpp","backends/libtorrent/src/native/include/libtorrent/aux_/websocket_tracker_connection.hpp","backends/libtorrent/src/native/include/libtorrent/aux_/rtc_offer_admission.hpp", "backends/libtorrent/src/native/ice_ports.h", "dev/cmake/openbsd.cmake", "dev/cmake/openbsd-webrtc.cmake", "dev/cmake/openbsd-ice.h", "dev/package.json", "dev/package-lock.json"]) await writeFile(join(project,file), "{}\n");
   await writeFile(join(project,"app/Cargo.toml"), '[package]\nname = "feedtorrent"\n');
   await writeFile(join(project,"web/tsconfig.json"), JSON.stringify({compilerOptions:{target:"ES2022",module:"ES2022",strict:true},include:["*.ts"]}));
   await writeFile(join(project,"web/main.ts"), "export const value = 1;\n");
   for (const file of ["index.html","app.css","theme.js"]) await writeFile(join(project,"web",file),file);
   for (const file of ["basecoat-vega-1.0.2.min.css","lucide-0.468.0.min.js","basecoat-runtime-1.0.2.min.js","basecoat-tabs-1.0.2.min.js","basecoat-sidebar-1.0.2.min.js","basecoat-dropdown-menu-1.0.2.min.js"]) await writeFile(join(project,"web/vendor",file),file);
+  await writeFile(join(project,"dev/tests/rtc-admission.mjs"),"// Native policy is covered by its own suite.\n");
   await copyFile("dev/scripts/unit.mjs",join(project,"dev/scripts/unit.mjs"));
   await copyFile("dev/scripts/clippy.sh",join(project,"dev/scripts/clippy.sh"));
   await copyFile("dev/scripts/test-ports.mjs",join(project,"dev/scripts/test-ports-real.mjs"));

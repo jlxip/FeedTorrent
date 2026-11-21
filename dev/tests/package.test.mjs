@@ -16,7 +16,8 @@ test('Linux package rejects dynamic TLS, missing and private libraries',()=>{
   for(const line of ['libssl.so.3 => /lib/x86_64-linux-gnu/libssl.so.3 (0x0)','libfoo.so => not found','libc.so.6 => /tmp/build/libc.so.6 (0x0)'])assert.throws(()=>auditDependencies('linux',line));
 });
 test('OpenBSD package uses base libraries only',()=>{
-  assert.equal(auditDependencies('openbsd','Start End Type Open Ref GrpRef Name\n0000 0001 rlib 0 1 0 /usr/lib/libssl.so.60.2\n0000 0000 ld.so 0 1 0 /usr/libexec/ld.so').length,2);
+  assert.equal(auditDependencies('openbsd','Start End Type Open Ref GrpRef Name\n0000 0001 rlib 0 1 0 /usr/lib/libc.so.104.0\n0000 0000 ld.so 0 1 0 /usr/libexec/ld.so').length,2);
   assert.throws(()=>auditDependencies('openbsd','0000 0001 rlib 0 1 0 /usr/local/lib/libssl.so.60.2'));
+  for(const library of ['ssl','crypto'])assert.throws(()=>auditDependencies('openbsd',`0000 0001 rlib 0 1 0 /usr/lib/lib${library}.so.60.2`));
   assert.throws(()=>auditDependencies('openbsd','Start End Type Open Ref GrpRef Name'));
 });

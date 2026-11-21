@@ -33,7 +33,7 @@ export function auditDependencies(platform,output){
       const fields=line.trim().split(/\s+/);
       if(!['rlib','ld.so'].includes(fields[2]))continue;
       path=fields.at(-1);
-      assert(/^\/usr\/lib\/lib(?:ssl|crypto|c\+\+|c\+\+abi|pthread|c|m)\.so\./.test(path)||path==='/usr/libexec/ld.so',`External OpenBSD library: ${path}`);
+      assert(/^\/usr\/lib\/lib(?:c\+\+|c\+\+abi|pthread|c|m)\.so\./.test(path)||path==='/usr/libexec/ld.so',`External OpenBSD library: ${path}`);
     }else throw Error(`Unsupported platform: ${platform}`);
     dependencies.push(path);
   }

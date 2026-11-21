@@ -12,7 +12,7 @@ case "$(uname -s)" in
     ;;
   OpenBSD)
     test "$(id -u)" = 0
-    pkg_add -I node boost cmake ninja rust rust-clippy rust-rustfmt python curl git
+    pkg_add -I node boost cmake ninja rust rust-clippy rust-rustfmt python curl git openssl%3.5
     # OpenBSD installs the versioned interpreter; keep the alias inside the VM.
     if ! command -v python3 >/dev/null 2>&1; then
       python=$(find /usr/local/bin -maxdepth 1 -name 'python3.[0-9]*' ! -name '*config' | sort | tail -n 1)

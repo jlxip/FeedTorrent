@@ -19,7 +19,7 @@ const inputs={
   cmake:run('cmake',['--version']),
   ninja:run('ninja',['--version']),
   pkgConfig:run('pkg-config',['--version']),
-  scripts:['dev/scripts/native-deps.sh','dev/cmake/openbsd.cmake','dev/cmake/openbsd-webrtc.cmake','dev/cmake/openbsd-ice.h','dev/cmake/openbsd-dtls.h','.gitmodules'].map(file=>
+  scripts:['dev/scripts/native-deps.sh','dev/cmake/native.cmake','dev/cmake/webtorrent-admission.cmake','backends/libtorrent/src/native/websocket_tracker_connection.cpp','backends/libtorrent/src/native/include/libtorrent/aux_/websocket_tracker_connection.hpp','backends/libtorrent/src/native/include/libtorrent/aux_/rtc_offer_admission.hpp','dev/cmake/openbsd.cmake','dev/cmake/openbsd-webrtc.cmake','dev/cmake/openbsd-ice.h','backends/libtorrent/src/native/ice_ports.h','.gitmodules'].map(file=>
     [file,createHash('sha256').update(readFileSync(resolve(root,file))).digest('hex')]),
   environment:Object.fromEntries(['CC','CXX','CFLAGS','CXXFLAGS','CPPFLAGS','LDFLAGS',
     'OPENSSL_ROOT_DIR','BOOST_ROOT','CMAKE_PREFIX_PATH','MACOSX_DEPLOYMENT_TARGET']

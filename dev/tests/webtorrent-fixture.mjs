@@ -8,7 +8,7 @@ import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import Tracker from 'bittorrent-tracker/server';
 
-export async function signaling(root) {
+export async function signaling(root,{ipv4Only=false}={}) {
   await mkdir(root,{recursive:true});
   const ca=join(root,'ca.pem'),key=join(root,'server.key'),cert=join(root,'server.pem');
   const openssl=args=>execFileSync('openssl',args,{stdio:['ignore','ignore','pipe']});
@@ -27,18 +27,34 @@ export async function signaling(root) {
   server.on('connection',socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});
   const tracker=new Tracker({http:false,udp:false,ws:{noServer:true},stats:false,interval:2000});
   tracker.on('warning',()=>{});tracker.on('error',()=>{});
+  // Restrict offer routing to exercise both DTLS roles without changing SDP.
+  let offerer;
+  const request=tracker._onWebSocketRequest.bind(tracker);
+  tracker._onWebSocketRequest=(socket,options,data)=>{
+    if(offerer||ipv4Only){
+      const message=JSON.parse(data.toString());
+      const native=message.peer_id?.startsWith('-LT');
+      if(offerer && message.offers && native!==(offerer==='native')){
+        message.offers=[];message.numwant=0;data=Buffer.from(JSON.stringify(message));
+      }
+      // A controlled IPv4-only exchange can reproduce peers sharing one IP
+      // even on dual-stack hosts where ICE would otherwise choose IPv6.
+      if(ipv4Only){
+        for(const description of [...(message.offers||[]).map(o=>o.offer),message.offer,message.answer])
+          if(description?.sdp)description.sdp=description.sdp.split('\r\n').filter(line=>!line.startsWith('a=candidate:')||!line.split(' ')[4].includes(':')).join('\r\n');
+        data=Buffer.from(JSON.stringify(message));
+      }
+    }
+    return request(socket,options,data);
+  };
   server.on('upgrade',(req,socket,head)=>tracker.ws.handleUpgrade(req,socket,head,ws=>{
-    ws.on('message',b=>{try{const m=JSON.parse(b);announces.push({action:m.action,event:m.event,hash:Buffer.from(m.info_hash||'','binary').toString('hex'),peer:Buffer.from(m.peer_id||'','binary').toString('hex'),offers:m.offers?.length,offer:!!m.offer,answer:!!m.answer});}catch{}});
+    ws.on('message',b=>{try{const m=JSON.parse(b);announces.push({action:m.action,event:m.event,hash:Buffer.from(m.info_hash||'','binary').toString('hex'),peer:Buffer.from(m.peer_id||'','binary').toString('hex'),offers:m.offers?.length,offer:!!m.offer,answer:!!m.answer,icePorts:[...(m.offers||[]).map(o=>o.offer?.sdp),m.offer?.sdp,m.answer?.sdp].flatMap(sdp=>[...(sdp||'').matchAll(/^a=candidate:\S+ \d+ udp \d+ \S+ (\d+) /gim)].map(match=>Number(match[1])))});}catch{}});
     tracker.ws.emit('connection',ws,req);
   }));
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const port=server.address().port;
   const env={...process.env,SSL_CERT_FILE:ca};
-  if(process.platform==='openbsd') {
-    const shim=join(root,'tls-ca.so');
-    execFileSync('cc',['-shared','-fPIC','-std=c11','-Wall','-Wextra','-Werror','dev/fixtures/tls-ca.c','-lssl','-lcrypto','-o',shim]);
-    env.LD_PRELOAD=[shim,env.LD_PRELOAD].filter(Boolean).join(':');env.FEEDTORRENT_TEST_CA=ca;
-  }
-  return {url:`wss://127.0.0.1:${port}/announce`,page:`https://127.0.0.1:${port}`,ca,env,announces,tracker,tlsErrors,
+
+  return {setOfferer:value=>{if(!['native','browser'].includes(value))throw Error('Invalid offerer');offerer=value;},url:`wss://127.0.0.1:${port}/announce`,page:`https://127.0.0.1:${port}`,ca,env,announces,tracker,tlsErrors,
     stop:async()=>{for(const socket of sockets)socket.destroy();await new Promise(r=>tracker.close(r));await new Promise(r=>server.close(r));}};
 }

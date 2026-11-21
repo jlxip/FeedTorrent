@@ -27,7 +27,7 @@ for(const [name,lengths] of [['single file',[65539]],['multiple files',[32769,19
   test('browser publishes '+name+' and restarted native serves an independent WebRTC download',async({page,browser})=>{
     const root=await temporary();let tr:any,app:any,receiverContext:any;
     try {
-      tr=await signaling(join(root,'tls'));app=await startApp(join(root,'app'),[],{env:tr.env});
+      tr=await signaling(join(root,'tls'));tr.env.FEEDTORRENT_ICE_PORT_RANGE='50000-50199';app=await startApp(join(root,'app'),[],{env:tr.env});
       await app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:[tr.url],webtorrent_stun_server:''}});
       await browserClient(page,tr.page);
       const originals=lengths.map((n,i)=>Array.from(payload(n,i)));
@@ -52,6 +52,71 @@ for(const [name,lengths] of [['single file',[65539]],['multiple files',[32769,19
       expect(downloaded.wires.length).toBeGreaterThan(0);expect(downloaded.wires.every((t:string)=>t==='webrtc')).toBe(true);expect(downloaded.errors).toEqual([]);
       for(const file of downloaded.files){const index=Number(file.name.match(/file-(\d+)\.bin$/)![1]);expect(hash(Buffer.from(file.bytes))).toBe(hash(Buffer.from(originals[index])));}
     } finally {try{await receiverContext?.close();await page.context().close();}finally{await cleanup(root,app,tr);}}
+  });
+}
+
+// Native-offer/browser-answer makes the native TLS stack the DTLS server.
+// This direction reproduces LibreSSL's rejection of modern supported_versions.
+for(const offerer of ['native','browser'] as const) {
+  test('exact browser download with '+offerer+' offering and both DTLS roles',async({page})=>{
+    const root=await temporary();let tr:any,app:any;
+    try {
+      tr=await signaling(join(root,'tls'));tr.env.FEEDTORRENT_ICE_PORT_RANGE='50000-50199';app=await startApp(join(root,'app'),[],{env:tr.env});
+      await app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:[tr.url],webtorrent_stun_server:''}});
+      await browserClient(page,tr.page);
+      const original=Array.from(payload(65539,7));
+      const id=await page.evaluate(({bytes,tracker}:any)=>new Promise<string>((resolve,reject)=>{
+        const w=window as any;w.client.once('error',reject);
+        w.client.seed(new File([new Uint8Array(bytes)],'dtls.bin'),{announce:[tracker]},(t:any)=>resolve(t.infoHash));
+      }),{bytes:original,tracker:tr.url});
+      await app.command({type:'add_magnet',uri:'magnet:?xt=urn:btih:'+id});await complete(app,id);
+      await page.evaluate(()=>new Promise<void>(resolve=>(window as any).client.destroy(resolve)));
+      if(process.env.FEEDTORRENT_DTLS_DEBUG)console.log('DTLS seeded',offerer,tr.announces.map((m:any)=>({peer:Buffer.from(m.peer,'hex').subarray(0,8).toString(),offers:m.offers,answer:m.answer,event:m.event})));
+      tr.setOfferer(offerer);
+      await page.addInitScript(()=>{
+        const w=window as any;w.rtcPeers=[];w.dtlsRoles=[];const RTC=w.RTCPeerConnection;
+        w.RTCPeerConnection=new Proxy(RTC,{construct(Target:any,args:any[]){const peer=new Target(...args);w.rtcPeers.push(peer);
+          peer.addEventListener('connectionstatechange',()=>{
+            if(peer.connectionState!=='connected')return;
+            const local=peer.localDescription?.sdp.match(/a=setup:(active|passive)/)?.[1];
+            const remote=peer.remoteDescription?.sdp.match(/a=setup:(active|passive)/)?.[1];
+            const role=local||(remote==='active'?'passive':remote==='passive'?'active':undefined);
+            if(role)w.dtlsRoles.push(role==='active'?'client':'server');
+          });return peer;}});
+      });
+      await browserClient(page,tr.page);
+      const announceStart=tr.announces.length;
+      const pending=download(page,id,tr.url);void pending.catch(()=>{});
+      if(offerer==='native'){
+        // Restart after the receiver joins: periodic native announces may wait
+        // several minutes, and must not decide which DTLS role this test covers.
+        await wait(()=>tr.announces.slice(announceStart).some((m:any)=>m.event==='started'&&m.hash===id),'browser joins before native offers');
+        if(process.env.FEEDTORRENT_DTLS_DEBUG)console.log('DTLS receiver joined',tr.announces.slice(-3));
+        await app.stop();app=await startApp(join(root,'app'),[],{env:tr.env});
+        if(process.env.FEEDTORRENT_DTLS_DEBUG)console.log('DTLS native restarted');
+      }
+      const downloaded=await pending;
+      const nativePorts=tr.announces.filter((m:any)=>Buffer.from(m.peer,'hex').toString().startsWith('-LT')).flatMap((m:any)=>m.icePorts);
+      expect(nativePorts.length).toBeGreaterThan(0);expect(nativePorts.every((port:number)=>port>=50000&&port<=50199)).toBe(true);
+      expect(downloaded.wires.length).toBeGreaterThan(0);expect(downloaded.wires.every((type:string)=>type==='webrtc')).toBe(true);
+      expect(hash(Buffer.from(downloaded.files[0].bytes))).toBe(hash(Buffer.from(original)));
+      const roles=await page.evaluate(async()=>{
+        const roles:string[]=[...(window as any).dtlsRoles];
+        for(const peer of (window as any).rtcPeers){
+          if(peer.connectionState!=='connected')continue;
+          const local=peer.localDescription?.sdp.match(/a=setup:(active|passive)/)?.[1];
+          const remote=peer.remoteDescription?.sdp.match(/a=setup:(active|passive)/)?.[1];
+          const role=local|| (remote==='active'?'passive':remote==='passive'?'active':undefined);
+          if(role)roles.push(role==='active'?'client':'server');
+          const stats=await peer.getStats();stats.forEach((row:any)=>{if(row.type==='transport'&&row.dtlsState==='connected'&&row.dtlsRole)roles.push(row.dtlsRole);});
+        }
+        return roles;
+      });
+      expect([...new Set(roles)]).toEqual([offerer==='native'?'client':'server']);
+    } finally {
+      await page.evaluate(()=>new Promise<void>(resolve=>{const client=(window as any).client;if(client&&!client.destroyed)client.destroy(resolve);else resolve();})).catch(()=>{});
+      await cleanup(root,app,tr);
+    }
   });
 }
 

@@ -16,25 +16,25 @@ await copyFile(
 );
 await copyFile(join(root, "dev/licenses/Boost-LICENSE"), join(notices, "BOOST-LICENSE"));
 await copyFile(join(root, "backends/libtorrent/vendor/libtorrent/deps/try_signal/LICENSE"), join(notices, "TRY-SIGNAL-LICENSE"));
-// Use the TLS implementation selected by CMake, including system LibreSSL.
+// Record the OpenSSL implementation selected by CMake.
 const cache = await readFile(join(root, ".tools/libtorrent-build/CMakeCache.txt"), "utf8");
 const include = cache.match(/^OPENSSL_INCLUDE_DIR:[^=]+=(.+)$/m)?.[1];
 if (!include) throw Error("CMake did not record the TLS include directory");
 const version = await readFile(join(include, "openssl/opensslv.h"), "utf8");
-const libreSSL = version.includes("LIBRESSL_VERSION_NUMBER");
-const candidates = process.env.TLS_LICENSE_FILE ? [process.env.TLS_LICENSE_FILE] :
-  libreSSL ? [join(root, "dev/licenses/LibreSSL-LICENSE")] : [
-    join(include, "../LICENSE.txt"),
-    join(include, "../share/doc/openssl/LICENSE.txt"),
-    join(include, "../share/doc/openssl/LICENSE"),
-    "/usr/share/doc/libssl-dev/copyright",
-  ];
+if (version.includes("LIBRESSL_VERSION_NUMBER")) throw Error("LibreSSL is not supported; rebuild with OpenSSL");
+const candidates = process.env.TLS_LICENSE_FILE ? [process.env.TLS_LICENSE_FILE] : [
+  join(include, "../LICENSE.txt"),
+  join(include, "../share/doc/openssl/LICENSE.txt"),
+  join(include, "../share/doc/openssl/LICENSE"),
+  "/usr/share/doc/libssl-dev/copyright",
+  join(root, "dev/licenses/OpenSSL-LICENSE"),
+];
 let tlsLicense;
 for (const candidate of candidates) {
   try { await access(candidate); tlsLicense = candidate; break; } catch {}
 }
 if (!tlsLicense) throw Error("TLS license not found; set TLS_LICENSE_FILE to its installed license");
-await copyFile(tlsLicense, join(notices, libreSSL ? "LIBRESSL-LICENSE" : "OPENSSL-LICENSE"));
+await copyFile(tlsLicense, join(notices, "OPENSSL-LICENSE"));
 const metadata = JSON.parse(
   output("cargo", [
     "metadata",
@@ -60,7 +60,7 @@ for (const [name,path,notice,license,repository] of nativeSources) {
   const revision=output('git',['-C',path,'rev-parse','HEAD']);
   nativePackages.push({name,revision,license,source:`${repository}/tree/${revision}`});
 }
-const packages = [...nativePackages,{name:"DB-IP Country Lite",version:geoip.edition,license:geoip.license,source:geoip.source,sha256:geoip.sha256}];
+const packages = [...nativePackages,{name:"OpenSSL",version:version.match(/^#\s*define\s+OPENSSL_VERSION_TEXT\s+"([^"]+)"/m)?.[1],license:"Apache-2.0",source:"https://github.com/openssl/openssl"},{name:"DB-IP Country Lite",version:geoip.edition,license:geoip.license,source:geoip.source,sha256:geoip.sha256}];
 for (const p of metadata.packages.sort(
   (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version),
 )) {

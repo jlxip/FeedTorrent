@@ -21,6 +21,30 @@ struct Pending {
     immutable: Option<ImmutableItem>,
     error: Option<DhtError>,
 }
+impl DhtState {
+    fn shared_mutable_observation(
+        &self,
+        key: &MutableKey,
+    ) -> Option<Result<MutableRecord, DhtError>> {
+        if self.closed {
+            return None;
+        }
+        let id = self.targets.get(&key.target())?;
+        let pending = self.requests.get(&id.0)?;
+        if pending.reported {
+            return None;
+        }
+        let candidate = match &pending.request {
+            DhtRequest::GetMutable(expected) if expected == key => pending.best.as_ref(),
+            DhtRequest::PutMutable(record) if record.key() == key => Some(record),
+            _ => return None,
+        };
+        if let Some(error) = &pending.error {
+            return Some(Err(error.clone()));
+        }
+        candidate.cloned().map(Ok)
+    }
+}
 impl Pending {
     fn update(&mut self, event: &ffi::NativeDhtEvent) -> Result<(), DhtError> {
         if event.conflict {
@@ -87,6 +111,31 @@ impl LibtorrentBackend {
     /// Includes native traversals still draining after a reported timeout.
     pub fn dht_request_pending(&self, id: DhtRequestId) -> bool {
         self.dht.requests.contains_key(&id.0)
+    }
+    /// Best authenticated observation so far; does not consume or complete a request.
+    /// Only the owning actor may inspect it. `poll_dht` still emits one final event.
+    pub fn dht_mutable_observation(
+        &self,
+        id: DhtRequestId,
+    ) -> Option<Result<MutableRecord, DhtError>> {
+        let pending = self.dht.requests.get(&id.0)?;
+        if pending.reported || !matches!(pending.request, DhtRequest::GetMutable(_)) {
+            return None;
+        }
+        if let Some(error) = &pending.error {
+            return Some(Err(error.clone()));
+        }
+        pending.best.clone().map(Ok)
+    }
+    /// Signed candidate from another active operation on this exact key/salt.
+    /// Reads expose only authenticated observations; puts expose their verified
+    /// signed input, not an acknowledgement or a claim of network freshness.
+    /// Does not pump, consume events, complete or cancel the owning operation.
+    pub fn dht_shared_mutable_observation(
+        &self,
+        key: &MutableKey,
+    ) -> Option<Result<MutableRecord, DhtError>> {
+        self.dht.shared_mutable_observation(key)
     }
     fn pump_dht(&mut self) {
         if self.dht.closed {
@@ -284,5 +333,84 @@ mod tests {
                 DhtOutcome::Mutable(Some(high.clone()))
             );
         }
+    }
+    #[test]
+    fn shared_get_and_put_candidates_keep_their_owner_and_exact_identity() {
+        let signer = Bep44Signer::from_seed(&[9; 32]);
+        let record = signer
+            .sign(BencodedValue::bytestring(b"one").unwrap(), 9, vec![1])
+            .unwrap();
+        let wrong = MutableKey::new(signer.public_key(), vec![2]).unwrap();
+        for put in [false, true] {
+            let mut state = DhtState::default();
+            state.targets.insert(record.key().target(), DhtRequestId(1));
+            let mut pending = Pending {
+                request: if put {
+                    DhtRequest::PutMutable(record.clone())
+                } else {
+                    DhtRequest::GetMutable(record.key().clone())
+                },
+                deadline: Instant::now(),
+                reported: false,
+                best: None,
+                immutable: None,
+                error: None,
+            };
+            if !put {
+                assert!(pending.best.is_none());
+                pending.update(&native(Some(&record), false)).unwrap();
+            }
+            state.requests.insert(1, pending);
+            state.events.push(DhtEvent {
+                id: DhtRequestId(99),
+                result: Err(DhtError::Busy),
+            });
+            for _ in 0..3 {
+                assert_eq!(
+                    state.shared_mutable_observation(record.key()),
+                    Some(Ok(record.clone()))
+                );
+            }
+            assert_eq!(state.events.len(), 1);
+            assert_eq!(state.requests.len(), 1);
+            // Even a forced target collision cannot cross the public-key/salt boundary.
+            state.targets.insert(wrong.target(), DhtRequestId(1));
+            assert_eq!(state.shared_mutable_observation(&wrong), None);
+            state.requests.get_mut(&1).unwrap().error = Some(DhtError::Conflict);
+            assert_eq!(
+                state.shared_mutable_observation(record.key()),
+                Some(Err(DhtError::Conflict))
+            );
+            state.requests.get_mut(&1).unwrap().reported = true;
+            assert_eq!(state.shared_mutable_observation(record.key()), None);
+            state.requests.get_mut(&1).unwrap().reported = false;
+            state.closed = true;
+            assert_eq!(state.shared_mutable_observation(record.key()), None);
+        }
+    }
+    #[test]
+    fn invalid_native_signature_is_never_a_shared_observation() {
+        let record = Bep44Signer::from_seed(&[9; 32])
+            .sign(BencodedValue::bytestring(b"one").unwrap(), 9, vec![])
+            .unwrap();
+        let mut pending = Pending {
+            request: DhtRequest::GetMutable(record.key().clone()),
+            deadline: Instant::now(),
+            reported: false,
+            best: None,
+            immutable: None,
+            error: None,
+        };
+        let mut forged = native(Some(&record), false);
+        forged.signature[0] ^= 1;
+        pending.error = Some(pending.update(&forged).unwrap_err());
+        assert!(pending.best.is_none());
+        let mut state = DhtState::default();
+        state.targets.insert(record.key().target(), DhtRequestId(1));
+        state.requests.insert(1, pending);
+        assert!(matches!(
+            state.shared_mutable_observation(record.key()),
+            Some(Err(DhtError::InvalidRecord(_)))
+        ));
     }
 }
