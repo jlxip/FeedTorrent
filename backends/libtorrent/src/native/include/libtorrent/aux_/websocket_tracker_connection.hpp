@@ -91,7 +91,7 @@ private:
 	// callers that just called fail(ec, op) can report it to every
 	// multiplexed torrent, instead of the generic reason close() uses on
 	// its own (e.g. session shutdown, where there is no specific error)
-	void close(error_code const& ec, operation_t op);
+	void close(error_code const& ec, operation_t op, bool recover = false);
 
 	io_context& m_io_context;
 	ssl::context* m_ssl_context;
@@ -125,6 +125,7 @@ private:
 	std::map<sha1_hash, rtc_offer_admission> m_offer_admission;
 
 	bool m_sending = false;
+	bool m_closed = false;
 };
 
 struct websocket_tracker_response {

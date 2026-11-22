@@ -4,6 +4,7 @@ import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {mkdir,writeFile,readFile,readdir,cp} from 'node:fs/promises';
 import {join} from 'node:path';
+import {createConnection} from 'node:net';
 import bencode from 'bencode';
 import {temporary,startApp,complete,wait,cleanup} from './helpers.mjs';
 import {signaling} from './webtorrent-fixture.mjs';
@@ -34,7 +35,7 @@ async function paths(){
 }
 async function descriptors(){
  const inherited=256;
- const root=await temporary();let app,tr;
+ const root=await temporary();let app,tr;const held=[];
  try{
   const dir=join(root,'app');tr=await signaling(join(root,'tls'));app=await startApp(dir,[],{env:tr.env});
   await app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:[],webtorrent_stun_server:''}});
@@ -47,10 +48,19 @@ async function descriptors(){
    if(process.platform==='darwin')return execFileSync('lsof',['-a','-p',String(app.child.pid),'-F','f'],{encoding:'utf8'}).split('\n').filter(s=>/^f[0-9]+$/.test(s)).length;
    return execFileSync('fstat',['-p',String(app.child.pid)],{encoding:'utf8'}).split('\n').filter(s=>new RegExp('^\\S+\\s+\\S+\\s+'+app.child.pid+'\\s+[0-9]+\\*?\\s').test(s)).length;
   };
+  // ICE admission is bounded independently of the restored library size.
+  // Hold real HTTP connections to exercise the inherited descriptor limit
+  // without depending on an unbounded number of unanswered ICE offers.
+  const endpoint=new URL(app.url);
+  for(let i=0;i<inherited+32;i++){
+   const socket=createConnection({host:endpoint.hostname,port:Number(endpoint.port)});held.push(socket);
+   await new Promise((resolve,reject)=>{socket.once('connect',resolve);socket.once('error',reject);});
+   socket.write('GET / HTTP/1.1\r\nHost: localhost\r\n');
+  }
   const count=await wait(async()=>{const n=await descriptorCount();return n>inherited?n:false;},'native descriptors exceed inherited soft limit');
   const ready=await app.api();assert(ready.transfers.every(t=>!t.error&&t.active));assert.equal(ready.warning,'');
   console.log('PASS 32 restored WebRTC torrents retain activity beyond inherited descriptor limit',JSON.stringify({inherited,descriptors:count,offers:tr.announces.reduce((n,a)=>n+(a.offers||0),0)}));
- }finally{await cleanup(root,app,tr);}
+ }finally{for(const socket of held)socket.destroy();await cleanup(root,app,tr);}
 }
 if(process.argv.includes('--descriptors-only'))await descriptors();
 else if(process.argv.includes('--paths-only'))await paths();

@@ -33,7 +33,7 @@ verify-source: root
 	sh dev/scripts/native-deps.sh --verify-source
 native-deps: $(NATIVE_READY)
 	sh dev/scripts/native-deps.sh --verify-source
-$(NATIVE_READY): dev/cmake/webtorrent-admission.cmake backends/libtorrent/src/native/websocket_tracker_connection.cpp backends/libtorrent/src/native/include/libtorrent/aux_/websocket_tracker_connection.hpp backends/libtorrent/src/native/include/libtorrent/aux_/rtc_offer_admission.hpp dev/scripts/native-deps.sh dev/cmake/native.cmake backends/libtorrent/src/native/ice_ports.h dev/cmake/openbsd.cmake dev/cmake/openbsd-webrtc.cmake dev/cmake/openbsd-ice.h .gitmodules
+$(NATIVE_READY): dev/cmake/webtorrent-admission.cmake backends/libtorrent/src/native/websocket_tracker_connection.cpp backends/libtorrent/src/native/include/libtorrent/aux_/websocket_tracker_connection.hpp backends/libtorrent/src/native/include/libtorrent/aux_/rtc_offer_admission.hpp dev/scripts/native-deps.sh dev/cmake/native.cmake backends/libtorrent/src/native/ice_ports.h backends/libtorrent/src/native/ice_budget.h backends/libtorrent/src/native/metadata_gate.h dev/cmake/openbsd.cmake dev/cmake/openbsd-webrtc.cmake dev/cmake/openbsd-ice.h .gitmodules
 	@$(CHECK_ROOT)
 	NATIVE_JOBS="$(NATIVE_JOBS)" sh dev/scripts/native-deps.sh
 	touch "$@"

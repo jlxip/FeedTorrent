@@ -1,5 +1,6 @@
 #include "src/native/engine.h"
 #include "src/native/ice_ports.h"
+#include "src/native/metadata_gate.h"
 #include "feedtorrent-libtorrent/src/bridge.rs.h"
 #include <algorithm>
 #include <atomic>
@@ -8,6 +9,8 @@
 #include <fstream>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/announce_entry.hpp>
+#include <libtorrent/aux_/generate_peer_id.hpp>
+#include <libtorrent/aux_/session_settings.hpp>
 #include <libtorrent/bdecode.hpp>
 #include <libtorrent/bencode.hpp>
 #include <libtorrent/entry.hpp>
@@ -249,7 +252,7 @@ static lt::tcp::endpoint peer_endpoint(lt::tcp::endpoint const &endpoint) {
     address = lt::make_address_v4(lt::v4_mapped, address.to_v6());
   return {address, endpoint.port()};
 }
-struct KnownPeers {
+struct KnownPeers : ft::metadata_gate {
   std::mutex mutex;
   std::set<lt::tcp::endpoint> endpoints;
   void remember(lt::tcp::endpoint const &endpoint) {
@@ -263,6 +266,27 @@ struct KnownPeers {
     return endpoints;
   }
 };
+// Metadata-only upload_mode must not make a native seed reject the peer
+// before the host validates metadata and releases the existing payload guard.
+struct MetadataPeerGuard final : lt::peer_plugin {
+  std::shared_ptr<KnownPeers> known;
+  lt::peer_connection_handle peer;
+  bool released = false;
+  MetadataPeerGuard(std::shared_ptr<KnownPeers> state, lt::peer_connection_handle connection)
+      : known(std::move(state)), peer(std::move(connection)) {}
+  bool can_disconnect(lt::error_code const& ec) override {
+    return !known->pending.load() ||
+        (ec != lt::errors::upload_upload_connection && ec != lt::errors::uninteresting_upload_peer);
+  }
+  void tick() override {
+    if (released || known->pending.load() || peer.is_disconnecting()) return;
+    released = true;
+    // The helper runs inside libtorrent with its exact build configuration.
+    // It preserves every native redundancy condition, including interest,
+    // share mode and close_redundant_connections.
+    ft::restore_metadata_peer_cleanup(peer);
+  }
+};
 struct PeerObserver final : lt::torrent_plugin {
   std::shared_ptr<KnownPeers> known;
   explicit PeerObserver(std::shared_ptr<KnownPeers> peers) : known(std::move(peers)) {}
@@ -272,6 +296,7 @@ struct PeerObserver final : lt::torrent_plugin {
   }
   std::shared_ptr<lt::peer_plugin> new_connection(lt::peer_connection_handle const &peer) override {
     known->remember(peer.remote());
+    if (known->pending.load()) return std::make_shared<MetadataPeerGuard>(known, peer);
     return {};
   }
 };
@@ -399,10 +424,19 @@ struct Session::Impl {
             throw std::runtime_error("Missing metadata");
           validate(*ti);
           metadata_guard.erase(id);
-          if (!approval_guard.count(id) && !external_guard.count(id)) t->handle.unset_flags(lt::torrent_flags::upload_mode);
+          bool const allow = !approval_guard.count(id) && !external_guard.count(id);
+          if (allow) {
+            t->handle.unset_flags(lt::torrent_flags::upload_mode);
+            // The queued flag change must precede release of the wire gate.
+            (void)t->handle.flags();
+          }
+          if (auto known = known_peers.find(id); known != known_peers.end())
+            known->second->pending.store(false);
         } catch (std::exception const &e) {
           errors[id] = e.what();
           t->handle.pause();
+          if (auto known = known_peers.find(id); known != known_peers.end())
+            known->second->pending.store(false);
         }
       }
       if (auto *t = lt::alert_cast<lt::torrent_error_alert>(a))
@@ -462,6 +496,10 @@ Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
                      : "0.0.0.0:" + std::to_string(port) +
                            ",[::]:" + std::to_string(port));
   s.set_str(lt::settings_pack::user_agent, "FeedTorrent/" FEEDTORRENT_VERSION);
+  // A WSS socket multiplexes torrents, but trackers bind its lifetime to one
+  // peer ID. Per-torrent IDs leave stale sockets in the other swarms on close.
+  // Generate one ephemeral client ID per session, including the wire handshake.
+  s.set_str(lt::settings_pack::peer_fingerprint, lt::aux::generate_peer_id(lt::aux::session_settings(s)).to_string());
   if (isolated) s.set_str(lt::settings_pack::webtorrent_stun_server, "");
   s.set_bool(lt::settings_pack::enable_dht, true);
   s.set_bool(lt::settings_pack::enable_lsd, !isolated);
@@ -584,6 +622,8 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
     impl->metadata_guard.insert(key);
   }
   auto known = std::make_shared<KnownPeers>();
+  known->pending.store(!p.ti);
+  p.userdata = static_cast<ft::metadata_gate*>(known.get());
   // Startup can consume resume hints before torrent extensions are attached.
   for (auto const &peer : p.peers) known->remember(peer);
   p.extensions.push_back([known](lt::torrent_handle const &, lt::client_data_t) {

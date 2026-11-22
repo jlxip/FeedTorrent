@@ -76,7 +76,7 @@ def refresh(root):
   assert (root/'prefix'/(name+'.ready')).read_text()==digest,name
   assert sha(root/'downloads'/name)==digest,name
  for name,digest in sources.items():assert sha(source_path(workspace,name))==digest,'Source changed without sync: '+name
- native={'cxx':output(['c++','--version']),'platform':platform.platform(),'packages':PACKAGES,'script':sources['dev/scripts/native-deps.sh'],'cmake':{name:digest for name,digest in sources.items() if name.startswith('dev/cmake/') or name=='backends/libtorrent/src/native/ice_ports.h'}}
+ native={'cxx':output(['c++','--version']),'platform':platform.platform(),'packages':PACKAGES,'script':sources['dev/scripts/native-deps.sh'],'cmake':{name:digest for name,digest in sources.items() if name.startswith('dev/cmake/') or name in {'backends/libtorrent/src/native/ice_ports.h','backends/libtorrent/src/native/ice_budget.h','backends/libtorrent/src/native/metadata_gate.h'}}}
  flags={k:env[k] for k in ['CC','CXX','CFLAGS','CXXFLAGS','CPPFLAGS','LDFLAGS','CMAKE_PREFIX_PATH','OPENSSL_ROOT_DIR','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','CARGO_BUILD_TARGET'] if env.get(k)}
  if flags:native['flags']=flags
  addon={**native,'node_abi':output([str(root/'prefix/bin/node'),'-p','process.versions.modules'],env=env),'script':sources['dev/scripts/test-deps.sh']}

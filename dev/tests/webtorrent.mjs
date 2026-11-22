@@ -9,6 +9,7 @@ import {networkInterfaces} from 'node:os';
 import {temporary,startApp,seed,reference,wait,exact,complete,hash,cleanup,tracker} from './helpers.mjs';
 import {signaling} from './webtorrent-fixture.mjs';
 import {admissionRegression} from './webtorrent-admission.mjs';
+import {recoveryRegression,libraryRegression} from './webtorrent-recovery.mjs';
 const root=await temporary();let tr,ref,app,receiver,http,stun,recoverySeed;
 const oldCAs=getCACertificates('default');
 try {
@@ -129,3 +130,7 @@ try {
 } finally {setDefaultCACertificates(oldCAs);try{await cleanup(root,receiver,app,ref,recoverySeed,tr,http);}finally{if(stun)await new Promise(r=>stun.close(r));}}
 
 await admissionRegression();
+
+await recoveryRegression();
+await libraryRegression();
+await libraryRegression({magnets:false});

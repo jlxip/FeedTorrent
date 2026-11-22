@@ -11,6 +11,7 @@ see LICENSE file.
 */
 
 #include "libtorrent/config.hpp" // for TORRENT_USE_RTC
+#include "ice_budget.h"
 
 #if TORRENT_USE_RTC
 
@@ -63,10 +64,10 @@ std::string utf8_latin1(json::string const& sv)
 void report_error(std::weak_ptr<request_callback> const& cb,
 	tracker_request const& req,
 	error_code const& ec,
-	operation_t const op)
+	operation_t const op, seconds32 const retry = seconds32(120))
 {
 	if (auto c = cb.lock())
-		c->tracker_request_error(req, ec, op, ec.message(), seconds32(120));
+		c->tracker_request_error(req, ec, op, ec.message(), retry);
 }
 }
 
@@ -85,7 +86,7 @@ websocket_tracker_connection::websocket_tracker_connection(
 
 void websocket_tracker_connection::start()
 {
-	if (is_started()) return;
+	if (m_closed || is_started()) return;
 
 	auto const& settings = m_man.settings();
 	auto const& req = tracker_req();
@@ -115,8 +116,10 @@ void websocket_tracker_connection::close()
 	close(error::operation_aborted, operation_t::unknown);
 }
 
-void websocket_tracker_connection::close(error_code const& ec, operation_t const op)
+void websocket_tracker_connection::close(error_code const& ec, operation_t const op, bool const recover)
 {
+	if (m_closed) return;
+	m_closed = true;
 	if (m_websocket)
 	{
 		m_websocket->close();
@@ -147,10 +150,17 @@ void websocket_tracker_connection::close(error_code const& ec, operation_t const
 	// closing) rather than merely being aborted.
 	for (auto& e : m_callbacks)
 	{
-		if (!e.second.pending)
-			continue;
+		bool const subscription_lost = recover && !e.second.pending
+			&& e.second.req.event != event_t::stopped
+			&& e.second.req.event != event_t::paused;
+		if (!e.second.pending && !subscription_lost) continue;
+		bool const pending = e.second.pending;
 		e.second.pending = false;
-		report_error(e.second.cb, e.second.req, ec, op);
+		// An ACK completes an announce, not the persistent signaling
+		// subscription. Losing that socket must invalidate every live
+		// torrent on it, allowing libtorrent's existing retry/backoff.
+		report_error(e.second.cb, e.second.req, ec, op,
+			pending ? seconds32(120) : seconds32(0));
 	}
 
 	m_callbacks.clear();
@@ -214,12 +224,14 @@ bool websocket_tracker_connection::prune_non_stopped_requests()
 
 void websocket_tracker_connection::queue_request(tracker_request req, std::weak_ptr<request_callback> cb)
 {
+	if (m_closed) { report_error(cb, req, error::operation_aborted, operation_t::unknown); return; }
 	m_pending.emplace_back(tracker_message{std::move(req)}, cb);
 	if (is_open()) send_pending();
 }
 
 void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
+	if (m_closed) return;
 	m_pending.emplace_back(tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
 	if (is_open()) send_pending();
 }
@@ -376,7 +388,7 @@ void websocket_tracker_connection::on_timeout(error_code const& ec)
 #endif
 
 	fail(error_code(error::timed_out), operation_t::sock_read);
-	close(error_code(error::timed_out), operation_t::sock_read);
+	close(error_code(error::timed_out), operation_t::sock_read, true);
 }
 
 void websocket_tracker_connection::on_connect(error_code const& ec)
@@ -385,7 +397,7 @@ void websocket_tracker_connection::on_connect(error_code const& ec)
 	if (ec)
 	{
 		fail(ec, operation_t::connect);
-		close(ec, operation_t::connect);
+		close(ec, operation_t::connect, true);
 		return;
 	}
 
@@ -401,11 +413,11 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		if (ec != websocket::error::closed)
 		{
 			fail(ec, operation_t::sock_read);
-			close(ec, operation_t::sock_read);
+			close(ec, operation_t::sock_read, true);
 		}
 		else
 		{
-			close();
+			close(error::eof, operation_t::sock_read, true);
 		}
 		return;
 	}
@@ -429,7 +441,7 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		}
 #endif
 		fail(ec, operation_t::handshake);
-		close(ec, operation_t::handshake);
+		close(ec, operation_t::handshake, true);
 		return;
 	}
 
@@ -480,7 +492,23 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 			// for it.
 			cit->second.pending = false;
 
-			cb->tracker_response(cit->second.req, {}, {}, *response.resp);
+			auto const& req = cit->second.req;
+			auto const& resp = *response.resp;
+			bool const no_recipient = resp.complete >= 0 && resp.incomplete >= 0
+				&& resp.complete <= 1 && resp.incomplete <= 1
+				&& resp.complete + resp.incomplete <= 1;
+			if (no_recipient)
+				for (auto const& offer : req.offers)
+					ft::cancel_unmatched_ice_offer(req.pid.to_string()
+						+ std::string(offer.id.data(), offer.id.size()));
+
+			// A live subscription with no generated offer must not turn a
+			// local capacity/setup failure into a long successful refresh.
+			if (req.num_want > 0 && req.left > 0 && req.offers.empty())
+				report_error(cit->second.cb, req, boost::asio::error::no_buffer_space,
+					operation_t::sock_write, seconds32(0));
+			else
+				cb->tracker_response(req, {}, {}, resp);
 		}
 	}
 	else
@@ -504,7 +532,7 @@ void websocket_tracker_connection::on_write(error_code const& ec, std::size_t /*
 	if (ec)
 	{
 		fail(ec, operation_t::sock_write);
-		close(ec, operation_t::sock_write);
+		close(ec, operation_t::sock_write, true);
 		return;
 	}
 
@@ -614,7 +642,10 @@ parse_websocket_tracker_response(span<char const> message, error_code& ec) try
 		if (auto it = payload.find("min_interval"); it != payload.end())
 			resp.min_interval = seconds32{it->value().as_int64()};
 		else
-			resp.min_interval = seconds32{60};
+			// The tracker did not impose a minimum. Normal refreshes still
+			// honor min_websocket_announce_interval; socket-loss retries need
+			// not inherit a fabricated one-minute subscription outage.
+			resp.min_interval = seconds32{0};
 
 		if (auto it = payload.find("complete"); it != payload.end())
 			resp.complete = int(it->value().as_int64());

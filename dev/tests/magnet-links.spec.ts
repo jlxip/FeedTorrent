@@ -47,19 +47,22 @@ async function fixture(page:any){
 }
 for(const reader of ['own','followed','nested'])test(`${reader} magnet links open existing targets without changing download state`,async({page})=>{
  const x=await fixture(page);
+ // Back changes the URL before hashchange swaps the retained reader panes.
+ // Resolve links in the origin reader, not the still-visible departing pane.
+ const originReader=page.locator(reader==='own'?'#own-preview':'#post-reader');
  try{
   const origin=await x.open(reader);
-  await page.getByRole('link',{name:'Genesis',exact:true}).click();
+  await originReader.getByRole('link',{name:'Genesis',exact:true}).click();
   await expect(page).toHaveURL(new RegExp(`#/own/${x.genesis.id}/read/1$`));await expect(page.locator('#own-preview')).toContainText('Genesis body');
   await expect(page.locator('dialog[open]')).toHaveCount(0);await page.goBack();await expect(page).toHaveURL(new RegExp(origin+'$'));
   for(const state of ['Following','Downloading','Paused','Error']){
    const post=x.snapshot.posts.find((p:any)=>p.id===x.target.id)!;post.state=state;post.error=state==='Error'?'Test error':'';
-   const before=JSON.stringify(post);await page.getByRole('link',{name:'Following',exact:true}).click();await expect(page).toHaveURL(new RegExp(`#/posts/${post.id}$`));
+   const before=JSON.stringify(post);await originReader.getByRole('link',{name:'Following',exact:true}).click();await expect(page).toHaveURL(new RegExp(`#/posts/${post.id}$`));
    expect(JSON.stringify(post)).toBe(before);await page.goBack();await expect(page).toHaveURL(new RegExp(origin+'$'));
   }
   for(const state of ['Seeding','Downloading','Paused','Error']){
    const t=x.snapshot.transfers[0];Object.assign(t,{state,active:!['Paused','Error'].includes(state),progress:state==='Seeding'?1:.2,error:state==='Error'?'Test error':'',pinned:false});
-   const before=JSON.stringify(t);await page.getByRole('link',{name:'Torrent',exact:true}).click();await expect(page).toHaveURL(new RegExp(`#/library/${torrent}$`));
+   const before=JSON.stringify(t);await originReader.getByRole('link',{name:'Torrent',exact:true}).click();await expect(page).toHaveURL(new RegExp(`#/library/${torrent}$`));
    await expect(page.locator('dialog[open]')).toHaveCount(0);expect(JSON.stringify(t)).toBe(before);await page.goBack();await expect(page).toHaveURL(new RegExp(origin+'$'));
   }
   expect(x.mutations()).toEqual([]);

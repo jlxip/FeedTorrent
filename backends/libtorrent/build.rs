@@ -67,5 +67,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/native/engine.h");
     println!("cargo:rerun-if-changed=src/native/engine.cc");
     println!("cargo:rerun-if-changed=src/native/ice_ports.h");
+    println!("cargo:rerun-if-changed=src/native/metadata_gate.h");
     println!("cargo:rerun-if-changed=../../Cargo.toml");
 }

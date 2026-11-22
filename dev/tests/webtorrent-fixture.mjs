@@ -8,6 +8,7 @@ import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import Tracker from 'bittorrent-tracker/server';
 import {isIP} from 'node:net';
+import {randomBytes} from 'node:crypto';
 
 export function ipv4Candidates(sdp,address){
   return sdp.split('\r\n').filter(line=>{
@@ -38,7 +39,9 @@ export async function signaling(root,{ipv4Only=false,candidateAddress}={}) {
   await mkdir(root,{recursive:true});
   const ca=join(root,'ca.pem'),key=join(root,'server.key'),cert=join(root,'server.pem');
   const openssl=args=>execFileSync('openssl',args,{stdio:['ignore','ignore','pipe']});
-  await writeFile(join(root,'ca.conf'),'[req]\ndistinguished_name=dn\nx509_extensions=ca\nprompt=no\n[dn]\nCN=WebRTC test CA\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n');
+  // Concurrent private CAs must have distinct issuer names on every TLS backend.
+  const caName='WebRTC test CA '+randomBytes(16).toString('hex');
+  await writeFile(join(root,'ca.conf'),'[req]\ndistinguished_name=dn\nx509_extensions=ca\nprompt=no\n[dn]\nCN='+caName+'\n[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n');
   openssl(['req','-x509','-sha256','-config',join(root,'ca.conf'),'-newkey','rsa:2048','-nodes','-days','1','-keyout',join(root,'ca.key'),'-out',ca]);
   openssl(['req','-new','-sha256','-newkey','rsa:2048','-nodes','-subj','/CN=localhost','-keyout',key,'-out',join(root,'server.csr')]);
   await writeFile(join(root,'extensions'),'basicConstraints=CA:FALSE\nsubjectAltName=DNS:localhost,IP:127.0.0.1\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n');
