@@ -1,9 +1,8 @@
-name: Build and distribute
+name: Build and validate
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -317,30 +316,3 @@ jobs:
           path: .runtime/tests/
           retention-days: 14
           if-no-files-found: ignore
-
-  release:
-    name: Publish release
-    needs: [native, linux-ui, linux-package, openbsd]
-    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: feedtorrent-*
-          path: packages
-          merge-multiple: true
-      - name: Verify and publish complete release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd packages
-          sh ../dev/ci/publish.sh

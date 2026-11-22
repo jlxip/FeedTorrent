@@ -38,6 +38,7 @@ try {
   for(const name of [...suites,"make-entry","desktop","bep-consumer","posts-consumer"])
     await writeFile(join(project,"dev/tests",name+".mjs"),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:'+name+'\\n");\n');
   await writeFile(join(project,'dev/tests/validation-env.py'),'print("validation fixture")\n');
+  await writeFile(join(project,'dev/tests/promote.py'),'print("promotion fixture")\n');
   await writeFile(join(project,'dev/tests/package.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:package\\n");\n');
   await writeFile(join(project,'dev/tests/release.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:release\\n");\n');
   await writeFile(join(project,'dev/tests/pre-commit.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:pre-commit\\n");\n');

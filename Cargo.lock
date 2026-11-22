@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "feedtorrent"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "anyhow",
  "argon2",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "feedtorrent-bep"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "bendy",
  "ed25519-dalek",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "feedtorrent-libtorrent"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "feedtorrent-posts"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "feedtorrent-bep",
  "pulldown-cmark",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "feedtorrent-pubsub-udp"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "feedtorrent-bep",
  "getrandom 0.3.4",
