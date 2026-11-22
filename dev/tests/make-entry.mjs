@@ -44,6 +44,8 @@ try {
   await writeFile(join(project,'dev/tests/test-deps.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:test-deps\\n");\n');
   await writeFile(join(project,'dev/tests/disk-image.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:disk-image\\n");\n');
   await writeFile(join(project,'dev/tests/test-ports.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:test-ports\\n");\n');
+  await writeFile(join(project,'dev/tests/program-version.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:program-version\\n");\n');
+  await writeFile(join(project,'dev/tests/webtorrent-fixture.test.mjs'),'import{appendFileSync}from"node:fs";appendFileSync(process.env.BUILD_LOG,"suite:webtorrent-fixture\\n");\n');
   const log = join(root,"calls"); env.BUILD_LOG=log; env.PATH=bin+":"+env.PATH;
   await writeFile(join(bin,"npm"), '#!/bin/sh\nprintf "npm\\n" >> "$BUILD_LOG"\n', {mode:0o755});
   await writeFile(join(project,"dev/scripts/native-deps.sh"), '#!/bin/sh\nif [ "${1:-}" = --verify-source ]; then printf "verify\\n" >> "$BUILD_LOG"; else mkdir -p .tools/native; printf "native:%s\\n" "$NATIVE_JOBS" >> "$BUILD_LOG"; fi\n');

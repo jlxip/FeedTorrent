@@ -5,24 +5,29 @@ import bencode from 'bencode';
 import {readFile,mkdir,cp} from 'node:fs/promises';
 import {setDefaultCACertificates,getCACertificates} from 'node:tls';
 import {join} from 'node:path';
+import {networkInterfaces} from 'node:os';
 import {temporary,startApp,seed,reference,wait,exact,complete,hash,cleanup,tracker} from './helpers.mjs';
 import {signaling} from './webtorrent-fixture.mjs';
 import {admissionRegression} from './webtorrent-admission.mjs';
 const root=await temporary();let tr,ref,app,receiver,http,stun,recoverySeed;
 const oldCAs=getCACertificates('default');
 try {
-  tr=await signaling(join(root,'tls'),{ipv4Only:true});tr.env.FEEDTORRENT_ICE_PORT_RANGE='50000-50199';setDefaultCACertificates([...oldCAs,await readFile(tr.ca,'utf8')]);
+  const address=Object.values(networkInterfaces()).flat().find(i=>i.family==='IPv4'&&!i.internal&&!i.address.startsWith('169.254.'))?.address;
+  assert(address,'The same-IP fixture needs a local non-loopback IPv4 address');
+  tr=await signaling(join(root,'tls'),{candidateAddress:address});tr.env.FEEDTORRENT_ICE_PORT_RANGE='50000-50199';setDefaultCACertificates([...oldCAs,await readFile(tr.ca,'utf8')]);
   for(const invalid of ['', '0-65535','50199-50000','50000','50000-65536',' 50000-50199','50000-50199x'])
     await assert.rejects(()=>startApp(join(root,'invalid'),[],{env:{...tr.env,FEEDTORRENT_ICE_PORT_RANGE:invalid}}),/FEEDTORRENT_ICE_PORT_RANGE/);
   // Production mode must accept RTC after a TCP publisher at the same IP has
   // disconnected. Isolated fixtures allow multiple peers per IP by default.
-  http=await tracker();
-  ref=await seed(join(root,'same-ip-source'),[32769],{tracker:true,announce:[http.http]});
+  ref=await seed(join(root,'same-ip-source'),[32769]);
   app=await startApp(join(root,'same-ip'),['--dht-bootstrap','127.0.0.1:9','--http-port','8792'],{env:tr.env,isolated:false});
   await app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:[],webtorrent_stun_server:''}});
-  await app.command({type:'add_torrent',data:ref.bytes});await exact(app,ref);
+  // Use the same real interface for TCP and ICE, rather than assuming ICE
+  // selects loopback or depending on wildcard/IPv6 tracker route selection.
+  await app.command({type:'add_magnet',uri:`magnet:?xt=urn:btih:${ref.id}&x.pe=${address}:${ref.client.torrentPort}`});
+  await exact(app,ref);
   await ref.stop();ref.stop=async()=>{};
-  await wait(async()=>(await app.command({type:'read_peers',id:ref.id})).peers.some(p=>p.address==='127.0.0.1'&&!p.connected),'disconnected TCP publisher retained');
+  await wait(async()=>(await app.command({type:'read_peers',id:ref.id})).peers.some(p=>p.address===address&&!p.connected),'disconnected TCP publisher retained on the ICE interface');
   const tcpIps=new Set((await app.command({type:'read_peers',id:ref.id})).peers.map(p=>p.address));
   await app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:[tr.url]}});
   receiver=await reference({tracker:{rtcConfig:{iceServers:[]}}});
@@ -32,7 +37,7 @@ try {
   assert.deepEqual(await readFile(join(root,'same-ip-receiver','source','file-0.bin')),ref.originals[0]);
   assert(sameIpWires.length>0);assert(sameIpWires.every(w=>w.type==='webrtc'&&tcpIps.has(w.address)),JSON.stringify(sameIpWires));
   console.log('PASS production WebRTC serves exact bytes after a TCP publisher at the same IP disconnects');
-  await receiver.stop();receiver=undefined;await app.stop();await http.stop();http=undefined;
+  await receiver.stop();receiver=undefined;await app.stop();
   app=await startApp(join(root,'app'),[],{env:tr.env});
   const configure=async(trackers,stun='')=>app.command({type:'configure',settings:{...(await app.api()).settings,webtorrent_trackers:trackers,webtorrent_stun_server:stun}});
   await configure([tr.url,tr.url]);assert.deepEqual((await app.api()).settings.webtorrent_trackers,[tr.url]);

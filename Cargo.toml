@@ -3,7 +3,7 @@ members = ["bep", "posts", "backends/libtorrent", "backends/pubsub-udp", "app"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0-dev"
+version = "0.0.5-alpha"
 edition = "2021"
 
 [profile.release]

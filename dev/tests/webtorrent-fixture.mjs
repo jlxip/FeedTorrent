@@ -7,8 +7,34 @@ import {createServer} from 'node:https';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import Tracker from 'bittorrent-tracker/server';
+import {isIP} from 'node:net';
 
-export async function signaling(root,{ipv4Only=false}={}) {
+export function ipv4Candidates(sdp,address){
+  return sdp.split('\r\n').filter(line=>{
+    if(!line.startsWith('a=candidate:'))return true;
+    const host=line.split(/\s+/)[4];
+    return !host.includes(':')&&(address===undefined||host===address);
+  }).join('\r\n');
+}
+
+// node-datachannel reports gatheringState=complete but omits the final null
+// candidate. Bridge that real event to simple-peer; never guess a gather time.
+export function completeNodeIce(peer){
+  let finished=false;
+  const stop=()=>peer.off('iceStateChange',complete);
+  const complete=(_connection,gathering)=>{
+    if(finished||peer.destroyed||gathering!=='complete')return;
+    finished=true;stop();
+    peer._pc.onicecandidate?.({candidate:null});
+  };
+  peer.on('iceStateChange',complete);
+  peer.once('close',stop);
+  complete(peer._pc.iceConnectionState,peer._pc.iceGatheringState);
+  return peer;
+}
+
+export async function signaling(root,{ipv4Only=false,candidateAddress}={}) {
+  if(candidateAddress!==undefined&&isIP(candidateAddress)!==4)throw Error('Candidate address must be IPv4');
   await mkdir(root,{recursive:true});
   const ca=join(root,'ca.pem'),key=join(root,'server.key'),cert=join(root,'server.pem');
   const openssl=args=>execFileSync('openssl',args,{stdio:['ignore','ignore','pipe']});
@@ -31,7 +57,7 @@ export async function signaling(root,{ipv4Only=false}={}) {
   let offerer;
   const request=tracker._onWebSocketRequest.bind(tracker);
   tracker._onWebSocketRequest=(socket,options,data)=>{
-    if(offerer||ipv4Only){
+    if(offerer||ipv4Only||candidateAddress){
       const message=JSON.parse(data.toString());
       const native=message.peer_id?.startsWith('-LT');
       if(offerer && message.offers && native!==(offerer==='native')){
@@ -39,9 +65,9 @@ export async function signaling(root,{ipv4Only=false}={}) {
       }
       // A controlled IPv4-only exchange can reproduce peers sharing one IP
       // even on dual-stack hosts where ICE would otherwise choose IPv6.
-      if(ipv4Only){
+      if(ipv4Only||candidateAddress){
         for(const description of [...(message.offers||[]).map(o=>o.offer),message.offer,message.answer])
-          if(description?.sdp)description.sdp=description.sdp.split('\r\n').filter(line=>!line.startsWith('a=candidate:')||!line.split(' ')[4].includes(':')).join('\r\n');
+          if(description?.sdp)description.sdp=ipv4Candidates(description.sdp,candidateAddress);
         data=Buffer.from(JSON.stringify(message));
       }
     }

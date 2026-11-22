@@ -47,7 +47,7 @@ use std::{
 use tokio::sync::{oneshot, watch};
 
 #[derive(Parser, Debug)]
-#[command(version, about = "FeedTorrent local BitTorrent client")]
+#[command(version = concat!("v", env!("CARGO_PKG_VERSION")), about = "FeedTorrent local BitTorrent client")]
 struct Args {
     #[arg(long)]
     data_dir: Option<PathBuf>,

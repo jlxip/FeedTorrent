@@ -6,14 +6,11 @@ import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {temporary,startApp,seed,reference,wait,complete,hash,cleanup,tracker} from './helpers.mjs';
 import {evidencePath} from './runtime.mjs';
-import {signaling} from './webtorrent-fixture.mjs';
+import {signaling,completeNodeIce} from './webtorrent-fixture.mjs';
 import WebSocketTracker from 'bittorrent-tracker/websocket-tracker';
 export async function admissionRegression() {
-  // Node's RTC adapter does not report host-only gathering completion. With
-  // no STUN in this local fixture, send its gathered host candidates after 100ms
-  // instead of the adapter's five-second fallback. Actual RTC/data stay real.
   const createPeer=WebSocketTracker.prototype._createPeer;
-  WebSocketTracker.prototype._createPeer=function(opts){return createPeer.call(this,{...opts,iceCompleteTimeout:100});};
+  WebSocketTracker.prototype._createPeer=function(opts){return completeNodeIce(createPeer.call(this,opts));};
   const root=await temporary(),oldCAs=getCACertificates('default'),samples=[];
   let tr,http,source,app,receiver,nativeSocket,lastOffer,nativeAnnounces=0,answers=0,flooding=false;
   const rss=()=>Number(execFileSync('ps',['-o','rss=','-p',String(app.child.pid)],{encoding:'utf8'}).trim());
@@ -39,11 +36,22 @@ export async function admissionRegression() {
     await configure([tr.url]);await wait(()=>nativeAnnounces===1,'initial native announce');const generation=nativeAnnounces;
     async function download(label) {
       receiver=await reference({tracker:{rtcConfig:{iceServers:[]}}});const started=performance.now();
-      const dest=join(root,label),torrent=receiver.client.add('magnet:?xt=urn:btih:'+id,{path:dest,announce:[tr.url],getAnnounceOpts:()=>({numwant:1})});
-      await wait(()=>torrent.done,label+' exact WebRTC download',4000);
+      // One receiver needs one negotiation. The tracker's one-second updates
+      // must not create extra offers that survive after this client closes and
+      // fill the native concurrent-negotiation limit with orphaned attempts.
+      let requested=false;
+      const before=tr.announces.length;
+      const dest=join(root,label),torrent=receiver.client.add('magnet:?xt=urn:btih:'+id,{path:dest,announce:[tr.url],getAnnounceOpts:()=>{
+        const numwant=requested?0:1;requested=true;return {numwant};
+      }});
+      // This checks admission without reannounces, not a four-second throughput
+      // guarantee on a shared CI machine. Keep the suite's normal wait budget.
+      await wait(()=>torrent.done,label+' exact WebRTC download');
       const bytes=await readFile(join(dest,'source','file-0.bin'));assert.equal(hash(bytes),hash(expected));
-      samples.push({label,ms:performance.now()-started,bytes:bytes.length,sha256:hash(bytes)});
       await receiver.stop();receiver=undefined;
+      const offers=tr.announces.slice(before).filter(m=>!Buffer.from(m.peer,'hex').toString().startsWith('-LT')).reduce((n,m)=>n+(m.offers||0),0);
+      assert.equal(offers,1,'one receiver must send exactly one offer');
+      samples.push({label,ms:performance.now()-started,bytes:bytes.length,sha256:hash(bytes),offers});
     }
     for(let n=1;n<=24;n++) {await download('sequential-'+n);assert.equal(nativeAnnounces,generation,'no native reannounce may refill admission');}
     console.log('PASS 24 sequential exact WebRTC downloads without a native reannounce');
@@ -75,6 +83,6 @@ export async function admissionRegression() {
     await download('after-hostile-cancellation');
     await writeFile(evidencePath('webtorrent-admission.json'),JSON.stringify({status:'PASS',samples,nativeAnnouncesBeforeFlood:generation,floodAnswers,floodMs:performance.now()-floodStart,rssBeforeKiB:rssBefore,rssAfterKiB:rssAfter},null,2)+'\n');
     console.log('PASS 1000 fresh hostile offers retain concurrent/RSS bounds; cancellation/reattach recovers exact transfer');
-  } catch(error) {console.error(JSON.stringify({error:error.message,referenceErrors:receiver?.errors,announces:tr?.announces.slice(-15),appLogs:app?.logs}));throw error;} finally {WebSocketTracker.prototype._createPeer=createPeer;setDefaultCACertificates(oldCAs);await cleanup(root,receiver,app,source,tr,http);}
+  } catch(error) {console.error(JSON.stringify({error:error.message,samples,nativeAnnounces,answers,referenceErrors:receiver?.errors,pending:receiver?.client.torrents.map(t=>({id:t.infoHash,progress:t.progress,done:t.done,wires:t.wires.map(w=>w.type)})),announces:tr?.announces.slice(-15),appLogs:app?.logs}));throw error;} finally {WebSocketTracker.prototype._createPeer=createPeer;setDefaultCACertificates(oldCAs);await cleanup(root,receiver,app,source,tr,http);}
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))await admissionRegression();

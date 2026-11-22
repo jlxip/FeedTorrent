@@ -8,7 +8,7 @@ WASM_CHECK = cargo check --locked --offline -p feedtorrent-bep -p feedtorrent-po
 UI_TEST = node dev/scripts/ui.mjs
 UI_ARGS =
 UNIT_ARGS = --workspace
-ALL_NATIVE_SUITES = bep44 bep50 network peers tls edge-cases open-cwd posts publishing key-vault retention organization storage creation images http-ports webtorrent startup dht-gateway
+ALL_NATIVE_SUITES = bep44 bep50 network peers tls edge-cases open-cwd posts publishing key-vault retention organization storage creation images http-ports webtorrent startup dht-gateway program-version
 
 NATIVE_SUITES = $(ALL_NATIVE_SUITES)
 
@@ -65,7 +65,7 @@ test-unit: web native-deps
 test-build: $(NPM_READY) root
 	node dev/tests/make-entry.mjs
 	python3 dev/tests/validation-env.py
-	node --test dev/tests/package.test.mjs dev/tests/release.test.mjs dev/tests/pre-commit.test.mjs dev/tests/test-deps.test.mjs dev/tests/disk-image.test.mjs dev/tests/test-ports.test.mjs
+	node --test dev/tests/package.test.mjs dev/tests/release.test.mjs dev/tests/pre-commit.test.mjs dev/tests/test-deps.test.mjs dev/tests/disk-image.test.mjs dev/tests/test-ports.test.mjs dev/tests/program-version.test.mjs dev/tests/webtorrent-fixture.test.mjs
 test-integration: test-ports
 	$(MAKE) test-integration-body
 test-integration-body: build test-deps

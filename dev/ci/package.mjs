@@ -7,6 +7,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve,basename} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {once} from 'node:events';
+import {workspaceVersion} from '../scripts/version.mjs';
 
 const command=(name,args=[],options={})=>execFileSync(name,args,{encoding:'utf8',stdio:['ignore','pipe','pipe'],...options}).trim();
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -41,7 +42,20 @@ export function auditDependencies(platform,output){
   return dependencies;
 }
 
-export async function smoke(binary){
+export async function verifyVersion(binary,version,tag=null){
+  const expected=`v${version}`;
+  if(tag!==null)assert.equal(tag,expected,'Release tag differs from workspace version');
+  const root=await mkdtemp(join(tmpdir(),'feedtorrent-version-'));
+  try{
+    const output=execFileSync(binary,['--version'],{cwd:root,encoding:'utf8',env:{PATH:'',HOME:root},timeout:10000,stdio:['ignore','pipe','pipe']});
+    assert.equal(output,`feedtorrent ${expected}\n`,'Executable differs from workspace version');
+    assert.deepEqual(await readdir(root),[],'--version created application data');
+  }finally{await rm(root,{recursive:true,force:true})}
+  return expected;
+}
+
+export async function smoke(binary,version){
+  const reported=await verifyVersion(binary,version);
   const root=await mkdtemp(join(tmpdir(),'feedtorrent-smoke-'));
   let child,exit;
   try{
@@ -79,7 +93,7 @@ export async function smoke(binary){
     await stat(join(root,'user','downloads'));
     await stat(join(root,'user','published'));
     assert.deepEqual(await readdir(join(root,'home')),[],'Packaged executable wrote under HOME');
-    return {http:200,api:200,assets:assets.length,shutdown:code};
+    return {version:reported,http:200,api:200,assets:assets.length,shutdown:code};
   }finally{
     if(child&&child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await exit.catch(()=>{})}
     await rm(root,{recursive:true,force:true});
@@ -95,10 +109,12 @@ export async function packageRelease(){
   const root=resolve('.'),output=resolve('dist');await mkdir(output,{recursive:true});
   const revision=command('git',['rev-parse','HEAD']);
   const tag=process.env.GITHUB_REF_TYPE==='tag'?process.env.GITHUB_REF_NAME:null;
+  const declared=await workspaceVersion(root);
   const version=tag||revision.slice(0,12);assert(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(version));
   const os=platform==='darwin'?'macos':platform==='openbsd'?'openbsd-8.0':'linux';
   const target=`${os}-${arch==='x64'?'amd64':'arm64'}`;
   const name=`feedtorrent-${version}-${target}`,binary=resolve('target/release/feedtorrent');
+  const reported=await verifyVersion(binary,declared,tag);
   const linkage=command(platform==='darwin'?'otool':'ldd',platform==='darwin'?['-L',binary]:[binary]);
   const dependencies=auditDependencies(platform,linkage);
   if(platform==='darwin'){
@@ -121,12 +137,12 @@ export async function packageRelease(){
     await copyFile('target/release/THIRD_PARTY.json',join(stage,'THIRD_PARTY.json'));
     const sourceFiles=command('git',['ls-files','--cached','--others','--exclude-standard','-z']).split('\0').filter(Boolean).sort();
     const sources=[];for(const file of sourceFiles){try{sources.push([file,sha(await readFile(file))])}catch(error){if(error.code!=='EISDIR'&&error.code!=='ENOENT')throw error}}
-    const info={commit:revision,tag,dirty:!!command('git',['status','--porcelain']),target,host_release:release,compatibility:platform==='darwin'?'macOS >=15':platform==='linux'?'Ubuntu 24.04 x86_64':'OpenBSD 8.0 amd64',source_sha256:sha(JSON.stringify(sources)),binary_sha256:sha(await readFile(binary)),tools:{rustc:command('rustc',['--version']),cargo:command('cargo',['--version']),node:process.version,cxx:command('c++',['--version']).split('\n')[0],cmake:command('cmake',['--version']).split('\n')[0]},native,dependencies,linkage};
+    const info={version:reported,commit:revision,tag,dirty:!!command('git',['status','--porcelain']),target,host_release:release,compatibility:platform==='darwin'?'macOS >=15':platform==='linux'?'Ubuntu 24.04 x86_64':'OpenBSD 8.0 amd64',source_sha256:sha(JSON.stringify(sources)),binary_sha256:sha(await readFile(binary)),tools:{rustc:command('rustc',['--version']),cargo:command('cargo',['--version']),node:process.version,cxx:command('c++',['--version']).split('\n')[0],cmake:command('cmake',['--version']).split('\n')[0]},native,dependencies,linkage};
     await writeFile(join(stage,'BUILD-INFO.json'),JSON.stringify(info,null,2)+'\n');
     const archive=join(output,name+'.tar.gz');command('tar',['-czf',archive,'-C',temp,name],{env:{...process.env,COPYFILE_DISABLE:'1'}});
     // Exercise the actual extracted payload, outside both the source and build trees.
     const extracted=await mkdtemp(join(tmpdir(),'feedtorrent-package-'));
-    try{command('tar',['-xzf',archive,'-C',extracted]);console.log(JSON.stringify({package:basename(archive),smoke:await smoke(join(extracted,name,'feedtorrent')),dependencies},null,2))}finally{await rm(extracted,{recursive:true,force:true})}
+    try{command('tar',['-xzf',archive,'-C',extracted]);console.log(JSON.stringify({package:basename(archive),smoke:await smoke(join(extracted,name,'feedtorrent'),declared),dependencies},null,2))}finally{await rm(extracted,{recursive:true,force:true})}
     await writeFile(archive+'.sha256',`${sha(await readFile(archive))}  ${basename(archive)}\n`);
     return archive;
   }finally{await rm(temp,{recursive:true,force:true})}

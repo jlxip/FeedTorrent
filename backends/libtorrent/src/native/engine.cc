@@ -461,7 +461,7 @@ Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
             isolated ? (ipv6_only ? "[::1]:" : "127.0.0.1:") + std::to_string(port)
                      : "0.0.0.0:" + std::to_string(port) +
                            ",[::]:" + std::to_string(port));
-  s.set_str(lt::settings_pack::user_agent, "FeedTorrent/1.0.0-dev");
+  s.set_str(lt::settings_pack::user_agent, "FeedTorrent/" FEEDTORRENT_VERSION);
   if (isolated) s.set_str(lt::settings_pack::webtorrent_stun_server, "");
   s.set_bool(lt::settings_pack::enable_dht, true);
   s.set_bool(lt::settings_pack::enable_lsd, !isolated);
