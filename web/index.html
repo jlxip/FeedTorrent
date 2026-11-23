@@ -48,6 +48,13 @@
         </nav>
       </aside>
     <main>
+      <div id="application-update" class="alert" role="status" hidden>
+        <h3 id="application-update-title"></h3><section><p id="application-update-status"></p>
+          <progress id="application-update-progress" max="100" hidden aria-label="Update download"></progress>
+          <p id="application-update-error" role="alert"></p>
+          <div class="application-update-actions"><button type="button" class="btn" id="application-update-install">Update and restart</button><button type="button" class="btn" data-variant="outline" id="application-update-cancel" hidden>Cancel update</button></div>
+        </section>
+      </div>
       <div id="notice" class="alert" data-variant="destructive" role="alert" hidden><section></section></div>
       <section id="news-view" hidden aria-labelledby="news-heading">
         <div class="list-heading"><h2 id="news-heading">New posts</h2><label class="label news-filter"><input type="checkbox" class="input" id="news-hide-read"> Hide read posts</label><button type="button" class="btn" data-variant="ghost" id="news-refresh">Refresh</button></div>
@@ -223,6 +230,7 @@
     <dialog id="settings-dialog" class="dialog" aria-labelledby="settings-title">
       <div class="dialog-surface">
         <header><h2 id="settings-title">Settings</h2></header>
+        <section id="application-version" aria-label="Application updates"><p id="application-version-current"></p><p id="application-version-status" role="status"></p><button type="button" class="btn" data-variant="outline" id="application-update-check">Check now</button></section>
       <form id="settings-form">
         <div class="field">
           <div class="field-label">

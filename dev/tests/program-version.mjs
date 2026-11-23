@@ -8,7 +8,7 @@ import {workspaceVersion} from '../scripts/version.mjs';
 import {verifyVersion} from '../ci/package.mjs';
 
 const version=await workspaceVersion();
-await verifyVersion(resolve('target/release/feedtorrent'),version);
+await verifyVersion(resolve(process.env.FEEDTORRENT_TEST_BINARY||'target/release/feedtorrent'),version);
 console.log(`PASS --version reports v${version} outside Git with no PATH or application data`);
 const root=await temporary();let app;
 const agents=[];

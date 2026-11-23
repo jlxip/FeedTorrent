@@ -310,6 +310,7 @@ struct Manager {
     renewals: BTreeMap<String, Instant>,
     retry_delay: Duration,
     stopping: bool,
+    update_waiting: bool,
 }
 impl Manager {
     fn current_view(&self) -> View {
@@ -868,6 +869,9 @@ impl Manager {
             let id = if let Some((_, id)) = ready {
                 id
             } else {
+                if self.update_waiting {
+                    break;
+                }
                 let renewal = self
                     .lib
                     .posts
@@ -1038,6 +1042,11 @@ impl Manager {
                 })();
                 let _ = reply.send(result.map_err(|e| format!("{e:#}")));
             }
+            Message::PauseRenewals(paused, reply) => {
+                self.update_waiting = paused;
+                self.views.send_replace(self.current_view());
+                let _ = reply.send(());
+            }
             Message::Stop => self.stop(),
         }
     }
@@ -1089,6 +1098,7 @@ pub(super) fn start(
             renewals: BTreeMap::new(),
             retry_delay,
             stopping: false,
+            update_waiting: false,
         };
         loop {
             match rx.recv_timeout(Duration::from_millis(50)) {

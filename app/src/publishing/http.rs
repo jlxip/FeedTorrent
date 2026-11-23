@@ -27,12 +27,34 @@ pub async fn command(
             "Reload FeedTorrent and use Delete post with a deletion preview",
         );
     }
+    let starts = matches!(
+        command,
+        Command::CreateFromDraft { .. }
+            | Command::CreateKey { .. }
+            | Command::CreatePost { .. }
+            | Command::Publish { .. }
+            | Command::RetryPublication { .. }
+            | Command::ChangePassword { .. }
+            | Command::SetActive { active: true, .. }
+    );
+    if starts && !app.updates.sensitive() {
+        return api_error(
+            StatusCode::CONFLICT,
+            "An application update is waiting; cancel it before starting another publication",
+        );
+    }
     match app.publishing.call(command).await {
         Ok(value) => Json(value).into_response(),
         Err(e) => api_error(StatusCode::BAD_REQUEST, e),
     }
 }
 pub async fn export(State(app): State<Arc<App>>, Query(query): Query<ExportQuery>) -> Response {
+    if query.token.is_none() && !app.updates.sensitive() {
+        return api_error(
+            StatusCode::CONFLICT,
+            "An application update is waiting; cancel it before starting another backup",
+        );
+    }
     let _serial = app.creation.gate.lock().await;
     let path = match if let Some(token) = query.token {
         app.creation
@@ -72,6 +94,12 @@ pub async fn export(State(app): State<Arc<App>>, Query(query): Query<ExportQuery
         .unwrap()
 }
 pub async fn import(State(app): State<Arc<App>>, headers: HeaderMap, mut body: Body) -> Response {
+    if !app.updates.sensitive() {
+        return api_error(
+            StatusCode::CONFLICT,
+            "An application update is waiting; cancel it before importing a backup",
+        );
+    }
     let _serial = app.creation.gate.lock().await;
     let password = (|| -> Result<Password> {
         let encoded = headers

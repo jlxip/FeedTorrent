@@ -343,6 +343,13 @@ export class PublishingUI {
     const id = this.id;
     s.timer = setTimeout(() => void this.flush(id).catch(() => {}), 400);
   }
+  async flushPending() {
+    for (const id of this.sessions.keys()) {
+      await this.flush(id);
+      const s=this.sessions.get(id);
+      if(s && s.saved!==s.edits) throw Error(s.error||'Save the post draft before updating.');
+    }
+  }
   private async flush(id = this.id) {
     const s = this.sessions.get(id);
     if (!s) return;

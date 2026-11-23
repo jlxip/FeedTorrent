@@ -66,6 +66,7 @@ async function largeRegistry(root) {
 let root, app;
 try {
   root = await temporary();
+  if (!process.argv.includes("--make-run-only")) {
   await largeRegistry(root);
   const portable = join(root, "portable"), portableHome = join(root, "portable-home");
   const oldState = join(portableHome, "Library/Application Support/FeedTorrent/transfers.json");
@@ -210,6 +211,15 @@ try {
   pass(
     "gitignore and clean preserve downloads, state, dependencies and historical assets",
   );
+  }
+  // Exercise the real run recipe with a prebuilt private executable. Building
+  // is validated separately; launching must not rebuild a shared executable.
+  const runRepo=join(root,"make-run-repo");
+  await mkdir(join(runRepo,"target/release"),{recursive:true});
+  const makefile=await readFile(join(repo,"Makefile"),"utf8");
+  assert(makefile.includes("\nrun: build\n"));
+  await writeFile(join(runRepo,"Makefile"),makefile.replace("\nrun: build\n","\nrun:\n"));
+  await cp(resolve(process.env.FEEDTORRENT_TEST_BINARY||"target/release/feedtorrent"),join(runRepo,"target/release/feedtorrent"));
   const runState = join(root, "make-run-state");
   const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
   const args = [
@@ -218,7 +228,7 @@ try {
     "--data-dir",
     runState,
     "--download-dir",
-    relative(repo, join(root, "make-downloads")),
+    relative(runRepo, join(root, "make-downloads")),
     "--peer-port",
     "0",
     "--http-port",
@@ -229,7 +239,7 @@ try {
   const child = spawn(
     "make",
     ["run", `ARGS=${args}`],
-    { cwd: repo, detached: true, stdio: ["ignore", "pipe", "pipe"] },
+    { cwd: runRepo, detached: true, stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";
   child.stdout.on("data", (b) => (log += b));

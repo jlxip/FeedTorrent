@@ -78,6 +78,7 @@ fn manager(dir: &Path, lib: Library) -> Manager {
         renewals: BTreeMap::new(),
         retry_delay: Duration::from_secs(30),
         stopping: false,
+        update_waiting: false,
     }
 }
 fn enqueue(m: &mut Manager, id: &str) -> u64 {
@@ -975,3 +976,29 @@ fn readers_keep_confirmed_dates_through_signed_retries_cancellation_and_backups(
 
 #[path = "version_tests.rs"]
 mod version_tests;
+
+#[test]
+fn application_update_pauses_new_renewals_and_resumes_them() {
+    let (dir, mut lib, ids) = fixture(1);
+    let post = lib.posts.get_mut(&ids[0]).unwrap();
+    install_record(post, 1);
+    post.active = true;
+    let mut m = manager(&dir, lib);
+    let next = m.lib.next_operation;
+    let (tx, rx) = oneshot::channel();
+    m.message(Message::PauseRenewals(true, tx));
+    rx.blocking_recv().unwrap();
+    m.pump().unwrap();
+    assert_eq!(m.lib.next_operation, next);
+    assert!(m.lib.posts[&ids[0]].pending.is_none());
+    let (tx, rx) = oneshot::channel();
+    m.message(Message::PauseRenewals(false, tx));
+    rx.blocking_recv().unwrap();
+    m.pump().unwrap();
+    assert!(m.lib.next_operation > next);
+    m.stop();
+    for handle in m.handles {
+        let _ = handle.join();
+    }
+    fs::remove_dir_all(dir).unwrap();
+}

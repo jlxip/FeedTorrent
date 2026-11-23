@@ -1,5 +1,6 @@
+import {UpdatesUI} from "./updates.js";
 import {setupActions} from './actions.js';
-import {initReaderSettings,readerSettingsState,readerSettingsRemoved} from './reader.js';
+import {initReaderSettings,readerSettingsState,readerSettingsRemoved,flushReaderSettings} from './reader.js';
 import {imageState} from './images.js';
 import {CreationUI} from './creation.js';
 import {size} from './reader.js';
@@ -474,6 +475,13 @@ function saveSettings(forceGateway = false): Promise<boolean> {
   });
   return settingsSave;
 }
+const updatesUI = new UpdatesUI(async()=>{
+  await publishingUI.flushPending();
+  await creationUI.flushPending();
+  await flushReaderSettings();
+  if($<HTMLDialogElement>('#settings-dialog').open){if(!await saveSettings())throw Error('Fix Settings before updating.');}
+  else if(!await settingsSave)throw Error('Settings could not be saved.');
+});
 async function closeSettings() {
   if (await saveSettings()) $<HTMLDialogElement>("#settings-dialog").close();
 }
@@ -583,6 +591,7 @@ async function boot() {
     notice(String(e));
   }
   const events = new EventSource("./api/events");
+  events.addEventListener("application_update", event => updatesUI.receive(JSON.parse((event as MessageEvent).data)));
   events.addEventListener("snapshot", (event) => {
     state = JSON.parse((event as MessageEvent).data);
     connected = true;

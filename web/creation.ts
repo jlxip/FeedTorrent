@@ -59,6 +59,10 @@ export class CreationUI {
     catch(e){this.error(e);}finally{this.busy=false;}
   }
   private changed(){this.edits++;this.error('');$('creation-status').textContent='Saving…';if(this.timer)clearTimeout(this.timer);this.timer=setTimeout(()=>void this.flush().catch(e=>this.error(e)),400);}
+  async flushPending(){
+    await this.typeChange; await this.flush();
+    if(this.current && this.edits!==this.saved)throw Error('Save the creation draft before updating.');
+  }
   private async flush(){
     if(this.timer){clearTimeout(this.timer);this.timer=null;}
     const d=this.current;if(!d||this.edits===this.saved)return this.queue;

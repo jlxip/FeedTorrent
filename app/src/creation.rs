@@ -89,6 +89,9 @@ impl Service {
     pub fn directory(&self) -> &Path {
         self.path.parent().expect("Draft data directory")
     }
+    pub fn backups_idle(&self) -> bool {
+        self.exports.lock().is_ok_and(|e| e.is_empty())
+    }
     pub fn idle(&self) -> bool {
         self.running.lock().is_ok_and(|r| r.is_empty())
     }
@@ -278,6 +281,16 @@ fn check(d: &DraftView, revision: u64) -> Result<()> {
     Ok(())
 }
 pub async fn command(State(app): State<Arc<App>>, Json(action): Json<Action>) -> Response {
+    if matches!(
+        action,
+        Action::CreateTorrent { .. } | Action::BindPost { .. }
+    ) && !app.updates.sensitive()
+    {
+        return api_error(
+            StatusCode::CONFLICT,
+            "An application update is waiting; finish existing operations or cancel the update",
+        );
+    }
     match dispatch(app, action).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => api_error(StatusCode::BAD_REQUEST, format!("{e:#}")),

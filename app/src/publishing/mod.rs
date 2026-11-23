@@ -331,6 +331,7 @@ enum Message {
         path: PathBuf,
         reply: oneshot::Sender<std::result::Result<serde_json::Value, String>>,
     },
+    PauseRenewals(bool, oneshot::Sender<()>),
     Stop,
 }
 #[derive(Clone)]
@@ -339,6 +340,24 @@ pub struct Client {
     pub view: watch::Receiver<View>,
 }
 impl Client {
+    pub async fn pause_renewals(&self, paused: bool) -> std::result::Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let mut message = Message::PauseRenewals(paused, tx);
+        loop {
+            match self.tx.try_send(message) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(pending)) => {
+                    message = pending;
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    return Err("Publishing service stopped".into())
+                }
+            }
+        }
+        rx.await
+            .map_err(|_| "Publishing service stopped".to_owned())
+    }
     pub async fn call(&self, command: Command) -> std::result::Result<serde_json::Value, String> {
         let (tx, rx) = oneshot::channel();
         self.tx

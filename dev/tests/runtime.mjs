@@ -28,6 +28,7 @@ export function sourceHash(directory='.'){
  return sha(JSON.stringify(entries));
 }
 const version=cmd=>{try{return execFileSync(cmd[0],cmd.slice(1),{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim()}catch{return null}};
-const record={command:process.argv,started_at:new Date().toISOString(),source_sha256:sourceHash(),node:process.version,rustc:version(['rustc','--version']),platform:process.platform,arch:process.arch,pid:process.pid,release_binary_sha256:existsSync('target/release/feedtorrent')?sha(readFileSync('target/release/feedtorrent')):null,state:'running'};
+const testedBinary=resolve(process.env.FEEDTORRENT_TEST_BINARY||'target/release/feedtorrent');
+const record={binary_path:testedBinary,command:process.argv,started_at:new Date().toISOString(),source_sha256:sourceHash(),node:process.version,rustc:version(['rustc','--version']),platform:process.platform,arch:process.arch,pid:process.pid,release_binary_sha256:existsSync(testedBinary)?sha(readFileSync(testedBinary)):null,state:'running'};
 const output=join(runRoot,`process-${process.pid}.json`);writeFileSync(output,JSON.stringify(record,null,2)+'\n');
 process.on('exit',code=>writeFileSync(output,JSON.stringify({...record,state:'finished',exit:code,seconds:(performance.now()-started)/1000},null,2)+'\n'));

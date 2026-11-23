@@ -265,6 +265,15 @@ async function flush(id:string){
   if(draft.error&&draft.dirty.size)draft.timer=setTimeout(()=>void flush(id),2000);
   if(!draft.error&&[...draft.dirty.keys()].some(field=>field!=='limit'||validLimit(draft)))void flush(id);
 }
+export async function flushReaderSettings(){
+  const deadline=Date.now()+10000;
+  for(const [id,draft] of drafts){
+    while(draft.busy&&Date.now()<deadline)await new Promise(r=>setTimeout(r,25));
+    if(draft.busy)throw Error('Post settings are still saving.');
+    await flush(id);
+    if(draft.dirty.size)throw Error(draft.error||'Fix post settings before updating.');
+  }
+}
 export function settingsButton(prefix:string){
   const button=document.createElement('button');button.type='button';button.id=prefix+'-settings';button.className='btn reader-settings';button.dataset.variant='ghost';button.dataset.size='icon-sm';button.setAttribute('aria-label','Post settings');button.hidden=true;
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');

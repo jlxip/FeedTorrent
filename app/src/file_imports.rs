@@ -272,6 +272,9 @@ fn response(result: Result<Value>) -> Response {
 pub async fn start(State(app): State<Arc<App>>, Json(input): Json<Start>) -> Response {
     response(
         async {
+            if !app.updates.sensitive() {
+                bail!("An application update is waiting; cancel it before starting another import");
+            }
             app.imports.cleanup(&app).await?;
             if input.files.is_empty() || input.files.len() > 100_000 {
                 bail!("Select between 1 and 100000 files");

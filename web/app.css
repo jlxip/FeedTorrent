@@ -397,3 +397,11 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 .file-menu > [data-popover] {position:absolute;right:0;left:auto;top:calc(100% + 4px);z-index:40;min-width:130px;max-width:calc(100vw - 32px);}
 .file-menu > [data-popover][aria-hidden="true"] {display:none;}
 @media (pointer:coarse) {.btn.icon-action {min-width:44px;width:44px;min-height:44px;height:44px;}}
+
+#application-update { margin-bottom: 1.25rem; }
+#application-update section { min-width: 0; }
+#application-update p { overflow-wrap: anywhere; }
+.application-update-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+#application-update-progress { width: 100%; accent-color: var(--primary); }
+#application-version { margin-bottom: 1rem; }
+#application-version-status { overflow-wrap: anywhere; }

@@ -15,6 +15,7 @@ mod publishing;
 mod publishing_keys;
 mod resources;
 mod storage;
+mod updates;
 mod webtorrent;
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
@@ -320,6 +321,7 @@ struct Job {
 }
 #[derive(Clone)]
 struct App {
+    updates: Arc<updates::Service>,
     creation: Arc<creation::Service>,
     imports: Arc<file_imports::Service>,
     publishing: publishing::Client,
@@ -1146,7 +1148,27 @@ async fn guard(State(app): State<Arc<App>>, request: Request<Body>, next: Next) 
             return api_error(StatusCode::FORBIDDEN, "Origin required");
         }
     }
+    let path = request.uri().path();
+    let tracked = api
+        && path != "/api/updates"
+        && (request.method() != axum::http::Method::GET || path == "/api/publishing/backup");
+    let lease = if tracked {
+        match app.updates.gate.acquire() {
+            Some(lease) => Some(lease),
+            None => {
+                return api_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "FeedTorrent is restarting for an application update",
+                )
+            }
+        }
+    } else {
+        None
+    };
     let mut response = next.run(request).await;
+    if let Some(lease) = lease {
+        response = response.map(|body| updates::gate::body(body, lease));
+    }
     response
         .headers_mut()
         .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
@@ -1178,11 +1200,25 @@ async fn snapshot(State(app): State<Arc<App>>) -> Json<Snapshot> {
 }
 async fn events(State(app): State<Arc<App>>) -> impl IntoResponse {
     let mut rx = app.view.clone();
+    let mut update = app.updates.view.clone();
     let stream = async_stream::stream! {
+        let initial = { rx.borrow_and_update().clone() };
+        yield Ok::<_,Infallible>(Event::default().event("snapshot").json_data(initial).unwrap());
+        let initial = { update.borrow_and_update().clone() };
+        yield Ok(Event::default().event("application_update").json_data(initial).unwrap());
         loop {
-            let value={ rx.borrow_and_update().clone() };
-            yield Ok::<_,Infallible>(Event::default().event("snapshot").json_data(value).unwrap());
-            if rx.changed().await.is_err() {break;}
+            tokio::select! {
+                changed=rx.changed()=>{
+                    if changed.is_err(){break;}
+                    let value={rx.borrow_and_update().clone()};
+                    yield Ok(Event::default().event("snapshot").json_data(value).unwrap());
+                },
+                changed=update.changed()=>{
+                    if changed.is_err(){break;}
+                    let value={update.borrow_and_update().clone()};
+                    yield Ok(Event::default().event("application_update").json_data(value).unwrap());
+                }
+            }
         }
     };
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
@@ -1366,6 +1402,10 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
             "text/javascript",
             include_bytes!("../../web/dist/file-imports.js"),
         ),
+        "updates.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("../../web/dist/updates.js"),
+        ),
         "main.js" => ("text/javascript", include_bytes!("../../web/dist/main.js")),
         "publishing.js" => (
             "text/javascript",
@@ -1436,6 +1476,7 @@ async fn asset(axum::extract::Path(name): axum::extract::Path<String>) -> Respon
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let update_isolated = args.isolated;
     let http_ports = local_http::ports(args.http_port, args.isolated)?;
     resources::prepare()?;
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?);
@@ -1599,7 +1640,10 @@ async fn main() -> Result<()> {
     let mut token = [0_u8; 32];
     getrandom::fill(&mut token).map_err(|e| anyhow!("Cannot create session token: {e}"))?;
     let token = token.iter().map(|b| format!("{b:02x}")).collect();
+    let updates = updates::Service::new(creation.directory(), update_isolated, address.port())?;
+    let mut restarting = updates.restart();
     let app = Arc::new(App {
+        updates: updates.clone(),
         imports: file_imports::Service::new(creation.directory())?,
         creation: creation.clone(),
         publishing: publishing.clone(),
@@ -1659,6 +1703,7 @@ async fn main() -> Result<()> {
     let router = Router::new()
         .route("/", get(index))
         .route("/{name}", get(asset))
+        .route("/api/updates", get(updates::view).post(updates::command))
         .route("/api/snapshot", get(snapshot))
         .route("/api/image", get(images::resource))
         .route("/api/events", get(events))
@@ -1690,10 +1735,14 @@ async fn main() -> Result<()> {
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app);
+    updates.start(update_isolated);
     println!("FeedTorrent {origin}/");
     if !Args::parse().no_open {
         let _ = desktop::open_browser(&format!("{origin}/"));
     }
+    let update_restart = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let restart_reason = update_restart.clone();
+    let closing_updates = updates.clone();
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
@@ -1701,16 +1750,19 @@ async fn main() -> Result<()> {
                 let mut terminate =
                     tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                         .expect("signal handler");
-                tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+                let restart = tokio::select! {_=tokio::signal::ctrl_c()=>false,_=terminate.recv()=>false,_=restarting.changed()=>true};
+                restart_reason.store(restart,std::sync::atomic::Ordering::SeqCst);
             }
             #[cfg(not(unix))]
             {
                 let _ = tokio::signal::ctrl_c().await;
             }
+            closing_updates.shutdown();
             creation.close().await;
             let _ = stop.send(());
         })
         .await?;
+    updates.shutdown();
     publishing.stop();
     thread
         .join()
@@ -1719,6 +1771,11 @@ async fn main() -> Result<()> {
         .join()
         .map_err(|_| anyhow!("Publishing worker panicked"))?;
     drop(lock);
+    if let Some(prepared) = updates.take_prepared() {
+        if update_restart.load(std::sync::atomic::Ordering::SeqCst) {
+            prepared.apply_and_exec()?;
+        }
+    }
     Ok(())
 }
 #[cfg(test)]

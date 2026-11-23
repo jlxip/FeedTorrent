@@ -55,7 +55,7 @@ export async function startApp(root, extra = [], options = {}) {
     defaults.splice(defaults.indexOf("--download-dir"), 2);
   if (options.defaultData && defaults.includes("--data-dir"))
     defaults.splice(defaults.indexOf("--data-dir"), 2);
-  const binary = resolve("target/release/feedtorrent");
+  const binary = resolve(options.binary || process.env.FEEDTORRENT_TEST_BINARY || "target/release/feedtorrent");
   const args = [...defaults, ...extra];
   const limits = options.descriptorLimits;
   // Apply limits immediately before exec: Node/libuv raises its own soft limit
