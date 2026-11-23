@@ -405,3 +405,6 @@ body > footer {display:flex;justify-content:space-between;gap:16px;flex-wrap:wra
 #application-update-progress { width: 100%; accent-color: var(--primary); }
 #application-version { margin-bottom: 1rem; }
 #application-version-status { overflow-wrap: anywhere; }
+
+/* Informational mode help must not block the modal close control on mobile. */
+#reader-post-mode-help, #post-mode-help {pointer-events:none;}

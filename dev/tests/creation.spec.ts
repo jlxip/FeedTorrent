@@ -91,7 +91,11 @@ test('native Folder selection retains nested metainfo originals and rejects inva
   const bytes=Buffer.from('abc'),meta=Buffer.from(bencode.encode({info:{name:'payload.txt',length:3,'piece length':16384,pieces:createHash('sha1').update(bytes).digest()}}));
   await writeFile(join(folder,'nested','VALID.TORRENT'),meta);await writeFile(join(folder,'note.txt'),bytes);
   app=await startApp(join(root,'app'));await page.goto(app.url);await page.locator('#post-add').click();
-  await page.locator('#creation-add-files').click();const chooser=page.waitForEvent('filechooser');await page.getByRole('menuitem',{name:'Folder…',exact:true}).click();await (await chooser).setFiles(folder);
+  await page.locator('#creation-add-files').click();const chooser=page.waitForEvent('filechooser');await page.getByRole('menuitem',{name:'Folder…',exact:true}).click();
+  expect(await (await chooser).element().getAttribute('id')).toBe('creation-add-files-folder');
+  // Keep the native picker assertion; the locator waits in the isolated world,
+  // avoiding the chooser handle's main-world input-listener race in WebKit.
+  await page.locator('#creation-add-files-folder').setInputFiles(folder);
   await expect(page.locator('#creation-entries')).toContainText('VALID.TORRENT');await expect(page.locator('#creation-status')).toHaveText('Draft saved');
   const id=new URL(page.url()).hash.split('/')[2],get=()=>app.api('/api/creation',{action:'get_draft',id});
   let d=await get();expect(d.draft.pages[0].entries.find((e:any)=>e.kind==='torrent').original.path).toEqual(['bundle','nested','VALID.TORRENT']);

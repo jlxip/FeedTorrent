@@ -536,7 +536,7 @@ $("#remove-form").onsubmit=async e=>{
   try{
     if(target.kind==='unpin')await command({type:'set_pin',id,pinned:false,revision:removalPreview.revision});
     else if(target.kind==='torrent')await command({type:'remove',id,delete_files:target.delete_files,revision:removalPreview.revision});
-    $<HTMLDialogElement>('#remove-dialog').close();if(!state?.transfers.some(t=>t.id===id))libraryUI.removed(id);
+    $<HTMLDialogElement>('#remove-dialog').close();libraryUI.removed(id);
     removing=null;removalTarget=null;removalPreview=null;notice('');
   }catch(error){$('#remove-error').textContent=String(error);if(/References changed/.test(String(error)))await refreshRemoval();}
   finally{removalBusy=false;$<HTMLButtonElement>('#remove-form button[type=submit]').disabled=!removalPreview||!connected;}

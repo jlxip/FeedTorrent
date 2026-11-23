@@ -154,7 +154,7 @@ test(
         await page.locator('#reader-post-mode').selectOption('mirror_all');
         await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
         await page.locator('#reader-settings-dialog [data-close]').click();
-        await expect(page.locator('#post-help')).toContainText('Mirror all');
+        await expect(page.locator('#post-help')).toContainText('Full recursive mirror');
         const archive = await fx.catalog(
             'Archive', [{path: ['old.txt'], data: Buffer.from('archived item')}],
             {archive: 1});

@@ -1061,3 +1061,6 @@ fn reading_is_cumulative_idempotent_filtered_before_paging_and_reversible_on_fai
         .entries
         .is_empty());
 }
+
+#[path = "latest_tests.rs"]
+mod latest_tests;

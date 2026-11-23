@@ -16,7 +16,7 @@ async function fixture(page, count=6) {
     kind:i===1?'catalog':'',post:null,
     files:[{name:'archive/data.bin',length:4294967296,verified:1460288881,ready:false},{name:'archive/notes.txt',length:1200,verified:1200,ready:true}],
   }));
-  const commands:any[]=[];let refuse=false;
+  const commands:any[]=[];let refuse=false,delayedRemoval=false;
   await page.addInitScript(()=>{
     class Events extends EventTarget {onerror:any=null;constructor(){super();(window as any).__libraryEvents=this;}}
     (window as any).EventSource=Events;
@@ -28,7 +28,7 @@ async function fixture(page, count=6) {
     if(c.type==='preview_removal'){await route.fulfill({json:{revision:'fixture-1',target:c.target,deleting:[c.target.id],shared:[],protected:[],bytes:4294967296,names:[],shared_names:[],protected_names:[],used_by:[]}});return;}
     if(c.type==='remove'&&refuse){await route.fulfill({status:503,json:{error:'Removal refused by fixture'}});return;}
     const t=snapshot.transfers.find(t=>t.id===c.id);
-    if(c.type==='remove')snapshot.transfers=snapshot.transfers.filter(t=>t.id!==c.id);
+    if(c.type==='remove'&&!delayedRemoval)snapshot.transfers=snapshot.transfers.filter(t=>t.id!==c.id);
     if(c.type==='pause'&&t){t.active=false;t.state='Paused';}
     if(c.type==='resume'&&t){t.active=true;t.state='Downloading';}
     if(c.type==='approve_transfer'&&t){t.held=false;t.state='Downloading';}
@@ -37,7 +37,7 @@ async function fixture(page, count=6) {
   const publish=async()=>page.evaluate(s=>{
     (window as any).__libraryEvents.dispatchEvent(new MessageEvent('snapshot',{data:JSON.stringify(s)}));
   },snapshot);
-  return {root,app,snapshot,commands,publish,refuse:(v:boolean)=>{refuse=v;}};
+  return {root,app,snapshot,commands,publish,refuse:(v:boolean)=>{refuse=v;},delayRemoval:()=>{delayedRemoval=true;}};
 }
 
 test('catalogue and compact live tooltip, responsive themes and torrent states',async({page,browser},info)=>{
@@ -166,5 +166,40 @@ test('detail retains commands, approval, file availability, removal failure and 
     f.snapshot.transfers=f.snapshot.transfers.filter(t=>t.id!==unknown.id);await f.publish();
     await expect(page.locator('#torrent-heading')).toHaveText('Torrent unavailable');
     await expect(page.locator('#torrent-toggle')).toBeHidden();await expect(page.locator('#torrent-content')).toBeHidden();
+  }finally{await cleanup(f.root,f.app);}
+});
+
+for(const action of ['remove','unpin'] as const)test(`${action} waits for the removal snapshot before leaving the torrent`,async({page})=>{
+  const f=await fixture(page);const t=f.snapshot.transfers[0];
+  try{
+    t.pinned=action==='unpin';f.delayRemoval();
+    await page.goto(f.app.url+'/#/library/'+t.id);
+    await page.locator('#torrent-more').click();
+    await page.locator(action==='unpin'?'#torrent-pin':'#torrent-remove').click();
+    await page.locator('#remove-form button[type=submit]').click();
+    await expect(page.locator('#remove-dialog')).toBeHidden();
+    expect(f.commands).toContainEqual(expect.objectContaining(action==='unpin'
+      ?{type:'set_pin',id:t.id,pinned:false}:{type:'remove',id:t.id}));
+    await expect(page).toHaveURL(new RegExp('#/library/'+t.id+'$'));
+    await expect(page.locator('#torrent-heading')).toHaveText(t.name);
+    f.snapshot.transfers=f.snapshot.transfers.filter(item=>item.id!==t.id);await f.publish();
+    await expect(page).toHaveURL(/#\/library$/);
+    await expect(page.locator(`[data-id="${t.id}"]`)).toHaveCount(0);
+  }finally{await cleanup(f.root,f.app);}
+});
+
+test('delayed removal preserves navigation to another torrent',async({page})=>{
+  const f=await fixture(page);const [removed,other]=f.snapshot.transfers;
+  try{
+    f.delayRemoval();await page.goto(f.app.url+'/#/library/'+removed.id);
+    await page.locator('#torrent-more').click();await page.locator('#torrent-remove').click();
+    await page.locator('#remove-form button[type=submit]').click();
+    await expect(page.locator('#remove-dialog')).toBeHidden();
+    await page.locator('#library-back').click();
+    await page.locator(`[data-id="${other.id}"] .transfer-name`).click();
+    await expect(page.locator('#torrent-heading')).toHaveText(other.name);
+    f.snapshot.transfers=f.snapshot.transfers.filter(item=>item.id!==removed.id);await f.publish();
+    await expect(page).toHaveURL(new RegExp('#/library/'+other.id+'$'));
+    await expect(page.locator('#torrent-heading')).toHaveText(other.name);
   }finally{await cleanup(f.root,f.app);}
 });

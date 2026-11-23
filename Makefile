@@ -66,7 +66,7 @@ test-build: $(NPM_READY) root
 	node dev/tests/make-entry.mjs
 	python3 dev/tests/validation-env.py
 	python3 dev/tests/promote.py
-	node --test dev/tests/package.test.mjs dev/tests/release.test.mjs dev/tests/pre-commit.test.mjs dev/tests/test-deps.test.mjs dev/tests/disk-image.test.mjs dev/tests/test-ports.test.mjs dev/tests/program-version.test.mjs dev/tests/webtorrent-fixture.test.mjs
+	node --test dev/tests/application-updates-fixture.test.mjs dev/tests/package.test.mjs dev/tests/release.test.mjs dev/tests/pre-commit.test.mjs dev/tests/test-deps.test.mjs dev/tests/disk-image.test.mjs dev/tests/test-ports.test.mjs dev/tests/program-version.test.mjs dev/tests/webtorrent-fixture.test.mjs
 test-integration: test-ports
 	$(MAKE) test-integration-body
 test-integration-body: build test-deps

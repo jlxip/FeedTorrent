@@ -38,6 +38,7 @@ export class LibraryUI {
   private state:Snapshot|null=null;
   private connected=false;
   private route='';
+  private awaitingRemoval:string|null=null;
   private restoring='';
   private pendingOrigin:string|null=null;
   private sidebarRoute='';
@@ -89,7 +90,7 @@ export class LibraryUI {
     this.save();location.hash=id?`#/library/${encodeURIComponent(id)}`:'#/library';
   }
   removed(id:string) {
-    if(this.currentId()===id){history.replaceState(history.state,'','#/library');this.render(this.state,this.connected);}
+    if(this.currentId()===id){this.awaitingRemoval=id;this.render(this.state,this.connected);}
   }
   private currentId() {const parts=location.hash.split('/');return parts[1]==='library'?(torrentRoute()?.id||parts[2]||''):'';}
   private current() {return this.state?.transfers.find(t=>t.id===this.currentId());}
@@ -102,6 +103,11 @@ export class LibraryUI {
   }
   render(state:Snapshot|null,connected:boolean) {
     this.state=state;this.connected=connected;
+    if(this.awaitingRemoval&&this.currentId()!==this.awaitingRemoval)this.awaitingRemoval=null;
+    // A command can finish before the cached snapshot reflects its deletion.
+    if(this.awaitingRemoval&&connected&&state?.ready&&!state.transfers.some(t=>t.id===this.awaitingRemoval)){
+      this.awaitingRemoval=null;history.replaceState(history.state,'','#/library');
+    }
     const route=location.hash,active=route.split('/')[1]==='library',catalog=route==='#/library';
     if(route!==this.route){
       this.hideTooltip();this.route=route;this.restoring=active?route:'';

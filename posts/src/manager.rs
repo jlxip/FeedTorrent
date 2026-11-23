@@ -6,6 +6,8 @@ use feedtorrent_bep::{
 };
 use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[path = "latest.rs"]
+mod latest;
 #[path = "news.rs"]
 mod news;
 #[path = "renewal.rs"]
@@ -114,7 +116,7 @@ impl PostManager {
         }
         let state: Checkpoint = serde_json::from_slice(bytes).map_err(err)?;
         let legacy = state.version == 1;
-        if !matches!(state.version, 1 | 2) {
+        if !matches!(state.version, 1..=3) {
             return Err(err("Unsupported post checkpoint version"));
         }
         for (id, s) in &state.posts {
@@ -170,7 +172,12 @@ impl PostManager {
             }
         }
         m.state = state;
+        m.validate_latest()?;
         m.initialize_news(legacy)?;
+        if m.state.version != 3 {
+            m.state.version = 3;
+            m.dirty = true;
+        }
         Ok(m)
     }
     pub fn checkpoint(&self) -> Result<Vec<u8>> {
@@ -275,7 +282,10 @@ impl PostManager {
         self.state
             .references
             .iter()
-            .filter(|(post, _)| self.followed(post))
+            .filter(|(post, _)| {
+                self.followed(post)
+                    && self.state.posts[*post].config.mode != Mode::LatestRecursiveMirror
+            })
             .flat_map(|(post, refs)| {
                 refs.iter().map(move |(id, r)| {
                     let parent = match &r.origin {
@@ -533,6 +543,12 @@ impl PostManager {
         let Some(s) = self.state.posts.get(post) else {
             return false;
         };
+        if s.config.mode == Mode::LatestRecursiveMirror {
+            return s.followed
+                && (self.latest_assets(post).0.contains(id)
+                    || s.manual_catalogs.contains(id)
+                    || self.manual_path_needed(post, id));
+        }
         s.followed
             && (s.config.mode != Mode::CurrentCatalog
                 || self.state.approvals.contains(id)
@@ -654,7 +670,17 @@ impl PostManager {
             .unwrap()
             .manual_items
             .insert((catalog.into(), index));
+        self.state
+            .manual_downloads
+            .entry(post.into())
+            .or_default()
+            .insert(id.clone());
         self.dirty = true;
+        self.state
+            .resolved_manual
+            .entry(post.into())
+            .or_default()
+            .insert((catalog.into(), index));
         self.approve_once(&id)?;
         Ok(id)
     }
@@ -787,7 +813,7 @@ impl PostManager {
                     .as_ref()
                     .is_some_and(|m| self.allowed(post, id, m.total_length()));
         }
-        let wanted = s.config.mode == Mode::MirrorAll || self.state.approvals.contains(id);
+        let wanted = self.content_wanted(post, id);
         wanted
             && !self
                 .content_failures
@@ -1039,11 +1065,28 @@ impl PostManager {
                 }
                 let s = &self.state.posts[&post];
                 let manual = s.manual_items.contains(&(catalog.clone(), index));
+                if manual {
+                    self.state
+                        .resolved_manual
+                        .entry(post.clone())
+                        .or_default()
+                        .insert((catalog.clone(), index));
+                    self.state
+                        .manual_downloads
+                        .entry(post.clone())
+                        .or_default()
+                        .insert(id.clone());
+                    self.dirty = true;
+                }
                 let automatic = match row.kind.as_str() {
                     "catalog" => s.config.mode != Mode::CurrentCatalog,
-                    "torrent" => s.config.mode == Mode::MirrorAll,
+                    "torrent" => {
+                        matches!(s.config.mode, Mode::MirrorAll | Mode::LatestRecursiveMirror)
+                    }
                     _ => false,
-                };
+                } && (s.config.mode != Mode::LatestRecursiveMirror
+                    || self.latest_assets(&post).0.contains(&catalog)
+                    || (row.kind == "catalog" && self.manual_path_needed(&post, &id)));
                 if matches!(row.kind.as_str(), "catalog" | "torrent")
                     && (manual || automatic)
                     && s.followed
@@ -1171,6 +1214,9 @@ impl PostManager {
                     self.queue_approval(&post, &id);
                 }
             }
+            if mode == Mode::LatestRecursiveMirror && !desired {
+                continue;
+            }
             let v = self.visits.get_mut(&key).unwrap();
             if !v.ready {
                 continue;
@@ -1206,8 +1252,20 @@ impl PostManager {
                     .contains(&(id.clone(), index));
                 let wanted = manual
                     || match row.kind.as_str() {
-                        "catalog" => mode != Mode::CurrentCatalog,
-                        "torrent" => mode == Mode::MirrorAll,
+                        "catalog" => {
+                            mode != Mode::CurrentCatalog
+                                && (mode != Mode::LatestRecursiveMirror
+                                    || self.latest_assets(&post).0.contains(&id)
+                                    || row
+                                        .infohash
+                                        .as_ref()
+                                        .is_some_and(|child| self.manual_path_needed(&post, child)))
+                        }
+                        "torrent" => {
+                            mode == Mode::MirrorAll
+                                || (mode == Mode::LatestRecursiveMirror
+                                    && self.latest_assets(&post).0.contains(&id))
+                        }
                         _ => false,
                     };
                 let existing = row.infohash.as_ref().is_some_and(|h| {
@@ -1241,6 +1299,7 @@ impl PostManager {
                 }
             }
         }
+        self.update_latest();
     }
     pub fn cancel(&mut self, work: WorkId) {
         if let Some(w) = self.pending.remove(&work) {
@@ -1287,10 +1346,7 @@ impl PostManager {
                         .is_some_and(|v| v.trusted)
                         && (self.desired(post, id) || self.transfer_states.contains_key(id))
                 }
-                Role::Content => {
-                    self.state.posts[post].config.mode == Mode::MirrorAll
-                        || self.state.approvals.contains(id)
-                }
+                Role::Content => self.content_wanted(post, id),
             }
     }
     pub fn work_is_current(&self, id: WorkId) -> bool {
@@ -1450,7 +1506,9 @@ impl PostManager {
                         if !e.error.is_empty() {
                             needs = true;
                         }
-                        if s.config.mode == Mode::MirrorAll && e.kind == "torrent" {
+                        if matches!(s.config.mode, Mode::MirrorAll | Mode::LatestRecursiveMirror)
+                            && e.kind == "torrent"
+                        {
                             match e
                                 .infohash
                                 .as_ref()

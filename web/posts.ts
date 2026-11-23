@@ -243,7 +243,7 @@ export class PostsUI {
     if(this.trail.length>1&&c?.name)this.trail[this.trail.length-1].name=c.name;
     this.position.patch({catalog:target,offset:this.offset,trail:this.trail});
     const age=f.last_checked_ms===null?'Not checked yet':`${Math.floor(Math.max(0,(state?.post_time_ms||0)-f.last_checked_ms)/60000)} min since check`;
-    $('post-help').textContent=[connected?f.state:'Server disconnected',{current_catalog:'Current catalog',mirror_catalogs:'Mirror catalogs',mirror_all:'Mirror all'}[f.mode],f.mode==='current_catalog'?'':f.mirror_status,`${f.update_peers} update peers`,age,c?`${c.state} · ${size(c.total)}`:''].filter(Boolean).join(' · ');
+    $('post-help').textContent=[connected?f.state:'Server disconnected',{current_catalog:'Follow new',mirror_catalogs:'Mirror old',latest_recursive_mirror:'Latest recursive mirror',mirror_all:'Full recursive mirror'}[f.mode],f.mode==='current_catalog'?'':f.mirror_status,`${f.update_peers} update peers`,age,c?`${c.state} · ${size(c.total)}`:''].filter(Boolean).join(' · ');
     $('post-info').setAttribute('aria-label',`About ${f.name}`);
     const latest=f.head&&f.head!==target?f.catalogs.find(c=>c.id===f.head):null;
     $('post-new-version').hidden=!latest;
@@ -300,7 +300,7 @@ export class PostsUI {
     const latest=f?.head&&f.head!==this.catalogId?f.catalogs.find(c=>c.id===f.head):null,approval=latest?.state==='Awaiting approval'?latest:c;
     const age=f?.last_checked_ms==null?'Not checked yet':`${Math.floor(Math.max(0,(this.state?.post_time_ms||0)-f.last_checked_ms)/60000)} min since check`;
     this.reader.header.update({pin:this.host.pin,protectedNames:t?.protected_by?.map(id=>this.state?.transfers.find(t=>t.id===id)?.name||'catalog'),title:this.trail.length>1?(c?.name||f?.name||'Page'):(f?.name||'Post unavailable'),id:this.catalogId,t,connected:this.connected,total:c?.total,
-      error:f?.error||c?.error||this.readError,source:f?.name,info:f?`${{current_catalog:'Current catalog',mirror_catalogs:'Mirror catalogs',mirror_all:'Mirror all'}[f.mode]} · ${age}`:'',action:cmd=>this.host.call(cmd),remove:()=>this.host.remove(this.catalogId),
+      error:f?.error||c?.error||this.readError,source:f?.name,info:f?`${{current_catalog:'Follow new',mirror_catalogs:'Mirror old',latest_recursive_mirror:'Latest recursive mirror',mirror_all:'Full recursive mirror'}[f.mode]} · ${age}`:'',action:cmd=>this.host.call(cmd),remove:()=>this.host.remove(this.catalogId),
       download:!t&&f&&this.catalogId?()=>this.host.call({type:'open_catalog',post:f.id,id:this.catalogId}):undefined,
       approval:approval?.state==='Awaiting approval'?{id:approval.id,ready:!!this.state?.transfers.find(t=>t.id===approval.id)?.files.length}:undefined});
     this.reader.breadcrumbs(this.trail,href=>{const index=this.trail.findIndex(c=>c.href===href);if(index>=0)this.pendingTrail=this.trail.slice(0,index+1);});

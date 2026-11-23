@@ -293,3 +293,5 @@ try {
 
 // Keep the independent author-offline renewal regression in the native suite.
 if (!process.exitCode) await import('./post-renewal.mjs');
+
+if (!process.exitCode) await import("./latest-mirror.mjs");

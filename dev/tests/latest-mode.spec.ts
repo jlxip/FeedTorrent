@@ -1,0 +1,42 @@
+import {test,expect} from '@playwright/test';
+import {join} from 'node:path';
+import {generateKeyPairSync} from 'node:crypto';
+import {cleanup,startApp,temporary} from './helpers.mjs';
+const labels=['Follow new','Mirror old','Latest recursive mirror','Full recursive mirror'];
+test('latest mode labels, help, draft, autosave, mobile and reload',async({page},info)=>{
+ const root=await temporary();let app;
+ try{
+  app=await startApp(join(root,'app'));
+  const uri='magnet:?xs=urn:btpk:'+generateKeyPairSync('ed25519').publicKey.export({type:'spki',format:'der'}).subarray(-32).toString('hex');
+  await page.goto(app.url);
+  await page.locator('#open-button').click();await page.locator('#magnet').fill(uri);
+  await page.locator('#magnet-form button[type=submit]').click();
+  await expect(page.locator('#post-mode option')).toHaveText(labels);
+  await expect(page.locator('#post-mode')).toHaveValue('current_catalog');
+  await page.locator('#post-mode').selectOption('latest_recursive_mirror');
+  await page.locator('#post-dialog [data-close]').click();
+  await page.locator('#open-button').click();await page.locator('#magnet').fill(uri);
+  await page.locator('#magnet-form button[type=submit]').click();
+  await expect(page.locator('#post-mode')).toHaveValue('latest_recursive_mirror');
+  await page.locator('#post-submit').click();
+  await expect(page.locator('#post-help')).toContainText('Latest recursive mirror');
+  await page.locator('#post-settings').click();
+  await expect(page.locator('#reader-post-mode option')).toHaveText(labels);
+  await expect(page.locator('#reader-post-mode')).toHaveValue('latest_recursive_mirror');
+  await page.setViewportSize({width:320,height:720});
+  const help=page.locator('[data-help="reader-post-mode-help"]');await help.focus();
+  await expect(page.locator('#reader-post-mode-help')).toBeVisible();
+  await expect(page.locator('#reader-post-mode-help')).toContainText('once the new version is complete');
+  await page.keyboard.press('Escape');await expect(page.locator('#reader-post-mode-help')).toBeHidden();
+  await help.click();await expect(page.locator('#reader-post-mode-help')).toBeVisible();
+  const bounds=await page.locator('#reader-post-mode-help').boundingBox();expect(bounds!.x).toBeGreaterThanOrEqual(0);expect(bounds!.x+bounds!.width).toBeLessThanOrEqual(321);
+  await page.screenshot({path:info.outputPath('latest-mode-320.png'),fullPage:true});
+  await help.click();await page.locator('#reader-post-mode').selectOption('mirror_all');
+  await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
+  await page.locator('#reader-post-mode').selectOption('latest_recursive_mirror');
+  await expect(page.locator('#reader-settings-status')).toHaveText('Saved');
+  await page.locator('#reader-settings-dialog [data-close]').click();await page.reload();
+  await page.locator('#post-settings').click();await expect(page.locator('#reader-post-mode')).toHaveValue('latest_recursive_mirror');
+  expect((await app.api()).posts[0].mode).toBe('latest_recursive_mirror');
+ }finally{await cleanup(root,app);}
+});

@@ -12,7 +12,7 @@ export async function releaseFixture(root){
  execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=FeedTorrent isolated update fixture','-addext','subjectAltName=IP:127.0.0.1','-keyout',caKey,'-out',ca],{stdio:'ignore'});
  execFileSync('openssl',['req','-new','-newkey','rsa:2048','-nodes','-subj','/CN=FeedTorrent fixture server','-keyout',key,'-out',csr],{stdio:'ignore'});
  await writeFile(extensions,'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1\n');
- execFileSync('openssl',['x509','-req','-in',csr,'-CA',ca,'-CAkey',caKey,'-CAcreateserial','-out',cert,'-days','1','-extfile',extensions],{stdio:'ignore'});
+ execFileSync('openssl',['x509','-req','-in',csr,'-CA',ca,'-CAkey',caKey,'-CAserial',join(root,'ca.srl'),'-CAcreateserial','-out',cert,'-days','1','-extfile',extensions],{stdio:'ignore'});
  const interpreters=await mkdtemp(join(tmpdir(),'ft-update-'));
  const state={requests:[],assets:new Map(),releases:[],rate:false,slow:false,delay:0};
  const server=createServer({key:await readFile(key),cert:await readFile(cert)},async(req,res)=>{

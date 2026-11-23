@@ -11,6 +11,10 @@ pub enum Target {
     Unpin {
         id: String,
     },
+    /// Internal, already committed ownership replacement; never a manual removal.
+    Mirror {
+        id: String,
+    },
     #[default]
     Nothing,
     Torrent {
@@ -43,6 +47,8 @@ pub struct Graph {
     pub revision: u64,
     pub next_job: u64,
     pub roots: BTreeMap<String, BTreeSet<String>>,
+    #[serde(default)]
+    pub exact_roots: BTreeSet<String>,
     pub edges: BTreeMap<String, BTreeSet<String>>,
     pub pins: BTreeSet<String>,
     pub assets: BTreeSet<String>,
@@ -55,6 +61,7 @@ impl Default for Graph {
             revision: 1,
             next_job: 1,
             roots: BTreeMap::new(),
+            exact_roots: BTreeSet::new(),
             edges: BTreeMap::new(),
             pins: BTreeSet::new(),
             assets: BTreeSet::new(),
@@ -94,8 +101,15 @@ impl Graph {
                 bail!("Invalid reference identifier")
             }
         }
-        for root in self.roots.keys() {
+        for root in self.roots.keys().chain(&self.exact_roots) {
             Self::check_root(root)?;
+        }
+        if self
+            .exact_roots
+            .iter()
+            .any(|root| !self.roots.contains_key(root))
+        {
+            bail!("Explicit reference root unavailable")
         }
         for (id, j) in &self.jobs {
             if *id == 0
@@ -107,7 +121,8 @@ impl Graph {
             }
             match &j.target {
                 Target::Post { post_kind, id } => Self::check_root(&format!("{post_kind}:{id}"))?,
-                Target::Unpin { id } | Target::Torrent { id, .. } if valid_id(id) => {}
+                Target::Unpin { id } | Target::Torrent { id, .. } | Target::Mirror { id }
+                    if valid_id(id) => {}
                 _ => bail!("Invalid cleanup target"),
             }
         }
@@ -200,20 +215,76 @@ impl Graph {
         }
         seen
     }
+    fn root_assets(&self, root: &str, ids: &BTreeSet<String>) -> BTreeSet<String> {
+        if self.exact_roots.contains(root) {
+            ids.clone()
+        } else {
+            self.closure(ids.iter().cloned())
+        }
+    }
     fn reachable_without(&self, target: &Target) -> BTreeSet<String> {
-        let root = target.root();
-        let mut seeds = vec![];
-        for (key, ids) in &self.roots {
-            if Some(key) != root.as_ref() {
-                seeds.extend(ids.iter().cloned());
+        let excluded = target.root();
+        let mut live = BTreeSet::new();
+        for (root, ids) in &self.roots {
+            if Some(root) != excluded.as_ref() {
+                live.extend(self.root_assets(root, ids));
             }
         }
         for id in &self.pins {
-            if !matches!(target,Target::Unpin{id:excluded} if excluded==id) {
-                seeds.push(id.clone());
+            if !matches!(target, Target::Unpin { id: removed } if removed == id) {
+                live.extend(self.closure([id.clone()]));
             }
         }
-        self.closure(seeds)
+        live
+    }
+    /// Changing ownership and journaling collection is one durable store mutation.
+    pub fn replace_mirror(
+        &mut self,
+        id: &str,
+        mut assets: BTreeSet<String>,
+        collect: bool,
+    ) -> Result<()> {
+        let root = format!("followed:{id}");
+        self.ensure_root(&root)?;
+        if assets.iter().any(|h| !valid_id(h)) {
+            bail!("Invalid mirror reference")
+        }
+        let old = self.root_assets(&root, &self.roots[&root]);
+        if !collect {
+            assets.extend(old.iter().cloned());
+        }
+        let changed = !self.exact_roots.contains(&root) || self.roots[&root] != assets;
+        self.exact_roots.insert(root.clone());
+        self.roots.insert(root, assets.clone());
+        let remaining: BTreeSet<_> = old.difference(&assets).cloned().collect();
+        if !remaining.is_empty() {
+            if let Some(job) = self
+                .jobs
+                .values_mut()
+                .find(|j| matches!(&j.target,Target::Mirror{id: p} if p == id))
+            {
+                job.remaining.extend(remaining);
+            } else {
+                let job = self.next_job;
+                self.next_job = job
+                    .checked_add(1)
+                    .context("Cleanup identifiers exhausted")?;
+                self.jobs.insert(
+                    job,
+                    Cleanup {
+                        id: job,
+                        target: Target::Mirror { id: id.into() },
+                        detached: true,
+                        remaining,
+                        error: String::new(),
+                    },
+                );
+            }
+        }
+        if changed {
+            self.bump()?;
+        }
+        Ok(())
     }
     pub fn protected_by(&self, id: &str) -> Vec<String> {
         self.pins
@@ -225,22 +296,25 @@ impl Graph {
     pub fn used_by(&self, id: &str) -> Vec<String> {
         self.roots
             .iter()
-            .filter(|(_, ids)| self.closure(ids.iter().cloned()).contains(id))
+            .filter(|(root, ids)| self.root_assets(root, ids).contains(id))
             .map(|(root, _)| root.clone())
             .collect()
     }
     pub fn preview(&self, target: Target) -> Result<Preview> {
         let affected = match &target {
-            Target::Post { .. } => {
+            Target::Post { post_kind, id } => {
                 let root = target.root().unwrap();
                 Self::check_root(&root)?;
-                self.closure(
-                    self.roots
-                        .get(&root)
-                        .context("Post unavailable")?
-                        .iter()
-                        .cloned(),
-                )
+                let mut affected =
+                    self.root_assets(&root, self.roots.get(&root).context("Post unavailable")?);
+                if post_kind == "followed" {
+                    for job in self.jobs.values() {
+                        if matches!(&job.target, Target::Mirror { id: post } if post == id) {
+                            affected.extend(job.remaining.iter().cloned());
+                        }
+                    }
+                }
+                affected
             }
             Target::Unpin { id } => {
                 if !self.pins.contains(id) {
@@ -257,7 +331,7 @@ impl Graph {
                 };
                 BTreeSet::from([id.clone()])
             }
-            Target::Nothing => bail!("Invalid removal target"),
+            Target::Nothing | Target::Mirror { .. } => bail!("Invalid removal target"),
         };
         let live = self.reachable_without(&target);
         let mut out = Preview {
@@ -334,7 +408,9 @@ impl Graph {
         }
         match &target {
             Target::Post { .. } => {
-                self.roots.remove(&target.root().unwrap());
+                let root = target.root().unwrap();
+                self.roots.remove(&root);
+                self.exact_roots.remove(&root);
             }
             Target::Unpin { id } => {
                 self.pins.remove(id);
@@ -357,6 +433,8 @@ impl Graph {
             return false;
         };
         j.detached
+            && (!matches!(&j.target, Target::Mirror { id: post }
+                if !self.exact_roots.contains(&format!("followed:{post}"))))
             && j.remaining.contains(id)
             && self.protected_by(id).is_empty()
             && (matches!(j.target, Target::Torrent { .. })
@@ -389,6 +467,98 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn latest_exact_roots_collect_history_but_preserve_pin_and_other_posts() {
+        let mut g = Graph::default();
+        let post = h('a');
+        let followed = format!("followed:{post}");
+        g.claim(&followed, &h('1'), None).unwrap();
+        g.claim(&followed, &h('2'), None).unwrap();
+        g.link(&h('2'), &h('1')).unwrap();
+        g.link(&h('1'), &h('3')).unwrap();
+        g.register_asset(&h('3')).unwrap();
+        g.replace_mirror(&post, BTreeSet::from([h('2')]), false)
+            .unwrap();
+        assert!(
+            g.roots[&followed].contains(&h('3')),
+            "first transition conserves existing closure"
+        );
+        assert!(g.jobs.is_empty());
+        let revision = g.revision;
+        g.replace_mirror(&post, BTreeSet::from([h('2')]), true)
+            .unwrap();
+        assert!(g.revision > revision);
+        assert_eq!(g.used_by(&h('1')), Vec::<String>::new());
+        let job = *g.jobs.keys().next().unwrap();
+        assert!(g.may_delete(job, &h('1')));
+        g.pin(&h('1')).unwrap();
+        assert!(!g.may_delete(job, &h('1')));
+        assert!(
+            !g.may_delete(job, &h('3')),
+            "Pin still inherits catalog edges"
+        );
+        g.pins.clear();
+        g.claim(&root('b'), &h('1'), None).unwrap();
+        assert!(!g.may_delete(job, &h('1')));
+        assert!(!g.may_delete(job, &h('3')));
+        let bytes = serde_json::to_vec(&g).unwrap();
+        let restored: Graph = serde_json::from_slice(&bytes).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(restored.exact_roots, g.exact_roots);
+        assert!(!restored.may_delete(job, &h('1')));
+    }
+    #[test]
+    fn latest_replacement_rechecks_new_claims_and_removal_uses_exact_membership() {
+        let mut g = Graph::default();
+        let post = h('a');
+        let followed = format!("followed:{post}");
+        g.claim(&followed, &h('1'), None).unwrap();
+        g.replace_mirror(&post, BTreeSet::from([h('2')]), true)
+            .unwrap();
+        let job = *g.jobs.keys().next().unwrap();
+        assert!(g.may_delete(job, &h('1')));
+        g.replace_mirror(&post, BTreeSet::from([h('1'), h('2')]), false)
+            .unwrap();
+        assert!(!g.may_delete(job, &h('1')));
+        g.link(&h('2'), &h('3')).unwrap();
+        g.register_asset(&h('3')).unwrap();
+        let preview = g
+            .preview(Target::Post {
+                post_kind: "followed".into(),
+                id: post,
+            })
+            .unwrap();
+        assert!(!preview.deleting.contains(&h('3')));
+        g.exact_roots.clear();
+        assert!(!g.may_delete(job, &h('1')));
+        assert!(g.preview(Target::Mirror { id: h('a') }).is_err());
+    }
+    #[test]
+    fn deleting_latest_post_captures_pending_automatic_collection() {
+        let mut g = Graph::default();
+        let post = h('a');
+        let followed = format!("followed:{post}");
+        for id in [h('1'), h('2')] {
+            g.claim(&followed, &id, None).unwrap();
+        }
+        g.replace_mirror(&post, BTreeSet::from([h('2')]), true)
+            .unwrap();
+        let target = Target::Post {
+            post_kind: "followed".into(),
+            id: post,
+        };
+        let preview = g.preview(target.clone()).unwrap();
+        assert_eq!(
+            preview.deleting,
+            BTreeSet::from([h('1'), h('2')])
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        let job = g.begin(target, &preview.revision).unwrap();
+        g.detach(job).unwrap();
+        assert!(g.may_delete(job, &h('1')));
+        assert!(g.may_delete(job, &h('2')));
+    }
     fn h(c: char) -> String {
         c.to_string().repeat(40)
     }
@@ -624,6 +794,46 @@ impl Engine {
                 next.ensure_root(&root)?;
             }
         }
+        let latest = self
+            .posts
+            .as_ref()
+            .filter(|h| h.available())
+            .map(|h| h.manager.latest_retention());
+        // Missing post state cannot authorize canceling durable cleanup intents.
+        if let Some(latest) = &latest {
+            let exact: BTreeSet<_> = latest
+                .iter()
+                .map(|l| format!("followed:{}", l.post))
+                .collect();
+            let exact_count = next.exact_roots.len();
+            next.exact_roots.retain(|root| exact.contains(root));
+            if next.exact_roots.len() != exact_count {
+                next.bump()?;
+            }
+            let canceled: Vec<_> = next
+                .jobs
+                .iter()
+                .filter_map(|(job, j)| match &j.target {
+                    lifecycle::Target::Mirror { id }
+                        if !exact.contains(&format!("followed:{id}")) =>
+                    {
+                        Some((*job, id.clone(), j.remaining.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (job, post, remaining) in canceled {
+                let root = format!("followed:{post}");
+                if followed.iter().any(|p| p.id == post) && !next.blocked(&root) {
+                    for id in remaining {
+                        next.claim(&root, &id, None)?;
+                    }
+                }
+                if next.jobs.remove(&job).is_some() {
+                    next.bump()?;
+                }
+            }
+        }
         if let Some(host) = &self.posts {
             for (parent, child) in host.manager.retention_edges() {
                 next.link(&parent, &child)?;
@@ -634,6 +844,15 @@ impl Engine {
                     next.claim(&root, &id, parent.as_deref())?;
                 }
             }
+        }
+        for plan in latest.unwrap_or_default() {
+            let root = format!("followed:{}", plan.post);
+            if next.blocked(&root) {
+                continue;
+            }
+            let mut assets = plan.assets;
+            assets.extend(next.closure(plan.manual));
+            next.replace_mirror(&plan.post, assets, plan.collect)?;
         }
         if !next.initialized {
             for record in &self.store.records {
@@ -856,7 +1075,24 @@ impl Engine {
             .retention
             .jobs
             .values()
-            .find(|j| j.detached && j.error.is_empty())
+            .find(|j| {
+                j.detached
+                    && j.error.is_empty()
+                    && match &j.target {
+                        lifecycle::Target::Mirror { id } => {
+                            self.publication_view
+                                .as_ref()
+                                .is_some_and(|v| v.borrow().error.is_empty())
+                                && self.posts.as_ref().is_some_and(|h| {
+                                    h.manager
+                                        .latest_retention()
+                                        .iter()
+                                        .any(|p| &p.post == id && p.collect)
+                                })
+                        }
+                        _ => true,
+                    }
+            })
             .cloned()
         else {
             return;

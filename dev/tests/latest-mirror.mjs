@@ -1,0 +1,82 @@
+// Real latest-only mirror, recursive payloads, restart and physical collection.
+// Explicit Refresh drives DHT updates; the posts suite independently covers BEP50.
+import assert from 'node:assert/strict';
+import {access,chmod,stat,readFile,writeFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {postFixture,magnet} from './post-fixtures.mjs';
+import {cleanup,startApp,temporary,wait,seed} from './helpers.mjs';
+const root=await temporary();let app,fx,disk,blockedPath,blockedMode;
+const mode='latest_recursive_mirror';
+const exists=async path=>{try{await access(path);return true;}catch{return false;}};
+try {
+ fx=await postFixture(root);
+ const args=['--dht-bootstrap',fx.bootstrap], appRoot=join(root,'app');
+ app=await startApp(appRoot,args);
+ const config={name:'Latest disk',mode,automatic_limit:32768};
+ await app.command({type:'follow_post',uri:fx.postMagnet,config});
+ await wait(async()=>{const s=await app.api();return s.transfers.some(t=>t.id===fx.content.id&&t.progress===1)&&!s.cleanup.length;},'initial latest disk mirror',60000);
+ const first=(await app.api()).transfers.find(t=>t.id===fx.content.id);
+ assert.equal(first.pinned,false);
+ disk=await seed(join(root,'replacement-disk'),[50003],{tracker:true,announce:[fx.tr.http]});
+ const nested=await fx.catalog('Nested disk',[{path:['disk.torrent'],data:Buffer.from(disk.bytes)}]);
+ const next=await fx.catalog('Next disk',[{path:['nested.torrent'],data:nested.bytes}],{prev:magnet(fx.head.id)});
+ await fx.publish(next);await app.command({type:'refresh_post',id:fx.postId});
+ await wait(async()=>{const s=await app.api();return s.posts[0]?.head===next.id&&s.transfers.some(t=>t.id===disk.id&&t.state==='Awaiting approval');},'new recursive disk held by per-torrent limit',60000);
+ assert((await app.api()).transfers.some(t=>t.id===fx.content.id));assert(await exists(first.save_path));
+ assert((await app.api()).transfers.some(t=>t.id===fx.head.id));
+ await app.stop();app=await startApp(appRoot,args);
+ await wait(async()=>(await app.api()).transfers.some(t=>t.id===disk.id&&t.state==='Awaiting approval'),'restore held candidate',60000);
+ assert(await exists(first.save_path));
+ await app.command({type:'approve_transfer',id:disk.id});
+ await wait(async()=>{const s=await app.api();return s.transfers.some(t=>t.id===disk.id&&t.progress===1)&&!s.transfers.some(t=>t.id===fx.content.id||t.id===fx.head.id)&&!s.cleanup.length;},'complete recursive replacement and collect exclusive history',60000);
+ assert.equal(await exists(first.save_path),false);
+ const retained=(await app.api()).transfers.find(t=>t.id===disk.id);
+ assert((await app.api()).transfers.some(t=>t.id===nested.id));
+ assert.equal((await app.api()).posts[0].mode,mode);
+ console.log('PASS latest recursive mirror waits for full verified payload across restart, then physically collects old catalog/disk without following history');
+ await app.command({type:'set_pin',id:disk.id,pinned:true});
+ const final=await fx.catalog('Third version',[{path:['note.txt'],data:Buffer.from('No longer links the disk')}],{prev:magnet(next.id)});
+ await fx.publish(final);await app.command({type:'refresh_post',id:fx.postId});
+ await wait(async()=>{const s=await app.api();return s.posts[0]?.head===final.id&&s.transfers.some(t=>t.id===final.id&&t.progress===1)&&!s.transfers.some(t=>t.id===next.id||t.id===nested.id)&&!s.cleanup.length;},'new version preserves Pin and collects nested old catalogs',60000);
+ assert(await exists(retained.save_path));assert((await app.api()).transfers.find(t=>t.id===disk.id).pinned);
+ await app.command({type:'configure_post',id:fx.postId,config:{...config,mode:'current_catalog'}});
+ await app.stop();app=await startApp(appRoot,args);
+ assert.equal((await app.api()).posts[0].mode,'current_catalog');
+ assert(await exists(retained.save_path));
+ console.log('PASS Pin protects superseded disk while nested history is collected; leaving the mode and restart preserve protected data');
+ // A failed automatic collection must become ordinary ownership on mode exit.
+ await app.command({type:'configure_post',id:fx.postId,config});
+ const old=(await app.api()).transfers.find(t=>t.id===final.id);
+ blockedPath=join(old.save_path,'Third version');blockedMode=(await stat(blockedPath)).mode&0o777;
+ await chmod(blockedPath,0o500);
+ const fourth=await fx.catalog('Fourth version',[{path:['note.txt'],data:Buffer.from('replacement after cleanup failure')}],{prev:magnet(final.id)});
+ await fx.publish(fourth);await app.command({type:'refresh_post',id:fx.postId});
+ await wait(async()=>(await app.api()).cleanup.some(j=>j.target.kind==='mirror'&&j.error),'failed automatic collection remains visible',60000);
+ assert(await exists(old.save_path));
+ // Simulate a crash before collection while the other ownership authority is unreadable.
+ const pending=(await app.api()).cleanup.find(j=>j.target.kind==='mirror');
+ await app.stop();
+ await chmod(blockedPath,blockedMode);
+ const pubPath=join(appRoot,'state/publishing.json');
+ const originalPublishing=await readFile(pubPath).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+ await writeFile(pubPath,'{invalid publishing state');
+ app=await startApp(appRoot,args);
+ await wait(async()=>{const s=await app.api();return s.publishing.error&&s.posts[0]?.mirror_status==='Observed catalogs up to date';},'ready mirror with unavailable publishing authority',60000);
+ await app.command({type:'retry_cleanup',id:pending.id});
+ assert(await exists(old.save_path),'unknown publishing references must fence automatic collection');
+ assert((await app.api()).cleanup.some(j=>j.id===pending.id));
+ await app.stop();
+ if(originalPublishing)await writeFile(pubPath,originalPublishing);else await rm(pubPath);
+ await chmod(blockedPath,0o500);
+ app=await startApp(appRoot,args);
+ await wait(async()=>(await app.api()).cleanup.some(j=>j.target.kind==='mirror'&&j.error),'restored authority resumes failed collection',60000);
+ await app.command({type:'configure_post',id:fx.postId,config:{...config,mode:'current_catalog'}});
+ await wait(async()=>!(await app.api()).cleanup.some(j=>j.target.kind==='mirror'),'mode exit cancels automatic collection');
+ assert((await app.api()).transfers.find(t=>t.id===final.id).used_by.includes('followed:'+fx.postId));
+ await chmod(blockedPath,blockedMode);blockedPath=undefined;
+ await app.deletePost('followed',fx.postId);
+ await wait(async()=>!(await app.api()).cleanup.length,'manual post deletion collects canceled automatic work',60000);
+ assert.equal(await exists(old.save_path),false);assert(await exists(retained.save_path));
+ console.log('PASS unknown publishing references fence cleanup across restart; recovery, mode exit and post deletion preserve Pin and collect canceled work');
+
+} finally {if(blockedPath)await chmod(blockedPath,blockedMode).catch(()=>{});await cleanup(root,app,disk,fx);}

@@ -39,6 +39,7 @@ pub enum Mode {
     #[default]
     CurrentCatalog,
     MirrorCatalogs,
+    LatestRecursiveMirror,
     MirrorAll,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,6 +131,22 @@ pub(crate) struct Reference {
     pub origin: Origin,
     pub pending: bool,
 }
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LatestMirror {
+    pub candidate: Option<String>,
+    pub candidate_assets: BTreeSet<String>,
+    pub complete: Option<String>,
+    pub retained: BTreeSet<String>,
+}
+/// Explicit ownership for latest-only mirrors; discovery edges are not retention.
+#[derive(Clone, Debug)]
+pub struct LatestRetention {
+    pub post: String,
+    pub assets: BTreeSet<String>,
+    pub manual: BTreeSet<String>,
+    pub collect: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Checkpoint {
@@ -142,16 +159,25 @@ pub(crate) struct Checkpoint {
     pub references: BTreeMap<String, BTreeMap<String, Reference>>,
     #[serde(default)]
     pub news: NewsState,
+    #[serde(default)]
+    pub latest: BTreeMap<String, LatestMirror>,
+    #[serde(default)]
+    pub manual_downloads: BTreeMap<String, BTreeSet<String>>,
+    #[serde(default)]
+    pub resolved_manual: BTreeMap<String, BTreeSet<(String, usize)>>,
 }
 impl Default for Checkpoint {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             posts: BTreeMap::new(),
             suppressed: BTreeSet::new(),
             approvals: BTreeSet::new(),
             references: BTreeMap::new(),
             news: NewsState::default(),
+            latest: BTreeMap::new(),
+            manual_downloads: BTreeMap::new(),
+            resolved_manual: BTreeMap::new(),
         }
     }
 }

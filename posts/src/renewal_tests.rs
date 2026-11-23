@@ -139,7 +139,7 @@ fn restart_uses_only_verified_saved_public_record_without_migration() {
     assert_eq!(restored.known(&id).unwrap().unwrap(), r);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        2
+        3
     );
 }
 #[test]
