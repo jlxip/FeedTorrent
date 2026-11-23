@@ -320,7 +320,13 @@ try {
   resources.push(app);
   await wait(async () => {
     const s = await app.api(), f = s.publishing.posts.find(p => p.id === id);
-    return recoveryPuts > putsBeforeRestart && f?.active && f.state === "Published" && !f.operation && !f.error;
+    // The initial snapshot can still show the previous Published state, and
+    // another follower can PUT this same key. Require this restarted author's
+    // newly allocated renewal to have completed durably before changing policy.
+    const persisted = JSON.parse(await readFile(join(root, "publisher/state/publishing.json")));
+    return recoveryPuts > putsBeforeRestart && f?.active && f.state === "Published" && !f.operation && !f.error
+      && persisted.next_operation > recoveryAfter.next_operation && persisted.posts[id].pending === null
+      && persisted.posts[id].state === "Published";
   }, "reactivated publication remains healthy after restart");
   for (const node of nodes) node.off("put", observeRecovery);
   assert.deepEqual(JSON.parse(await readFile(join(root, "publisher/state/publishing.json"))).posts[id].record,

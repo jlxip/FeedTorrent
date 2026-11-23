@@ -200,8 +200,13 @@ impl PostHost {
             }
         }
         for event in e.native.poll_dht() {
-            if e.gateway.event(&event) {
-                continue;
+            match e.gateway.event(&event) {
+                dht_gateway::Completion::Unrelated => {}
+                dht_gateway::Completion::Handled => continue,
+                dht_gateway::Completion::Published(record) => {
+                    self.gateway_publication(record, now);
+                    continue;
+                }
             }
             if e.publication_native
                 .as_mut()
@@ -541,6 +546,16 @@ impl PostHost {
             }
         }
     }
+    // HTTP storage success is independent of local policy or overlay reachability.
+    // The manager checkpoints before dispatching download/relay actions as usual.
+    fn gateway_publication(&mut self, record: feedtorrent_bep::bep44::MutableRecord, now: u64) {
+        let id = feedtorrent_posts::hex(&record.key().target());
+        if self.manager.followed(&id) {
+            if let Err(error) = self.manager.receive_record(&id, record, now) {
+                self.manager.notice(&id, error.to_string());
+            }
+        }
+    }
     pub fn publish_record(&mut self, record: feedtorrent_bep::bep44::MutableRecord) {
         if let Some(udp) = &mut self.udp {
             let now = udp.now();
@@ -757,6 +772,93 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gateway_publications_follow_local_policy_and_checkpoint_before_relay() {
+        use feedtorrent_bep::{
+            bep44::Bep44Signer,
+            bep46::{format_magnet, TorrentPointer},
+        };
+        let path = std::env::temp_dir().join(format!(
+            "feedtorrent-gateway-publication-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        let mut host = PostHost::new(&path, true);
+        if let Some(mut udp) = host.udp.take() {
+            udp.close();
+        }
+        let signer = Bep44Signer::from_seed(&[91; 32]);
+        let record = |seq, hash| {
+            TorrentPointer::sign(&signer, [hash; 20], seq, vec![0, 255])
+                .unwrap()
+                .record()
+                .clone()
+        };
+        let first = record(1, 1);
+        host.gateway_publication(first.clone(), 1);
+        assert!(
+            host.manager.views().is_empty(),
+            "unknown PUT must not auto-follow"
+        );
+        let id = host
+            .manager
+            .follow(&format_magnet(first.key()), Default::default(), 2)
+            .unwrap();
+        host.persist(&path).unwrap();
+        host.manager.drain_actions();
+        host.gateway_publication(first.clone(), 3);
+        assert_eq!(host.manager.views()[0].sequence.as_deref(), Some("1"));
+        assert!(
+            host.manager.drain_actions().is_empty(),
+            "no download/relay before checkpoint"
+        );
+        let checkpoint = path.join("posts.json");
+        let saved = fs::read(&checkpoint).unwrap();
+        fs::remove_file(&checkpoint).unwrap();
+        fs::create_dir(&checkpoint).unwrap();
+        assert!(host.persist(&path).is_err());
+        assert!(host.manager.drain_actions().is_empty());
+        fs::remove_dir(&checkpoint).unwrap();
+        fs::write(&checkpoint, saved).unwrap();
+        host.persist(&path).unwrap();
+        let actions = host.manager.drain_actions();
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::Relay { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Stage { .. })),
+            "local adoption works without UDP"
+        );
+        host.gateway_publication(first, 4);
+        host.persist(&path).unwrap();
+        assert!(
+            !host
+                .manager
+                .drain_actions()
+                .iter()
+                .any(|a| matches!(a, Action::Relay { .. })),
+            "duplicate must not relay"
+        );
+        host.gateway_publication(record(2, 2), 5);
+        host.persist(&path).unwrap();
+        host.manager.drain_actions();
+        host.gateway_publication(record(1, 1), 6);
+        host.gateway_publication(record(2, 3), 7);
+        assert_eq!(host.manager.views()[0].sequence.as_deref(), Some("2"));
+        host.manager.unfollow(&id).unwrap();
+        host.persist(&path).unwrap();
+        host.manager.drain_actions();
+        host.gateway_publication(record(3, 3), 8);
+        assert!(!host.manager.followed(&id));
+        assert!(!host.manager.dirty());
+        host.close();
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn registry_write_failure_does_not_remove_the_payload_hold() {
         let dir =

@@ -450,8 +450,15 @@ pub enum Prepared {
     Stop,
     Listen(TcpListener, String, bool),
 }
+/// A terminal belongs to the gateway even when no HTTP recipient remains.
+pub(super) enum Completion {
+    Unrelated,
+    Handled,
+    Published(MutableRecord),
+}
 struct Pending {
     identity: String,
+    publication: Option<MutableRecord>,
     replies: Vec<Reply>,
     resolved: bool,
     streams: Vec<Updates>,
@@ -570,10 +577,17 @@ impl Gateway {
     pub fn stop(&mut self) {
         self.apply(Prepared::Stop);
     }
-    pub fn event(&mut self, event: &DhtEvent) -> bool {
+    pub fn event(&mut self, event: &DhtEvent) -> Completion {
         let Some(pending) = self.pending.get_mut(&event.id.0) else {
-            return false;
+            return Completion::Unrelated;
         };
+        if pending.resolved {
+            return Completion::Handled;
+        }
+        let publication = pending.publication.take().filter(|record| {
+            matches!(&event.result, Ok(DhtOutcome::Stored { target, acknowledged_nodes })
+                if *target == record.key().target() && *acknowledged_nodes > 0)
+        });
         let result = result_json(&event.result);
         pending.resolved = true;
         for stream in pending.streams.drain(..) {
@@ -582,7 +596,7 @@ impl Gateway {
         for reply in pending.replies.drain(..) {
             let _ = reply.send(result.clone());
         }
-        true
+        publication.map_or(Completion::Handled, Completion::Published)
     }
     pub(super) fn tick(&mut self, native: &mut impl Native) {
         // A native pump may consume the terminal before this actor dispatches
@@ -642,6 +656,10 @@ impl Gateway {
                         id.0,
                         Pending {
                             identity,
+                            publication: match job.request {
+                                DhtRequest::PutMutable(record) => Some(record),
+                                _ => None,
+                            },
                             replies: vec![job.reply],
                             resolved: false,
                             streams: job.stream.into_iter().collect(),

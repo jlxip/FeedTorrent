@@ -40,6 +40,20 @@ pub struct Peer {
     pub up: u64,
 }
 impl LibtorrentBackend {
+    /// Authorize only the application's fully verified flat catalog manifests.
+    pub fn replica_scopes(&mut self, scopes: &[(String, Vec<String>)]) -> Result<()> {
+        let scopes: Vec<_> = scopes
+            .iter()
+            .map(|(root, components)| ffi::NativeReplicaScope {
+                root: root.clone(),
+                components: components.clone(),
+            })
+            .collect();
+        self.session
+            .pin_mut()
+            .replica_scopes(&scopes)
+            .map_err(error)
+    }
     /// Configure WebRTC discovery without changing the original torrent source.
     /// Test sessions never contact external signaling or STUN servers.
     pub fn configure_webtorrent(&mut self, trackers: &[String], stun: &str) -> Result<()> {

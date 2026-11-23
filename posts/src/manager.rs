@@ -5,7 +5,7 @@ use feedtorrent_bep::{
     bep49::{self, EntryKind, Feed, ItemContent},
 };
 use sha1::{Digest, Sha1};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[path = "news.rs"]
 mod news;
 #[path = "renewal.rs"]
@@ -1352,6 +1352,45 @@ impl PostManager {
             entries,
             offset,
         })
+    }
+    /// Flat, fully authenticated BEP49 manifests eligible for replica reporting.
+    /// Never authorize a scope from a peer request or a partially indexed catalog.
+    pub fn replica_scopes(&self) -> Vec<(String, Vec<String>)> {
+        let mut scopes = BTreeMap::new();
+        for ((_, root), visit) in &self.visits {
+            let Some(meta) = &visit.meta else { continue };
+            if !visit.trusted
+                || !visit.ready
+                || !visit.error.is_empty()
+                || visit.reads.len() != meta.items().count()
+                || visit.reads.values().any(|done| !done)
+            {
+                continue;
+            }
+            let mut parts = BTreeSet::from([root.clone()]);
+            let mut valid = true;
+            for entry in visit.entries.values() {
+                if matches!(
+                    entry.kind.as_str(),
+                    "catalog" | "unsupported" | "external_post"
+                ) {
+                    valid = false;
+                    break;
+                }
+                if entry.kind == "torrent" {
+                    if let Some(id) = &entry.infohash {
+                        parts.insert(id.clone());
+                    } else {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if valid && parts.len() <= 16 {
+                scopes.insert(root.clone(), parts.into_iter().collect());
+            }
+        }
+        scopes.into_iter().collect()
     }
     pub fn views(&self) -> Vec<PostView> {
         self.state

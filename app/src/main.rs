@@ -931,6 +931,12 @@ impl Engine {
             .err()
             .map(|e| format!("Post organization: {e:#}"))
             .unwrap_or_default();
+        let scopes = self
+            .posts
+            .as_ref()
+            .map(|host| host.manager.replica_scopes())
+            .unwrap_or_default();
+        self.native.replica_scopes(&scopes)?;
         let native = self.native.snapshot()?;
         self.refresh_serial = self.refresh_serial.wrapping_add(1);
         let mut transfers = Vec::new();

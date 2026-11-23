@@ -10,6 +10,7 @@ struct NativeDhtRequest;
 struct NativePeerHints;
 struct NativeDhtEvent;
 struct NativeInput;
+struct NativeReplicaScope;
 class TorrentBuilder {
 public:
   TorrentBuilder(rust::Str name, rust::Slice<const NativeInput> files);
@@ -38,6 +39,7 @@ public:
   void resume(rust::Str id);
   void remove(rust::Str id);
   NativeSnapshot snapshot();
+  void replica_scopes(rust::Slice<const NativeReplicaScope> scopes);
   rust::Vec<NativePeer> read_peers(rust::Str id) const;
   void checkpoint();
   void shutdown();

@@ -1,6 +1,7 @@
 #include "src/native/engine.h"
 #include "src/native/ice_ports.h"
 #include "src/native/metadata_gate.h"
+#include "src/native/replica_identity.h"
 #include "feedtorrent-libtorrent/src/bridge.rs.h"
 #include <algorithm>
 #include <atomic>
@@ -346,6 +347,8 @@ struct Session::Impl {
   struct Original { fs::path path; std::uintmax_t size; fs::file_time_type time; };
   std::map<std::string, std::vector<Original>> originals;
   std::string warning;
+  std::shared_ptr<replica_identity const> replica;
+  std::shared_ptr<replica_state> replica_cache = std::make_shared<replica_state>();
   int nodes = 0;
   int node_metric = -1;
   bool stopped = false;
@@ -482,6 +485,8 @@ Session::Session(rust::Str dir, std::uint16_t port, rust::Str bootstrap,
   impl->isolated = isolated;
   impl->dir = str(dir);
   fs::create_directories(impl->dir);
+  try { impl->replica = std::make_shared<replica_identity>(impl->dir); }
+  catch (std::exception const& error) { impl->warning = std::string("Replica identification unavailable: ") + error.what(); }
   lt::session_params params;
   try {
     auto b = read(impl->dir / "session.state");
@@ -629,6 +634,10 @@ void Session::add(rust::Str id, rust::Slice<const std::uint8_t> bytes,
   p.extensions.push_back([known](lt::torrent_handle const &, lt::client_data_t) {
     return std::make_shared<PeerObserver>(known);
   });
+  if (auto identity = impl->replica) p.extensions.push_back(
+    [identity, state = impl->replica_cache, own = replica_raw(key)](lt::torrent_handle const&, lt::client_data_t) {
+      return std::make_shared<replica_torrent>(identity, state, own);
+    });
   auto h = impl->session->add_torrent(std::move(p));
   impl->handles[key] = h;
   impl->source_trackers[key] = h.trackers();
@@ -731,6 +740,17 @@ rust::Vec<NativePeer> Session::read_peers(rust::Str id) const {
   }
   return out;
 }
+void Session::replica_scopes(rust::Slice<const NativeReplicaScope> input) {
+  std::map<std::string, std::vector<std::string>> scopes;
+  for (auto const& scope : input) {
+    if (scope.components.empty() || scope.components.size() > 16) continue;
+    auto root = replica_raw(std::string(scope.root));
+    auto& parts = scopes[root];
+    for (auto const& part : scope.components) parts.push_back(replica_raw(std::string(part)));
+  }
+  std::lock_guard<std::mutex> guard(impl->replica_cache->mutex);
+  impl->replica_cache->scopes = std::move(scopes);
+}
 NativeSnapshot Session::snapshot() {
   impl->alerts();
   impl->session->post_session_stats();
@@ -738,6 +758,15 @@ NativeSnapshot Session::snapshot() {
   out.dht_nodes = impl->nodes;
   out.listen_port = impl->session->listen_port();
   out.warning = impl->warning;
+  std::set<std::string> watched;
+  { std::lock_guard<std::mutex> guard(impl->replica_cache->mutex);
+    for (auto const& scope : impl->replica_cache->scopes)
+      watched.insert(scope.second.begin(), scope.second.end());
+    // Keep measuring already observed handles while a catalog is rechecked.
+    // Missing handles drop out below and remain explicit absence; a handle
+    // still being verified is reported as unknown instead of false loss.
+    for (auto const& transfer : impl->replica_cache->transfers) watched.insert(transfer.first); }
+  std::map<std::string, replica_state::transfer> replica_transfers;
   for (auto const &[id, h] : impl->handles) {
     if (impl->external_guard.count(id)) {
       try {
@@ -783,7 +812,20 @@ NativeSnapshot Session::snapshot() {
       t.state = "Waiting for peers";
     else
       t.state = "Downloading";
+    auto raw = replica_raw(id);
+    if (watched.count(raw)) replica_transfers[raw] = {0, -1};
     if (auto ti = h.torrent_file()) {
+      if (watched.count(raw)) {
+        auto pieces = h.status(lt::torrent_handle::query_pieces);
+        auto& replica = replica_transfers[raw];
+        replica.size = ti->total_size();
+        if (t.error.empty() && !impl->metadata_guard.count(id) && !impl->approval_guard.count(id)
+            && pieces.state != lt::torrent_status::checking_files && pieces.state != lt::torrent_status::checking_resume_data) {
+          replica.have = 0;
+          for (int i = 0; i < ti->num_pieces(); ++i)
+            if (i < pieces.pieces.size() && pieces.pieces[lt::piece_index_t(i)]) replica.have += ti->piece_size(lt::piece_index_t(i));
+        }
+      }
       std::vector<std::int64_t> progress;
       h.file_progress(progress, lt::torrent_handle::piece_granularity);
       auto const &files = ti->layout();
@@ -804,6 +846,8 @@ NativeSnapshot Session::snapshot() {
     }
     out.transfers.push_back(std::move(t));
   }
+  { std::lock_guard<std::mutex> guard(impl->replica_cache->mutex);
+    impl->replica_cache->transfers = std::move(replica_transfers); }
   return out;
 }
 rust::Vec<std::uint8_t> Session::info_bytes(rust::Str id) const {

@@ -1,6 +1,10 @@
 #[allow(clippy::too_many_arguments)]
 #[cxx::bridge(namespace = "ft")]
 pub mod ffi {
+    struct NativeReplicaScope {
+        root: String,
+        components: Vec<String>,
+    }
     struct NativeInput {
         name: String,
         source: String,
@@ -118,6 +122,7 @@ pub mod ffi {
         fn resume(self: Pin<&mut Session>, id: &str) -> Result<()>;
         fn remove(self: Pin<&mut Session>, id: &str) -> Result<()>;
         fn snapshot(self: Pin<&mut Session>) -> Result<NativeSnapshot>;
+        fn replica_scopes(self: Pin<&mut Session>, scopes: &[NativeReplicaScope]) -> Result<()>;
         fn read_peers(self: &Session, id: &str) -> Result<Vec<NativePeer>>;
         fn checkpoint(self: Pin<&mut Session>) -> Result<()>;
         fn shutdown(self: Pin<&mut Session>) -> Result<()>;

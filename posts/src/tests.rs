@@ -95,6 +95,60 @@ fn ready(m: &mut PostManager, id: &str, b: &BuiltFeed) {
     assert!(m.views().iter().any(|v| v.id == id));
 }
 #[test]
+fn replica_scopes_require_a_complete_authenticated_flat_manifest() {
+    let data = torrent();
+    let b = catalog(std::slice::from_ref(&data), Default::default());
+    let (mut manager, id) = setup(Mode::MirrorAll, Some(1));
+    assert!(manager.replica_scopes().is_empty());
+    let work = stage(&mut manager, &id, &b, 1);
+    metadata(&mut manager, work, &b, true);
+    let root = hex(&b.feed.infohash());
+    manager.transfer(&root, "Seeding".into(), true);
+    manager.tick(3);
+    assert!(manager.replica_scopes().is_empty());
+    let work = acts(&mut manager)
+        .into_iter()
+        .find_map(|action| {
+            if let Action::Read { work, .. } = action {
+                Some(work)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let child = if let feedtorrent_bep::bep49::ItemContent::Torrent(t) =
+        feedtorrent_bep::bep49::inspect_item(&data)
+    {
+        hex(&t.infohash())
+    } else {
+        panic!()
+    };
+    manager
+        .item(
+            work,
+            data,
+            Some(Description {
+                id: child.clone(),
+                total: 3,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let scopes = manager.replica_scopes();
+    assert_eq!(scopes.len(), 1);
+    assert_eq!(scopes[0].0, root);
+    assert_eq!(
+        scopes[0]
+            .1
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [root.clone(), child].into_iter().collect()
+    );
+    manager.transfer(&root, "Error".into(), false);
+    assert!(manager.replica_scopes().is_empty());
+}
+#[test]
 fn checkpoint_barrier_and_limit_include_padding() {
     let b = catalog(&[b"a".to_vec()], Default::default());
     assert!(b.feed.total_length() > 1);

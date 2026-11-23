@@ -113,14 +113,20 @@ async fn coalescing_timeout_slots_backpressure_and_internal_events() {
     let b = submit(&g, 1);
     g.tick(&mut native);
     assert_eq!(native.started, 1);
-    assert!(!g.event(&DhtEvent {
-        id: DhtRequestId(100),
-        result: Err(DhtError::Busy)
-    }));
-    assert!(g.event(&DhtEvent {
-        id: DhtRequestId(1),
-        result: Err(DhtError::Timeout)
-    }));
+    assert!(matches!(
+        g.event(&DhtEvent {
+            id: DhtRequestId(100),
+            result: Err(DhtError::Busy)
+        }),
+        Completion::Unrelated
+    ));
+    assert!(!matches!(
+        g.event(&DhtEvent {
+            id: DhtRequestId(1),
+            result: Err(DhtError::Timeout)
+        }),
+        Completion::Unrelated
+    ));
     assert_eq!(a.await.unwrap().unwrap_err().0, StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(b.await.unwrap().unwrap_err().0, StatusCode::GATEWAY_TIMEOUT);
     for key in 2..=8 {
@@ -257,10 +263,13 @@ async fn verified_observations_do_not_finish_or_duplicate_native_work() {
     g.tick(&mut native);
     assert!(matches!(&*stream.borrow_and_update(), Update::Record(v) if v["sequence"]=="42"));
     assert_eq!(native.started, 1);
-    assert!(g.event(&DhtEvent {
-        id: DhtRequestId(1),
-        result: Ok(DhtOutcome::Mutable(Some(b)))
-    }));
+    assert!(!matches!(
+        g.event(&DhtEvent {
+            id: DhtRequestId(1),
+            result: Ok(DhtOutcome::Mutable(Some(b)))
+        }),
+        Completion::Unrelated
+    ));
     assert!(matches!(&*stream.borrow_and_update(), Update::Done(Ok(v)) if v["sequence"]=="42"));
     assert_eq!(json.await.unwrap().unwrap()["sequence"], "42");
     assert!(g.pending[&1].resolved);
@@ -363,7 +372,10 @@ async fn queued_native_terminal_survives_tick_until_dispatch() {
     let body = axum::body::to_bytes(response.into_body(), 4096)
         .await
         .unwrap();
-    assert!(delivered, "queued native terminal lost before dispatch");
+    assert!(
+        !matches!(delivered, Completion::Unrelated),
+        "queued native terminal lost before dispatch"
+    );
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("\"error\":null"));
     assert!(text.contains("\"sequence\":\"42\""));
@@ -412,10 +424,13 @@ async fn foreign_native_work_defers_json_and_sse_until_the_target_is_free() {
     native.busy = false;
     g.tick(&mut native);
     assert_eq!(native.started, 1);
-    assert!(g.event(&DhtEvent {
-        id: DhtRequestId(1),
-        result: Ok(DhtOutcome::Mutable(Some(record)))
-    }));
+    assert!(!matches!(
+        g.event(&DhtEvent {
+            id: DhtRequestId(1),
+            result: Ok(DhtOutcome::Mutable(Some(record)))
+        }),
+        Completion::Unrelated
+    ));
     assert_eq!(json.await.unwrap().unwrap()["sequence"], "42");
     let body = axum::body::to_bytes(response.into_body(), 4096)
         .await
@@ -534,10 +549,13 @@ async fn shared_signed_candidates_stream_while_foreign_work_is_busy_without_stea
         json.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
     ));
-    assert!(!g.event(&DhtEvent {
-        id: DhtRequestId(100),
-        result: Ok(DhtOutcome::Mutable(Some(a)))
-    }));
+    assert!(matches!(
+        g.event(&DhtEvent {
+            id: DhtRequestId(100),
+            result: Ok(DhtOutcome::Mutable(Some(a)))
+        }),
+        Completion::Unrelated
+    ));
     native.shared = Some(Ok(b.clone()));
     g.tick(&mut native);
     assert!(matches!(&*stream.borrow_and_update(), Update::Record(v) if v["sequence"] == "42"));
@@ -759,4 +777,107 @@ async fn signed_write_http_limits_and_disable_during_queue() {
     gateway.tick(&mut native);
     assert_eq!(native.started, 0);
     assert_eq!(result.await.unwrap().unwrap_err().0, StatusCode::FORBIDDEN);
+}
+
+fn put(g: &Gateway, record: MutableRecord) -> oneshot::Receiver<Result<Value, Failure>> {
+    let (reply, result) = oneshot::channel();
+    let (_, stopped) = watch::channel(false);
+    g.tx.try_send(Job {
+        request: DhtRequest::PutMutable(record),
+        reply,
+        stopped,
+        stream: None,
+        observed: None,
+    })
+    .unwrap();
+    result
+}
+#[tokio::test]
+async fn confirmed_publication_is_delivered_once_for_coalesced_and_departed_clients() {
+    let mut g = Gateway::new(Handle::current());
+    g.allow_publish.store(true, Ordering::Release);
+    let mut native = Backend::default();
+    let record = Bep44Signer::from_seed(&[81; 32])
+        .sign(
+            BencodedValue::bytestring(b"record").unwrap(),
+            7,
+            vec![0, 255],
+        )
+        .unwrap();
+    // Disconnected before dispatch: no write or notification.
+    drop(put(&g, record.clone()));
+    g.tick(&mut native);
+    assert_eq!(native.started, 0);
+    let a = put(&g, record.clone());
+    let b = put(&g, record.clone());
+    g.tick(&mut native);
+    assert_eq!(native.started, 1);
+    // Disconnect after dispatch and disable new writes; the confirmed write remains real.
+    drop(a);
+    drop(b);
+    g.allow_publish.store(false, Ordering::Release);
+    let event = DhtEvent {
+        id: DhtRequestId(1),
+        result: Ok(DhtOutcome::Stored {
+            target: record.key().target(),
+            acknowledged_nodes: 2,
+        }),
+    };
+    assert!(matches!(g.event(&event), Completion::Published(r) if r == record));
+    assert!(matches!(g.event(&event), Completion::Handled));
+    g.tick(&mut native);
+    assert_eq!(
+        g.pending.len(),
+        1,
+        "native slot is retained until the operation drains"
+    );
+    native.requests.clear();
+    g.tick(&mut native);
+    assert!(matches!(g.event(&event), Completion::Unrelated));
+}
+#[tokio::test]
+async fn only_successful_matching_puts_notify_without_changing_http_results() {
+    let record = Bep44Signer::from_seed(&[82; 32])
+        .sign(BencodedValue::bytestring(b"record").unwrap(), 8, vec![])
+        .unwrap();
+    for outcome in [
+        Err(DhtError::Timeout),
+        Err(DhtError::Conflict),
+        Ok(DhtOutcome::Stored {
+            target: record.key().target(),
+            acknowledged_nodes: 0,
+        }),
+        Ok(DhtOutcome::Stored {
+            target: [0; 20],
+            acknowledged_nodes: 1,
+        }),
+        Ok(DhtOutcome::Stored {
+            target: record.key().target(),
+            acknowledged_nodes: 3,
+        }),
+    ] {
+        let mut g = Gateway::new(Handle::current());
+        g.allow_publish.store(true, Ordering::Release);
+        let mut native = Backend::default();
+        let reply = put(&g, record.clone());
+        g.tick(&mut native);
+        let expected = result_json(&outcome);
+        let notify = matches!(&outcome,Ok(DhtOutcome::Stored {target,acknowledged_nodes}) if *target==record.key().target() && *acknowledged_nodes>0);
+        assert_eq!(
+            matches!(
+                g.event(&DhtEvent {
+                    id: DhtRequestId(1),
+                    result: outcome
+                }),
+                Completion::Published(_)
+            ),
+            notify
+        );
+        let actual = reply.await.unwrap();
+        match (actual, expected) {
+            (Ok(a), Ok(b)) => assert_eq!(a, b),
+            (Err(a), Err(b)) => assert_eq!(a.0, b.0),
+            _ => panic!("HTTP contract changed"),
+        }
+    }
 }
