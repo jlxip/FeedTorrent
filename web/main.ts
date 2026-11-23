@@ -441,7 +441,7 @@ function saveSettings(forceGateway = false): Promise<boolean> {
   const version = settingsEditVersion;
   const automatic=$<HTMLInputElement>('#external-images-automatic').checked,imageVersion=imageSettingsVersion;
   const settings: Settings = {
-    dht_gateway: {enabled:$<HTMLInputElement>("#dht-gateway-enabled").checked,listen},
+    dht_gateway: {enabled:$<HTMLInputElement>("#dht-gateway-enabled").checked,listen,allow_publish:$<HTMLInputElement>("#dht-gateway-publish").checked},
     download_dir: folder.value,
     peer_port: Number(port.value),
     seed_by_default: $<HTMLInputElement>("#seed-by-default").checked,
@@ -491,6 +491,7 @@ $("#settings-open").onclick = () => {
   savedImageSettingsVersion=imageSettingsVersion;
   const gateway=state.settings.dht_gateway || {enabled:false,listen:'127.0.0.1:8793'};
   $<HTMLInputElement>('#dht-gateway-enabled').checked=gateway.enabled;
+  $<HTMLInputElement>('#dht-gateway-publish').checked=!!gateway.allow_publish;
   $<HTMLInputElement>('#dht-gateway-listen').value=gateway.listen;
   $('#dht-gateway-listen-error').textContent='';
   renderGateway();

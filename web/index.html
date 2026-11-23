@@ -266,12 +266,13 @@
           <input class="input" id="webtorrent-stun-server" type="text" autocomplete="off" spellcheck="false" aria-describedby="webtorrent-stun-server-help webtorrent-stun-server-error" />
           <p id="webtorrent-stun-server-error" class="transfer-error" role="alert"></p>
         </div>
+        <div class="field" data-orientation="horizontal"><input class="input" id="dht-gateway-publish" type="checkbox" /><label for="dht-gateway-publish" class="label">Allow signed DHT publications</label></div>
         <div class="field" data-orientation="horizontal"><input class="input" id="dht-gateway-enabled" type="checkbox" /><label for="dht-gateway-enabled" class="label">DHT gateway</label></div>
         <div class="field">
           <div class="field-label">
             <label for="dht-gateway-listen" class="label">Listen address</label>
             <button type="button" class="btn help-control" data-variant="ghost" data-size="icon-xs" data-help="dht-gateway-listen-help" aria-label="About DHT gateway" aria-describedby="dht-gateway-listen-help"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></button>
-            <span id="dht-gateway-listen-help" class="field-tooltip" role="tooltip" hidden>Public read-only DHT access, without credentials. Enter an IP address and port, such as 127.0.0.1:8793 or [::1]:8793. Use an HTTPS reverse proxy for secure websites. Changes apply without restarting.</span>
+            <span id="dht-gateway-listen-help" class="field-tooltip" role="tooltip" hidden>Public DHT reads and optional signed publication, without credentials. Enter an IP address and port, such as 127.0.0.1:8793 or [::1]:8793. Use an HTTPS reverse proxy for secure websites. Changes apply without restarting.</span>
           </div>
           <input class="input" id="dht-gateway-listen" type="text" required autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="dht-gateway-listen-help dht-gateway-listen-error" />
           <p id="dht-gateway-listen-error" class="transfer-error" role="alert"></p>

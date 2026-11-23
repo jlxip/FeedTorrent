@@ -14,7 +14,7 @@ impl DhtBackend for Backend {
     fn start_dht(&mut self, request: DhtRequest, _: DhtOptions) -> Result<DhtRequestId, DhtError> {
         assert!(matches!(
             request,
-            DhtRequest::GetImmutable(_) | DhtRequest::GetMutable(_)
+            DhtRequest::GetImmutable(_) | DhtRequest::GetMutable(_) | DhtRequest::PutMutable(_)
         ));
         if self.busy || self.busy_target == Some(request.target()) {
             return Err(DhtError::Busy);
@@ -179,6 +179,7 @@ async fn http_waiter_limit_and_shutdown_release_responses() {
     let permits = Arc::new(Semaphore::new(RESPONSES));
     let (stop, stopped) = watch::channel(false);
     let state = HttpState {
+        allow_publish: Arc::new(AtomicBool::new(false)),
         jobs,
         permits: permits.clone(),
         stopped,
@@ -271,6 +272,7 @@ async fn stream_body_holds_capacity_and_exposes_final_errors() {
     let permits = Arc::new(Semaphore::new(RESPONSES));
     let (_stop, stopped) = watch::channel(false);
     let state = HttpState {
+        allow_publish: Arc::new(AtomicBool::new(false)),
         jobs,
         permits: permits.clone(),
         stopped,
@@ -328,6 +330,7 @@ async fn queued_native_terminal_survives_tick_until_dispatch() {
     let mut native = Backend::default();
     let (_stop, stopped) = watch::channel(false);
     let state = HttpState {
+        allow_publish: Arc::new(AtomicBool::new(false)),
         jobs: g.tx.clone(),
         permits: g.permits.clone(),
         stopped: stopped.clone(),
@@ -379,6 +382,7 @@ async fn foreign_native_work_defers_json_and_sse_until_the_target_is_free() {
     };
     let (_stop, stopped) = watch::channel(false);
     let state = HttpState {
+        allow_publish: Arc::new(AtomicBool::new(false)),
         jobs: g.tx.clone(),
         permits: g.permits.clone(),
         stopped: stopped.clone(),
@@ -431,6 +435,7 @@ async fn deferred_http_clients_remain_bounded_and_cancellation_drops_their_work(
     };
     let (_stop, stopped) = watch::channel(false);
     let state = HttpState {
+        allow_publish: Arc::new(AtomicBool::new(false)),
         jobs: g.tx.clone(),
         permits: g.permits.clone(),
         stopped,
@@ -597,4 +602,161 @@ async fn shared_wrong_identity_or_foreign_errors_do_not_publish_or_complete_a_re
         &*stream.borrow_and_update(),
         Update::Done(Err(Failure(StatusCode::CONFLICT, _)))
     ));
+}
+
+#[test]
+fn signed_write_validation_and_request_identity() {
+    assert!(!Config::default().allow_publish);
+    let signer = Bep44Signer::from_seed(&[23; 32]);
+    let record = signer
+        .sign(
+            BencodedValue::bytestring(b"payload").unwrap(),
+            i64::MAX,
+            vec![0, 255],
+        )
+        .unwrap();
+    let input = || SignedInput {
+        sequence: record.sequence().to_string(),
+        signature: hex(&record.signature()),
+        value: hex(record.value().as_bytes()),
+    };
+    assert_eq!(
+        signed_input(&hex(&record.key().public_key()), "00ff", input()).unwrap(),
+        record
+    );
+    for seq in ["-1", "01", "1.0", "9223372036854775808", ""] {
+        let mut bad = input();
+        bad.sequence = seq.into();
+        assert_eq!(
+            signed_input(&hex(&record.key().public_key()), "00ff", bad)
+                .unwrap_err()
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut bad = input();
+    bad.signature = "00".repeat(64);
+    assert!(signed_input(&hex(&record.key().public_key()), "00ff", bad).is_err());
+    let mut bad = input();
+    bad.value = "00".repeat(1001);
+    assert!(signed_input(&hex(&record.key().public_key()), "00ff", bad).is_err());
+    let mut bad = input();
+    bad.value = "xx".into();
+    assert!(signed_input(&hex(&record.key().public_key()), "00ff", bad).is_err());
+    assert!(signed_input(&hex(&record.key().public_key()), "", input()).is_err());
+    let other = signer
+        .sign(
+            BencodedValue::bytestring(b"other").unwrap(),
+            i64::MAX,
+            vec![0, 255],
+        )
+        .unwrap();
+    let put = DhtRequest::PutMutable(record.clone());
+    assert_ne!(
+        request_id(&put),
+        request_id(&DhtRequest::GetMutable(record.key().clone()))
+    );
+    assert_ne!(request_id(&put), request_id(&DhtRequest::PutMutable(other)));
+    assert_eq!(
+        result_json(&Ok(DhtOutcome::Stored {
+            target: put.target(),
+            acknowledged_nodes: 3
+        }))
+        .unwrap()["acknowledged_nodes"],
+        3
+    );
+}
+#[tokio::test]
+async fn signed_write_http_limits_and_disable_during_queue() {
+    let (jobs, rx) = mpsc::sync_channel(RESPONSES);
+    let (_stop, stopped) = watch::channel(false);
+    let allow = Arc::new(AtomicBool::new(false));
+    let state = HttpState {
+        jobs,
+        permits: Arc::new(Semaphore::new(RESPONSES)),
+        stopped,
+        allow_publish: allow.clone(),
+    };
+    let signer = Bep44Signer::from_seed(&[29; 32]);
+    let r = signer
+        .sign(BencodedValue::bytestring(b"p").unwrap(), 7, vec![])
+        .unwrap();
+    let path = || Path(hex(&r.key().public_key()));
+    let query = || {
+        Query(Salt {
+            salt: String::new(),
+        })
+    };
+    let body = serde_json::to_vec(
+        &json!({"sequence":"7","signature":hex(&r.signature()),"value":hex(r.value().as_bytes())}),
+    )
+    .unwrap();
+    let request = |b: Vec<u8>| {
+        Request::builder()
+            .method("PUT")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(b))
+            .unwrap()
+    };
+    assert_eq!(
+        publish(State(state.clone()), path(), query(), request(body.clone()))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(rx.try_recv().is_err());
+    allow.store(true, Ordering::Release);
+    assert_eq!(
+        publish(
+            State(state.clone()),
+            path(),
+            query(),
+            request(vec![b' '; 8193])
+        )
+        .await
+        .status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(
+        publish(
+            State(state.clone()),
+            path(),
+            query(),
+            request(b"{}".to_vec())
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let task = tokio::spawn(publish(State(state), path(), query(), request(body)));
+    let job = loop {
+        if let Ok(job) = rx.try_recv() {
+            break job;
+        }
+        tokio::task::yield_now().await;
+    };
+    assert!(matches!(job.request, DhtRequest::PutMutable(_)));
+    job.reply
+        .send(Ok(
+            json!({"target":hex(&r.key().target()),"acknowledged_nodes":2}),
+        ))
+        .unwrap();
+    assert_eq!(task.await.unwrap().status(), StatusCode::OK);
+    let mut gateway = Gateway::new(Handle::current());
+    let mut native = Backend::default();
+    let (reply, result) = oneshot::channel();
+    let (_, stopped) = watch::channel(false);
+    gateway
+        .tx
+        .try_send(Job {
+            request: DhtRequest::PutMutable(r),
+            reply,
+            stopped,
+            stream: None,
+            observed: None,
+        })
+        .unwrap();
+    gateway.tick(&mut native);
+    assert_eq!(native.started, 0);
+    assert_eq!(result.await.unwrap().unwrap_err().0, StatusCode::FORBIDDEN);
 }

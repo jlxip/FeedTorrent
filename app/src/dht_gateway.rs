@@ -1,6 +1,6 @@
-//! Public, read-only BEP44 HTTP gateway. The host actor owns all native work.
+//! Public BEP44 HTTP gateway; signed writes are opt-in. The host actor owns all native work.
 use axum::{
-    body::Body,
+    body::{to_bytes, Body},
     extract::{Path, Query, State},
     http::{header, HeaderMap, Method, Request, StatusCode},
     middleware::{self, Next},
@@ -18,7 +18,10 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     net::{SocketAddr, TcpListener},
-    sync::{mpsc, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     time::Duration,
 };
 use tokio::{
@@ -42,12 +45,14 @@ type Updates = watch::Sender<Update>;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub enabled: bool,
+    pub allow_publish: bool,
     pub listen: String,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: false,
+            allow_publish: false,
             listen: "127.0.0.1:8793".into(),
         }
     }
@@ -129,7 +134,15 @@ fn request_id(request: &DhtRequest) -> String {
     match request {
         DhtRequest::GetImmutable(target) => format!("i:{}", hex(target)),
         DhtRequest::GetMutable(key) => format!("m:{}:{}", hex(&key.public_key()), hex(key.salt())),
-        _ => unreachable!("gateway only constructs reads"),
+        DhtRequest::PutMutable(record) => format!(
+            "p:{}:{}:{}:{}:{}",
+            hex(&record.key().public_key()),
+            hex(record.key().salt()),
+            record.sequence(),
+            hex(&record.signature()),
+            hex(record.value().as_bytes())
+        ),
+        _ => unreachable!("unsupported gateway operation"),
     }
 }
 fn result_json(result: &Result<DhtOutcome, DhtError>) -> Result<Value, Failure> {
@@ -140,11 +153,14 @@ fn result_json(result: &Result<DhtOutcome, DhtError>) -> Result<Value, Failure> 
         Ok(DhtOutcome::Mutable(Some(record))) => Ok(
             json!({"key":hex(&record.key().public_key()),"salt":hex(record.key().salt()),"sequence":record.sequence().to_string(),"signature":hex(&record.signature()),"value":hex(record.value().as_bytes())}),
         ),
+        Ok(DhtOutcome::Stored {
+            target,
+            acknowledged_nodes,
+        }) => Ok(json!({"target":hex(target),"acknowledged_nodes":acknowledged_nodes})),
         Ok(DhtOutcome::Immutable(None) | DhtOutcome::Mutable(None)) => {
             Err(Failure(StatusCode::NOT_FOUND, "DHT item not found"))
         }
         Err(error) => Err(native_error(error)),
-        _ => Err(Failure(StatusCode::BAD_GATEWAY, "Unexpected DHT result")),
     }
 }
 struct Job {
@@ -156,6 +172,7 @@ struct Job {
 }
 #[derive(Clone)]
 struct HttpState {
+    allow_publish: Arc<AtomicBool>,
     jobs: mpsc::SyncSender<Job>,
     permits: Arc<Semaphore>,
     stopped: watch::Receiver<bool>,
@@ -314,6 +331,87 @@ async fn mutable(
         Err(error) => error.into_response(),
     }
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignedInput {
+    sequence: String,
+    signature: String,
+    value: String,
+}
+fn signed_input(key: &str, salt: &str, input: SignedInput) -> Result<MutableRecord, Failure> {
+    let invalid = || Failure(StatusCode::BAD_REQUEST, "Invalid signed DHT record");
+    if input.sequence.is_empty()
+        || input.sequence.len() > 19
+        || !input.sequence.bytes().all(|b| b.is_ascii_digit())
+        || input.sequence.len() > 1 && input.sequence.starts_with('0')
+    {
+        return Err(invalid());
+    }
+    if input.value.len() > 2000
+        || !input.value.len().is_multiple_of(2)
+        || !input.value.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(invalid());
+    }
+    let value: Result<Vec<u8>, _> = (0..input.value.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&input.value[i..i + 2], 16))
+        .collect();
+    MutableRecord::verify(
+        MutableKey::new(
+            bytes(key, Some(32))?.try_into().unwrap(),
+            bytes(salt, None)?,
+        )
+        .map_err(|_| invalid())?,
+        input.sequence.parse().map_err(|_| invalid())?,
+        BencodedValue::parse(&value.map_err(|_| invalid())?).map_err(|_| invalid())?,
+        bytes(&input.signature, Some(64))?.try_into().unwrap(),
+    )
+    .map_err(|_| invalid())
+}
+async fn publish(
+    State(state): State<HttpState>,
+    Path(key): Path<String>,
+    Query(query): Query<Salt>,
+    request: Request<Body>,
+) -> Response {
+    if !state.allow_publish.load(Ordering::Acquire) {
+        return failure(StatusCode::FORBIDDEN, "Signed DHT publication is disabled");
+    }
+    if request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_none_or(|v| v.split(';').next().unwrap_or("").trim() != "application/json")
+    {
+        return failure(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Expected application/json",
+        );
+    }
+    let Ok(permit) = state.permits.clone().try_acquire_owned() else {
+        return overloaded().into_response();
+    };
+    let body = match tokio::time::timeout(TIMEOUT, to_bytes(request.into_body(), 8192)).await {
+        Ok(Ok(body)) => body,
+        Ok(Err(_)) => {
+            return failure(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Signed DHT request exceeds 8 KiB",
+            )
+        }
+        Err(_) => return timed_out().into_response(),
+    };
+    drop(permit);
+    let input = match serde_json::from_slice::<SignedInput>(&body) {
+        Ok(input) => input,
+        Err(_) => return failure(StatusCode::BAD_REQUEST, "Invalid signed DHT request"),
+    };
+    match signed_input(&key, &query.salt, input) {
+        Ok(record) => lookup(state, DhtRequest::PutMutable(record)).await,
+        Err(error) => error.into_response(),
+    }
+}
 async fn headers(request: Request<Body>, next: Next) -> Response {
     let mut response = if request.method() == Method::OPTIONS {
         StatusCode::NO_CONTENT.into_response()
@@ -325,7 +423,7 @@ async fn headers(request: Request<Body>, next: Next) -> Response {
     h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, "*".parse().unwrap());
     h.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        "GET, HEAD, OPTIONS".parse().unwrap(),
+        "GET, HEAD, OPTIONS, PUT".parse().unwrap(),
     );
     h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
@@ -334,7 +432,7 @@ async fn headers(request: Request<Body>, next: Next) -> Response {
 fn router(state: HttpState) -> Router {
     Router::new()
         .route("/dht/immutable/{target}", get(immutable))
-        .route("/dht/mutable/{key}", get(mutable))
+        .route("/dht/mutable/{key}", get(mutable).put(publish))
         .fallback(|| async { failure(StatusCode::NOT_FOUND, "Unknown gateway route") })
         .layer(middleware::from_fn(headers))
         .with_state(state)
@@ -348,9 +446,9 @@ impl Drop for Running {
     }
 }
 pub enum Prepared {
-    Keep,
+    Keep(bool),
     Stop,
-    Listen(TcpListener, String),
+    Listen(TcpListener, String, bool),
 }
 struct Pending {
     identity: String,
@@ -386,6 +484,7 @@ impl Native for LibtorrentBackend {
     }
 }
 pub struct Gateway {
+    allow_publish: Arc<AtomicBool>,
     runtime: Handle,
     tx: mpsc::SyncSender<Job>,
     rx: mpsc::Receiver<Job>,
@@ -398,6 +497,7 @@ impl Gateway {
     pub fn new(runtime: Handle) -> Self {
         let (tx, rx) = mpsc::sync_channel(RESPONSES);
         Self {
+            allow_publish: Arc::new(AtomicBool::new(false)),
             runtime,
             tx,
             rx,
@@ -413,22 +513,29 @@ impl Gateway {
             return Ok(Prepared::Stop);
         }
         if self.running.is_some() && self.view.listen == address.to_string() {
-            return Ok(Prepared::Keep);
+            return Ok(Prepared::Keep(config.allow_publish));
         }
         let listener = TcpListener::bind(address)
             .map_err(|e| anyhow::anyhow!("Cannot open DHT gateway at {address}: {e}"))?;
         listener.set_nonblocking(true)?;
-        Ok(Prepared::Listen(listener, address.to_string()))
+        Ok(Prepared::Listen(
+            listener,
+            address.to_string(),
+            config.allow_publish,
+        ))
     }
     pub fn apply(&mut self, prepared: Prepared) {
-        if matches!(prepared, Prepared::Keep) {
+        if let Prepared::Keep(allow) = prepared {
+            self.allow_publish.store(allow, Ordering::Release);
             return;
         }
         self.running.take();
         self.view = View::default();
-        if let Prepared::Listen(listener, listen) = prepared {
+        if let Prepared::Listen(listener, listen, allow) = prepared {
+            self.allow_publish.store(allow, Ordering::Release);
             let (stopped, mut stop) = watch::channel(false);
             let state = HttpState {
+                allow_publish: self.allow_publish.clone(),
                 jobs: self.tx.clone(),
                 permits: self.permits.clone(),
                 stopped: stop.clone(),
@@ -491,6 +598,15 @@ impl Gateway {
             if (job.reply.is_closed() && job.stream.as_ref().is_none_or(Updates::is_closed))
                 || *job.stopped.borrow()
             {
+                continue;
+            }
+            if matches!(job.request, DhtRequest::PutMutable(_))
+                && !self.allow_publish.load(Ordering::Acquire)
+            {
+                let _ = job.reply.send(Err(Failure(
+                    StatusCode::FORBIDDEN,
+                    "Signed DHT publication is disabled",
+                )));
                 continue;
             }
             let identity = request_id(&job.request);

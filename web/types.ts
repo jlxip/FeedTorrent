@@ -2,7 +2,7 @@ import type {PublishingState} from "./publishing.js";
 export interface OrganizationNode {key:string;parent:string|null;archived:boolean;}
 export interface ImagePreferences {automatic:boolean;posts:Record<string,'always'|'ask'>;}
 export interface Settings {
-  dht_gateway: {enabled:boolean;listen:string};
+  dht_gateway: {enabled:boolean;listen:string;allow_publish:boolean};
   download_dir: string;
   peer_port: number;
   seed_by_default: boolean;
